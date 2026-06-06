@@ -7,7 +7,9 @@ services:
     plan: starter            # ~$7/mes, always-on (necesario para mantener la sesión)
     region: oregon
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /
+    # Sin healthCheckPath a propósito: el bot mantiene una conexión persistente
+    # y durante el arranque de Chromium el chequeo HTTP puede fallar y disparar
+    # reinicios en loop. Render igual detecta el puerto abierto.
     autoDeploy: true
     disk:
       name: wwebjs-auth      # guarda la sesión de WhatsApp → se escanea el QR UNA sola vez

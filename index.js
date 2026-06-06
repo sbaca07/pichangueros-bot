@@ -27,6 +27,10 @@ const TEST_TRIGGER = (process.env.TEST_TRIGGER || 'ping kipi').toLowerCase();
 let lastQrDataUrl = null;
 let connectionState = 'starting'; // starting | qr | ready | disconnected
 
+// Robustez: un error suelto de puppeteer/whatsapp-web.js no debe tumbar el proceso.
+process.on('unhandledRejection', (reason) => console.error('[unhandledRejection]', reason));
+process.on('uncaughtException', (err) => console.error('[uncaughtException]', err && err.message ? err.message : err));
+
 // --- Cliente de WhatsApp -----------------------------------------------------
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: process.env.WWEBJS_AUTH_PATH || '.wwebjs_auth' }),
