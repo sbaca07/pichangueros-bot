@@ -1,16 +1,15 @@
 /**
- * Pichangueros Bot — Semana 1 (cimientos + conexión)
+ * Pichangueros Bot — Semana 1 (cimientos + conexión) · motor: Baileys
  *
- * Objetivo de esta etapa:
- *   1. Conectarse a WhatsApp como dispositivo vinculado (QR escaneado UNA vez).
- *   2. Mantener la sesión viva 24/7 (sesión persistida en disco).
- *   3. Exponer una página /qr para escanear el código fácil desde el navegador.
+ * Baileys habla el protocolo de WhatsApp directamente (sin navegador/Chromium),
+ * así que es liviano y estable en servidores chicos.
+ *
+ * Etapa actual:
+ *   1. Conectarse a WhatsApp por QR (escaneado UNA vez; sesión persistida en disco).
+ *   2. Mantenerse vivo 24/7 con reconexión automática.
+ *   3. Página /qr para escanear fácil desde el navegador.
  *   4. MODO SEGURO: NO le escribe a nadie. Solo responde al comando de prueba
- *      "ping kipi" para confirmar que está vivo. La conversación real (IA,
- *      clasificación por distrito, etc.) se activa en la Semana 2.
- *
- * El cerebro (IA), captura de leads, OCR de vouchers y listas automáticas
- * se construyen en las semanas siguientes del plan de trabajo.
+ *      "ping kipi". El cerebro real (IA, distritos, leads) entra en la Semana 2.
  */
 require('dotenv').config();
 
@@ -18,37 +17,28 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const qrcode = require('qrcode');
-const qrcodeTerminal = require('qrcode-terminal');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const pino = require('pino');
+const { Boom } = require('@hapi/boom');
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+} = require('@whiskeysockets/baileys');
 
 const PORT = process.env.PORT || 10000;
 const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || '.wwebjs_auth';
-// MODO SEGURO encendido por defecto: el bot NO responde a usuarios reales todavía.
+const SESSION_DIR = path.join(AUTH_PATH, 'baileys');
 const SAFE_MODE = (process.env.SAFE_MODE || 'true') !== 'false';
 const TEST_TRIGGER = (process.env.TEST_TRIGGER || 'ping kipi').toLowerCase();
 
 let lastQrDataUrl = null;
 let connectionState = 'starting'; // starting | qr | ready | disconnected
 
-// Robustez: un error suelto de puppeteer/whatsapp-web.js no debe tumbar el proceso.
-process.on('unhandledRejection', (reason) => console.error('[unhandledRejection]', reason));
-process.on('uncaughtException', (err) => console.error('[uncaughtException]', err && err.message ? err.message : err));
+process.on('unhandledRejection', (r) => console.error('[unhandledRejection]', r));
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e && e.message ? e.message : e));
 
-// Si un cierre sucio dejó locks de Chromium en el disco, el nuevo Chromium
-// se cuelga al abrir el perfil. Los borramos en cada arranque (seguro).
-function removeChromiumLocks(dir) {
-  if (!fs.existsSync(dir)) return;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) removeChromiumLocks(full);
-    else if (/^Singleton(Lock|Cookie|Socket)$/.test(entry.name)) {
-      try { fs.rmSync(full, { force: true }); console.log('[LOCK] Eliminado lock:', full); } catch (_) {}
-    }
-  }
-}
-
-// Reset de la sesión (RESET_SESSION=true): borra el CONTENIDO de la carpeta
-// (no la carpeta en sí, que es el punto de montaje del disco) y fuerza QR nuevo.
+// Reset opcional de la sesión (RESET_SESSION=true): borra el contenido y fuerza QR nuevo.
 if ((process.env.RESET_SESSION || 'false') === 'true') {
   try {
     if (fs.existsSync(AUTH_PATH)) {
@@ -56,96 +46,101 @@ if ((process.env.RESET_SESSION || 'false') === 'true') {
         fs.rmSync(path.join(AUTH_PATH, entry), { recursive: true, force: true });
       }
     }
-    console.log('[RESET] Contenido de sesión borrado (RESET_SESSION=true) → generará QR nuevo.');
+    console.log('[RESET] Sesión borrada (RESET_SESSION=true) → generará QR nuevo.');
   } catch (e) { console.error('[RESET] Error borrando sesión:', e.message); }
 }
-removeChromiumLocks(AUTH_PATH);
-console.log('[INIT] Limpieza de locks lista. Inicializando WhatsApp…');
 
-// --- Cliente de WhatsApp -----------------------------------------------------
-const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
-  // Fijamos la versión de WhatsApp Web para evitar el error de inyección
-  // ("Execution context was destroyed"): los selectores de whatsapp-web.js
-  // quedan desfasados si WhatsApp Web cambia. Pin a una versión conocida.
-  webVersion: '2.3000.1038183521-alpha',
-  webVersionCache: {
-    type: 'remote',
-    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1038183521-alpha.html',
-  },
-  puppeteer: {
-    headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-first-run',
-      '--no-zygote',
-    ],
-  },
-});
+async function startBot() {
+  fs.mkdirSync(SESSION_DIR, { recursive: true });
+  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
 
-client.on('qr', async (qr) => {
-  connectionState = 'qr';
-  qrcodeTerminal.generate(qr, { small: true }); // QR en los logs (respaldo)
-  try {
-    lastQrDataUrl = await qrcode.toDataURL(qr); // QR como imagen para /qr
-    console.log('[QR] Nuevo código listo. Escanéalo en:  <URL del servicio>/qr');
-  } catch (e) {
-    console.error('[QR] No se pudo generar la imagen del QR:', e.message);
-  }
-});
+  let version;
+  try { ({ version } = await fetchLatestBaileysVersion()); } catch (_) { /* usa default */ }
 
-client.on('loading_screen', (percent, message) => console.log(`[LOADING] ${percent}% ${message || ''}`));
-client.on('change_state', (state) => console.log('[STATE]', state));
-client.on('auth_failure', (msg) => console.error('[AUTH_FAILURE]', msg));
-client.on('authenticated', () => console.log('[AUTH] Sesión autenticada.'));
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    logger: pino({ level: 'silent' }),
+    browser: ['Pichangueros', 'Chrome', '1.0.0'],
+    syncFullHistory: false, // no descargar todo el historial (más liviano)
+  });
 
-client.on('ready', () => {
-  connectionState = 'ready';
-  lastQrDataUrl = null;
-  console.log('[READY] ✅ Pichangueros Bot conectado a WhatsApp.');
-});
+  sock.ev.on('creds.update', saveCreds);
 
-client.on('disconnected', (reason) => {
-  connectionState = 'disconnected';
-  console.warn('[DISCONNECTED] Sesión cerrada:', reason);
-});
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
 
-client.on('message', async (msg) => {
-  try {
-    // Ignorar grupos por ahora (las listas automáticas son de la Semana 5).
-    if (msg.from.endsWith('@g.us')) return;
-
-    const body = (msg.body || '').trim().toLowerCase();
-
-    // Comando de prueba: confirma que el bot está vivo (checkpoint Semana 1).
-    if (body === TEST_TRIGGER) {
-      await msg.reply('✅ Pichangueros Bot conectado y funcionando. (modo prueba)');
-      return;
+    if (qr) {
+      connectionState = 'qr';
+      try {
+        lastQrDataUrl = await qrcode.toDataURL(qr);
+        console.log('[QR] Código listo. Escanéalo en  <URL del servicio>/qr');
+      } catch (e) { console.error('[QR] No se pudo generar imagen:', e.message); }
     }
 
-    // MODO SEGURO: no responder a nadie más todavía.
-    if (SAFE_MODE) {
-      console.log(`[SAFE_MODE] Mensaje recibido de ${msg.from} (sin responder): "${msg.body}"`);
-      return;
+    if (connection === 'open') {
+      connectionState = 'ready';
+      lastQrDataUrl = null;
+      console.log('[READY] ✅ Pichangueros Bot conectado a WhatsApp.');
     }
 
-    // (Semana 2+) Aquí entrará el cerebro de IA / clasificación / captura de leads.
-  } catch (e) {
-    console.error('[message] Error:', e.message);
-  }
-});
+    if (connection === 'close') {
+      const code = lastDisconnect?.error instanceof Boom
+        ? lastDisconnect.error.output?.statusCode
+        : undefined;
+      const loggedOut = code === DisconnectReason.loggedOut;
+      console.warn(`[CLOSE] Conexión cerrada (code=${code}, loggedOut=${loggedOut}).`);
 
-client.initialize();
+      if (loggedOut) {
+        // Sesión cerrada desde el celular: limpiar y pedir QR nuevo.
+        connectionState = 'disconnected';
+        try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); } catch (_) {}
+      } else {
+        connectionState = 'starting';
+      }
+      setTimeout(startBot, 2000); // reconectar
+    }
+  });
+
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return;
+    for (const msg of messages) {
+      try {
+        if (!msg.message || msg.key.fromMe) continue;
+        const from = msg.key.remoteJid;
+        if (!from || from.endsWith('@g.us') || from === 'status@broadcast') continue; // ignorar grupos por ahora
+
+        const body = (
+          msg.message.conversation ||
+          msg.message.extendedTextMessage?.text ||
+          ''
+        ).trim().toLowerCase();
+
+        // Comando de prueba (checkpoint Semana 1)
+        if (body === TEST_TRIGGER) {
+          await sock.sendMessage(from, { text: '✅ Pichangueros Bot conectado y funcionando. (modo prueba)' });
+          continue;
+        }
+
+        // MODO SEGURO: no responder a nadie más todavía.
+        if (SAFE_MODE) {
+          console.log(`[SAFE_MODE] DM de ${from} (sin responder): "${body}"`);
+          continue;
+        }
+
+        // (Semana 2+) Aquí entra el cerebro de IA / clasificación / captura de leads.
+      } catch (e) { console.error('[message] Error:', e.message); }
+    }
+  });
+}
+
+startBot();
 
 // --- Servidor HTTP (health + página de QR) -----------------------------------
 const app = express();
 
 app.get('/', (_req, res) => {
-  res.json({ service: 'pichangueros-bot', state: connectionState, safeMode: SAFE_MODE });
+  res.json({ service: 'pichangueros-bot', engine: 'baileys', state: connectionState, safeMode: SAFE_MODE });
 });
 
 app.get('/qr', (_req, res) => {
