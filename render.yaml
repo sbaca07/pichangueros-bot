@@ -1,0 +1,20 @@
+# Blueprint de Render — crea el servicio del bot con 1 clic desde el dashboard.
+# Dashboard → Blueprints → New Blueprint Instance → apuntar a este repo.
+services:
+  - type: web
+    name: pichangueros-bot
+    runtime: docker
+    plan: starter            # ~$7/mes, always-on (necesario para mantener la sesión)
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    autoDeploy: true
+    disk:
+      name: wwebjs-auth      # guarda la sesión de WhatsApp → se escanea el QR UNA sola vez
+      mountPath: /app/.wwebjs_auth
+      sizeGB: 1
+    envVars:
+      - key: SAFE_MODE
+        value: "true"        # MODO SEGURO: no responde a usuarios reales hasta aprobar el guion
+      - key: TEST_TRIGGER
+        value: "ping kipi"
