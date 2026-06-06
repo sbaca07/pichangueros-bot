@@ -14,12 +14,15 @@
  */
 require('dotenv').config();
 
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 
 const PORT = process.env.PORT || 10000;
+const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || '.wwebjs_auth';
 // MODO SEGURO encendido por defecto: el bot NO responde a usuarios reales todavía.
 const SAFE_MODE = (process.env.SAFE_MODE || 'true') !== 'false';
 const TEST_TRIGGER = (process.env.TEST_TRIGGER || 'ping kipi').toLowerCase();
@@ -31,9 +34,32 @@ let connectionState = 'starting'; // starting | qr | ready | disconnected
 process.on('unhandledRejection', (reason) => console.error('[unhandledRejection]', reason));
 process.on('uncaughtException', (err) => console.error('[uncaughtException]', err && err.message ? err.message : err));
 
+// Si un cierre sucio dejó locks de Chromium en el disco, el nuevo Chromium
+// se cuelga al abrir el perfil. Los borramos en cada arranque (seguro).
+function removeChromiumLocks(dir) {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) removeChromiumLocks(full);
+    else if (/^Singleton(Lock|Cookie|Socket)$/.test(entry.name)) {
+      try { fs.rmSync(full, { force: true }); console.log('[LOCK] Eliminado lock:', full); } catch (_) {}
+    }
+  }
+}
+
+// Reset total de la sesión (RESET_SESSION=true): borra todo y fuerza QR nuevo.
+if ((process.env.RESET_SESSION || 'false') === 'true') {
+  try {
+    fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+    console.log('[RESET] Sesión borrada (RESET_SESSION=true) → generará QR nuevo.');
+  } catch (e) { console.error('[RESET] Error borrando sesión:', e.message); }
+}
+removeChromiumLocks(AUTH_PATH);
+console.log('[INIT] Limpieza de locks lista. Inicializando WhatsApp…');
+
 // --- Cliente de WhatsApp -----------------------------------------------------
 const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: process.env.WWEBJS_AUTH_PATH || '.wwebjs_auth' }),
+  authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
   puppeteer: {
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
@@ -59,6 +85,9 @@ client.on('qr', async (qr) => {
   }
 });
 
+client.on('loading_screen', (percent, message) => console.log(`[LOADING] ${percent}% ${message || ''}`));
+client.on('change_state', (state) => console.log('[STATE]', state));
+client.on('auth_failure', (msg) => console.error('[AUTH_FAILURE]', msg));
 client.on('authenticated', () => console.log('[AUTH] Sesión autenticada.'));
 
 client.on('ready', () => {
