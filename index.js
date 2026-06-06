@@ -47,11 +47,16 @@ function removeChromiumLocks(dir) {
   }
 }
 
-// Reset total de la sesión (RESET_SESSION=true): borra todo y fuerza QR nuevo.
+// Reset de la sesión (RESET_SESSION=true): borra el CONTENIDO de la carpeta
+// (no la carpeta en sí, que es el punto de montaje del disco) y fuerza QR nuevo.
 if ((process.env.RESET_SESSION || 'false') === 'true') {
   try {
-    fs.rmSync(AUTH_PATH, { recursive: true, force: true });
-    console.log('[RESET] Sesión borrada (RESET_SESSION=true) → generará QR nuevo.');
+    if (fs.existsSync(AUTH_PATH)) {
+      for (const entry of fs.readdirSync(AUTH_PATH)) {
+        fs.rmSync(path.join(AUTH_PATH, entry), { recursive: true, force: true });
+      }
+    }
+    console.log('[RESET] Contenido de sesión borrado (RESET_SESSION=true) → generará QR nuevo.');
   } catch (e) { console.error('[RESET] Error borrando sesión:', e.message); }
 }
 removeChromiumLocks(AUTH_PATH);
@@ -60,6 +65,14 @@ console.log('[INIT] Limpieza de locks lista. Inicializando WhatsApp…');
 // --- Cliente de WhatsApp -----------------------------------------------------
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
+  // Fijamos la versión de WhatsApp Web para evitar el error de inyección
+  // ("Execution context was destroyed"): los selectores de whatsapp-web.js
+  // quedan desfasados si WhatsApp Web cambia. Pin a una versión conocida.
+  webVersion: '2.3000.1038183521-alpha',
+  webVersionCache: {
+    type: 'remote',
+    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1038183521-alpha.html',
+  },
   puppeteer: {
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
