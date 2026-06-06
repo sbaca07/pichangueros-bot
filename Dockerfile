@@ -1,6 +1,12 @@
 # Baileys NO necesita navegador → imagen Node simple y liviana.
 FROM node:20-slim
 
+# git y herramientas de build: algunas dependencias de Baileys se instalan
+# desde git o compilan módulos nativos, y node:20-slim no las trae.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY package*.json ./
