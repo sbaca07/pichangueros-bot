@@ -69,6 +69,21 @@ if ((process.env.RESET_SESSION || 'false') === 'true') {
 const jidToNumero = (jid) => (jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Número real del remitente. WhatsApp a veces manda el chat con un LID
+ * (ID anónimo, ej. 201382560821305@lid) en vez del número: en ese caso el
+ * número real viene en key.senderPn. Si no viene, usamos los dígitos del LID
+ * (peor que nada: identifica al contacto de forma estable igual).
+ */
+function numeroDe(msg) {
+  const jid = msg.key.remoteJid || '';
+  if (jid.endsWith('@lid')) {
+    const pn = msg.key.senderPn || msg.key.participantPn || '';
+    if (pn) return jidToNumero(pn);
+  }
+  return jidToNumero(jid);
+}
+
 /** Saca el texto útil del mensaje; los adjuntos se vuelven un marcador para el cerebro. */
 function extraerTexto(msg) {
   const m = msg.message;
@@ -116,7 +131,7 @@ async function manejarMensaje(sock, msg) {
 
   const body = extraerTexto(msg);
   if (!body) return;
-  const numero = jidToNumero(from);
+  const numero = numeroDe(msg); // resuelve LID → número real cuando se puede
 
   // Comando de prueba (sigue vivo como chequeo rápido de conexión)
   if (body.toLowerCase() === TEST_TRIGGER) {
