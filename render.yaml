@@ -17,6 +17,14 @@ services:
       sizeGB: 1
     envVars:
       - key: SAFE_MODE
-        value: "true"        # MODO SEGURO: no responde a usuarios reales hasta aprobar el guion
+        value: "true"        # MODO SEGURO: el cerebro solo atiende a ALLOWED_TESTERS
       - key: TEST_TRIGGER
         value: "ping kipi"
+      - key: OPENAI_MODEL
+        value: "gpt-4o-mini" # modelo económico (decisión del proyecto)
+      - key: OPENAI_API_KEY
+        sync: false          # setear en el dashboard (sin key el cerebro queda apagado)
+      - key: ALLOWED_TESTERS
+        sync: false          # ej. "51999888777,51988877766" (solo dígitos, con 51)
+      - key: NOTIFY_NUMBER
+        sync: false          # recibe avisos de leads/handoffs y usa comandos "kipi ..."

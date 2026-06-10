@@ -1,5 +1,6 @@
 # Baileys NO necesita navegador → imagen Node simple y liviana.
-FROM node:20-slim
+# Node >=24: usamos su SQLite nativo (node:sqlite) para la BD de leads.
+FROM node:24-slim
 
 # git y herramientas de build: algunas dependencias de Baileys se instalan
 # desde git o compilan módulos nativos, y node:20-slim no las trae.

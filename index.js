@@ -1,15 +1,22 @@
 /**
- * Pichangueros Bot — Semana 1 (cimientos + conexión) · motor: Baileys
+ * Pichangueros Bot — Semana 2 (el cerebro: IA + captura de leads) · motor: Baileys
  *
- * Baileys habla el protocolo de WhatsApp directamente (sin navegador/Chromium),
- * así que es liviano y estable en servidores chicos.
+ * Qué hace ahora:
+ *   1. Conexión a WhatsApp por QR, sesión persistida, reconexión automática (Semana 1).
+ *   2. Cerebro IA (src/brain.js): responde con el tono de Clarck, contesta FAQs
+ *      con datos reales (config/negocio.js) y guía el filtro de jugadores nuevos.
+ *   3. Captura de leads (src/db.js): todo contacto queda en SQLite con nombre,
+ *      edad, distrito y zona — incluso si el bot no le responde (MODO SEGURO).
+ *   4. Handoff: quejas y casos especiales → el bot se calla para ese contacto
+ *      y avisa por WhatsApp al número de control (NOTIFY_NUMBER).
  *
- * Etapa actual:
- *   1. Conectarse a WhatsApp por QR (escaneado UNA vez; sesión persistida en disco).
- *   2. Mantenerse vivo 24/7 con reconexión automática.
- *   3. Página /qr para escanear fácil desde el navegador.
- *   4. MODO SEGURO: NO le escribe a nadie. Solo responde al comando de prueba
- *      "ping kipi". El cerebro real (IA, distritos, leads) entra en la Semana 2.
+ * MODO SEGURO (SAFE_MODE=true): el cerebro solo responde a los números de
+ * ALLOWED_TESTERS. Al resto los registra en la BD sin responder. Cuando Clarck
+ * apruebe el guion en el checkpoint → SAFE_MODE=false y atiende a todos.
+ *
+ * Comandos del número de control (NOTIFY_NUMBER), por DM al bot:
+ *   kipi estado               → resumen: conexión, leads, handoffs
+ *   kipi reactivar <numero>   → saca a un contacto del handoff (el bot vuelve a atenderlo)
  */
 require('dotenv').config();
 
@@ -26,11 +33,20 @@ const {
   fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
 
+const db = require('./src/db');
+const brain = require('./src/brain');
+
 const PORT = process.env.PORT || 10000;
 const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || '.wwebjs_auth';
 const SESSION_DIR = path.join(AUTH_PATH, 'baileys');
 const SAFE_MODE = (process.env.SAFE_MODE || 'true') !== 'false';
 const TEST_TRIGGER = (process.env.TEST_TRIGGER || 'ping kipi').toLowerCase();
+// Números (solo dígitos, con código de país, ej. 51999888777) que el cerebro
+// SÍ atiende aunque esté en MODO SEGURO. Separados por coma.
+const ALLOWED_TESTERS = (process.env.ALLOWED_TESTERS || '')
+  .split(',').map((n) => n.replace(/\D/g, '')).filter(Boolean);
+// Número de control: recibe avisos de leads/handoffs y puede usar comandos kipi.
+const NOTIFY_NUMBER = (process.env.NOTIFY_NUMBER || '').replace(/\D/g, '');
 
 let lastQrDataUrl = null;
 let connectionState = 'starting'; // starting | qr | ready | disconnected
@@ -48,6 +64,127 @@ if ((process.env.RESET_SESSION || 'false') === 'true') {
     }
     console.log('[RESET] Sesión borrada (RESET_SESSION=true) → generará QR nuevo.');
   } catch (e) { console.error('[RESET] Error borrando sesión:', e.message); }
+}
+
+const jidToNumero = (jid) => (jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Saca el texto útil del mensaje; los adjuntos se vuelven un marcador para el cerebro. */
+function extraerTexto(msg) {
+  const m = msg.message;
+  if (!m) return '';
+  const texto = m.conversation || m.extendedTextMessage?.text || m.imageMessage?.caption || m.videoMessage?.caption;
+  if (texto) return texto.trim();
+  if (m.imageMessage) return '[el jugador envió una imagen]';
+  if (m.audioMessage) return '[el jugador envió un audio]';
+  if (m.stickerMessage) return '[el jugador envió un sticker]';
+  if (m.documentMessage) return '[el jugador envió un documento]';
+  return '';
+}
+
+async function notificarControl(sock, texto) {
+  if (!NOTIFY_NUMBER) return;
+  try {
+    await sock.sendMessage(`${NOTIFY_NUMBER}@s.whatsapp.net`, { text: texto });
+  } catch (e) { console.error('[notify] No se pudo avisar al número de control:', e.message); }
+}
+
+/** Comandos administrativos del número de control. Devuelve true si el mensaje era un comando. */
+async function comandoControl(sock, from, body) {
+  const texto = body.toLowerCase();
+  if (texto === 'kipi estado') {
+    const s = db.stats();
+    const zonas = s.porZona.map((z) => `${z.zona}: ${z.n}`).join(', ') || 'sin clasificar aún';
+    await sock.sendMessage(from, {
+      text: `📊 Pichangueros Bot\nConexión: ${connectionState} · Modo seguro: ${SAFE_MODE ? 'ON' : 'OFF'} · Cerebro: ${brain.cerebroActivo() ? 'ON' : 'OFF (falta OPENAI_API_KEY)'}\nLeads: ${s.leads} (${s.completos} con datos) · Por zona: ${zonas}\nEn handoff: ${s.enHandoff}`,
+    });
+    return true;
+  }
+  const reactivar = texto.match(/^kipi reactivar (\+?[\d\s-]+)$/);
+  if (reactivar) {
+    const numero = reactivar[1].replace(/\D/g, '');
+    db.clearHandoff(numero);
+    await sock.sendMessage(from, { text: `✅ Listo: el bot vuelve a atender al ${numero}.` });
+    return true;
+  }
+  return false;
+}
+
+async function manejarMensaje(sock, msg) {
+  const from = msg.key.remoteJid;
+  if (!from || from.endsWith('@g.us') || from === 'status@broadcast') return; // grupos: Semana 5
+
+  const body = extraerTexto(msg);
+  if (!body) return;
+  const numero = jidToNumero(from);
+
+  // Comando de prueba (sigue vivo como chequeo rápido de conexión)
+  if (body.toLowerCase() === TEST_TRIGGER) {
+    await sock.sendMessage(from, { text: '✅ Pichangueros Bot conectado y funcionando. (modo prueba)' });
+    return;
+  }
+
+  // Comandos del número de control
+  if (numero === NOTIFY_NUMBER && (await comandoControl(sock, from, body))) return;
+
+  // Todo contacto queda registrado, responda el bot o no (captura de leads).
+  const lead = db.getOrCreateLead(numero);
+  db.saveMessage(numero, 'user', body);
+
+  // Contacto derivado a Clarck: el bot no se mete.
+  if (lead.handoff) {
+    console.log(`[handoff] DM de ${numero} (lo atiende Clarck): "${body}"`);
+    return;
+  }
+
+  // MODO SEGURO: el cerebro solo atiende a los testers autorizados.
+  if (SAFE_MODE && !ALLOWED_TESTERS.includes(numero)) {
+    console.log(`[SAFE_MODE] DM de ${numero} registrado sin responder: "${body}"`);
+    return;
+  }
+
+  if (!brain.cerebroActivo()) {
+    console.log(`[brain OFF] DM de ${numero} registrado (falta OPENAI_API_KEY): "${body}"`);
+    return;
+  }
+
+  const decision = await brain.pensar(lead, db.getHistory(numero), body);
+  if (!decision) return; // error de la IA: mejor silencio que una mala respuesta
+
+  // Guardar lo que el cerebro extrajo (nunca pisa datos existentes con null).
+  db.updateLead(numero, {
+    nombre: decision.nombre,
+    edad: decision.edad,
+    distrito: decision.distrito,
+    zona: decision.zona,
+  });
+
+  const actualizado = db.getOrCreateLead(numero);
+  const datosCompletos = actualizado.nombre && actualizado.edad && actualizado.distrito;
+  if (datosCompletos && lead.estado === 'nuevo') {
+    const estado = actualizado.zona === 'otra' ? 'lista_espera' : 'datos_completos';
+    db.updateLead(numero, { estado });
+    await notificarControl(
+      sock,
+      `🆕 Lead completo: ${actualizado.nombre} (${actualizado.edad}) · ${actualizado.distrito} → zona ${actualizado.zona || '?'} · wa.me/${numero}`
+    );
+  }
+
+  if (decision.handoff) {
+    db.setHandoff(numero, decision.handoff_motivo);
+    await notificarControl(
+      sock,
+      `🔔 Para Clarck — ${decision.handoff_motivo || 'caso especial'}\nContacto: ${actualizado.nombre || 'sin nombre'} · wa.me/${numero}\nÚltimo mensaje: "${body}"\n(El bot dejó de responderle. Para reactivarlo: kipi reactivar ${numero})`
+    );
+  }
+
+  if (decision.reply) {
+    // Naturalidad anti-spam: "escribiendo…" + pausa corta antes de responder.
+    try { await sock.sendPresenceUpdate('composing', from); } catch (_) {}
+    await sleep(1500 + Math.random() * 2000);
+    await sock.sendMessage(from, { text: decision.reply });
+    db.saveMessage(numero, 'assistant', decision.reply);
+  }
 }
 
 async function startBot() {
@@ -107,28 +244,7 @@ async function startBot() {
     for (const msg of messages) {
       try {
         if (!msg.message || msg.key.fromMe) continue;
-        const from = msg.key.remoteJid;
-        if (!from || from.endsWith('@g.us') || from === 'status@broadcast') continue; // ignorar grupos por ahora
-
-        const body = (
-          msg.message.conversation ||
-          msg.message.extendedTextMessage?.text ||
-          ''
-        ).trim().toLowerCase();
-
-        // Comando de prueba (checkpoint Semana 1)
-        if (body === TEST_TRIGGER) {
-          await sock.sendMessage(from, { text: '✅ Pichangueros Bot conectado y funcionando. (modo prueba)' });
-          continue;
-        }
-
-        // MODO SEGURO: no responder a nadie más todavía.
-        if (SAFE_MODE) {
-          console.log(`[SAFE_MODE] DM de ${from} (sin responder): "${body}"`);
-          continue;
-        }
-
-        // (Semana 2+) Aquí entra el cerebro de IA / clasificación / captura de leads.
+        await manejarMensaje(sock, msg);
       } catch (e) { console.error('[message] Error:', e.message); }
     }
   });
@@ -140,7 +256,14 @@ startBot();
 const app = express();
 
 app.get('/', (_req, res) => {
-  res.json({ service: 'pichangueros-bot', engine: 'baileys', state: connectionState, safeMode: SAFE_MODE });
+  res.json({
+    service: 'pichangueros-bot',
+    engine: 'baileys',
+    state: connectionState,
+    safeMode: SAFE_MODE,
+    brain: brain.cerebroActivo(),
+    leads: db.stats(),
+  });
 });
 
 app.get('/qr', (_req, res) => {
