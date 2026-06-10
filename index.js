@@ -281,6 +281,48 @@ app.get('/', (_req, res) => {
   });
 });
 
+// --- Mini panel de leads (adelanto de la Semana 3) --------------------------
+// Protegido con ADMIN_KEY: /admin/leads?key=XXXX  (+ &numero=519... para ver una conversación)
+const ADMIN_KEY = process.env.ADMIN_KEY || '';
+const esc = (v) => String(v ?? '—').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+app.get('/admin/leads', (req, res) => {
+  if (!ADMIN_KEY || req.query.key !== ADMIN_KEY) return res.status(404).send('Not found');
+
+  const leads = db.listLeads();
+  const filas = leads.map((l) => `
+    <tr>
+      <td><a href="?key=${esc(req.query.key)}&numero=${esc(l.numero)}">${esc(l.numero)}</a></td>
+      <td>${esc(l.nombre)}</td><td>${esc(l.edad)}</td><td>${esc(l.distrito)}</td>
+      <td>${esc(l.zona)}</td><td>${esc(l.estado)}</td>
+      <td>${l.handoff ? '🔔 ' + esc(l.handoff_motivo) : '—'}</td>
+      <td>${esc(l.creado_en)}</td>
+    </tr>`).join('');
+
+  let conversacion = '';
+  const numero = (req.query.numero || '').replace(/\D/g, '');
+  if (numero) {
+    const msgs = db.getHistory(numero, 200);
+    conversacion = `
+      <h2>Conversación con ${esc(numero)}</h2>
+      ${msgs.length ? msgs.map((m) => `
+        <p style="margin:4px 0"><b style="color:${m.rol === 'user' ? '#0a7' : '#36c'}">${m.rol === 'user' ? '👤 jugador' : '🤖 bot'}:</b> ${esc(m.texto)}</p>`).join('') : '<p>Sin mensajes.</p>'}`;
+  }
+
+  res.send(`<!doctype html><html><head><meta charset="utf-8"><title>Pichangueros — Leads</title>
+    <style>
+      body{font-family:system-ui,sans-serif;margin:24px;color:#222}
+      table{border-collapse:collapse;width:100%;font-size:14px}
+      th,td{border:1px solid #ddd;padding:6px 10px;text-align:left}
+      th{background:#f4f4f4} tr:nth-child(even){background:#fafafa}
+      a{color:#36c}
+    </style></head><body>
+    <h1>⚽ Pichangueros — Leads (${leads.length})</h1>
+    <table><tr><th>Número</th><th>Nombre</th><th>Edad</th><th>Distrito</th><th>Zona</th><th>Estado</th><th>Handoff</th><th>Creado</th></tr>${filas || '<tr><td colspan="8">Sin leads todavía.</td></tr>'}</table>
+    ${conversacion}
+    </body></html>`);
+});
+
 app.get('/qr', (_req, res) => {
   if (connectionState === 'ready') {
     return res.send('<h2>✅ Ya está conectado. No hace falta escanear nada.</h2>');

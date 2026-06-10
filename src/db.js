@@ -92,6 +92,12 @@ function clearHandoff(numero) {
   db.prepare("UPDATE leads SET handoff = 0, handoff_motivo = NULL, actualizado_en = datetime('now') WHERE numero = ?").run(numero);
 }
 
+function listLeads() {
+  return db
+    .prepare('SELECT numero, nombre, edad, distrito, zona, estado, handoff, handoff_motivo, creado_en, actualizado_en FROM leads ORDER BY actualizado_en DESC')
+    .all();
+}
+
 function stats() {
   return {
     leads: db.prepare('SELECT COUNT(*) AS n FROM leads').get().n,
@@ -101,4 +107,4 @@ function stats() {
   };
 }
 
-module.exports = { getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats };
+module.exports = { getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads };
