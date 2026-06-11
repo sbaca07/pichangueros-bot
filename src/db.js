@@ -47,7 +47,7 @@ const stmtGetLead = db.prepare('SELECT * FROM leads WHERE numero = ?');
 const stmtNewLead = db.prepare('INSERT INTO leads (numero) VALUES (?)');
 const stmtSaveMsg = db.prepare('INSERT INTO mensajes (numero, rol, texto) VALUES (?, ?, ?)');
 const stmtHistory = db.prepare(
-  'SELECT rol, texto FROM mensajes WHERE numero = ? ORDER BY id DESC LIMIT ?'
+  'SELECT rol, texto, creado_en FROM mensajes WHERE numero = ? ORDER BY id DESC LIMIT ?'
 );
 
 function getOrCreateLead(numero) {
