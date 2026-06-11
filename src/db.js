@@ -41,7 +41,20 @@ db.exec(`
     creado_en TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_mensajes_numero ON mensajes(numero, id);
+
+  CREATE TABLE IF NOT EXISTS notas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    numero TEXT NOT NULL,
+    texto TEXT NOT NULL,
+    creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
+
+// Migración suave del CRM (2026-06-10): agrega columnas si la BD es anterior.
+const colsLeads = db.prepare('PRAGMA table_info(leads)').all().map((c) => c.name);
+if (!colsLeads.includes('etiquetas')) db.exec('ALTER TABLE leads ADD COLUMN etiquetas TEXT');
+if (!colsLeads.includes('proxima_accion')) db.exec('ALTER TABLE leads ADD COLUMN proxima_accion TEXT'); // fecha YYYY-MM-DD
+if (!colsLeads.includes('proxima_nota')) db.exec('ALTER TABLE leads ADD COLUMN proxima_nota TEXT');
 
 const stmtGetLead = db.prepare('SELECT * FROM leads WHERE numero = ?');
 const stmtNewLead = db.prepare('INSERT INTO leads (numero) VALUES (?)');
@@ -94,8 +107,40 @@ function clearHandoff(numero) {
 
 function listLeads() {
   return db
-    .prepare('SELECT numero, nombre, edad, distrito, zona, estado, handoff, handoff_motivo, creado_en, actualizado_en FROM leads ORDER BY actualizado_en DESC')
+    .prepare('SELECT numero, nombre, edad, distrito, zona, estado, handoff, handoff_motivo, etiquetas, proxima_accion, proxima_nota, creado_en, actualizado_en FROM leads ORDER BY actualizado_en DESC')
     .all();
+}
+
+// --- CRM ----------------------------------------------------------------------
+function setEstado(numero, estado) {
+  db.prepare("UPDATE leads SET estado = ?, actualizado_en = datetime('now') WHERE numero = ?").run(estado, numero);
+}
+
+function setEtiquetas(numero, etiquetas) {
+  db.prepare("UPDATE leads SET etiquetas = ?, actualizado_en = datetime('now') WHERE numero = ?").run(etiquetas || null, numero);
+}
+
+function setSeguimiento(numero, fecha, nota) {
+  db.prepare("UPDATE leads SET proxima_accion = ?, proxima_nota = ?, actualizado_en = datetime('now') WHERE numero = ?")
+    .run(fecha || null, nota || null, numero);
+}
+
+function addNota(numero, texto) {
+  db.prepare('INSERT INTO notas (numero, texto) VALUES (?, ?)').run(numero, texto);
+}
+
+function getNotas(numero) {
+  return db.prepare('SELECT texto, creado_en FROM notas WHERE numero = ? ORDER BY id DESC').all(numero);
+}
+
+/** Mapa numero → rol del ÚLTIMO mensaje (para detectar chats sin responder). */
+function ultimosRoles() {
+  const rows = db.prepare(
+    'SELECT m.numero, m.rol FROM mensajes m WHERE m.id IN (SELECT MAX(id) FROM mensajes GROUP BY numero)'
+  ).all();
+  const mapa = {};
+  for (const r of rows) mapa[r.numero] = r.rol;
+  return mapa;
 }
 
 function stats() {
@@ -107,4 +152,7 @@ function stats() {
   };
 }
 
-module.exports = { getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads };
+module.exports = {
+  getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
+  setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles,
+};
