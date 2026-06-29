@@ -134,7 +134,7 @@ function registrarPanel(app, db) {
 // ==============================================================================
 //  Base HTML + sistema de diseño iOS
 // ==============================================================================
-function baseHtml(titulo, cuerpo, { refresh = false, tabbar = '' } = {}) {
+function baseHtml(titulo, cuerpo, { refresh = false, activo = '', key = '', tabbarMobile = true } = {}) {
   return `<!doctype html><html lang="es"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${esc(titulo)}</title>
@@ -289,7 +289,48 @@ ${refresh ? '<meta http-equiv="refresh" content="90">' : ''}
   .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--faint);font-size:10.5px;font-weight:600}
   .tab svg{width:25px;height:25px}
   .tab.on{color:var(--green-d)}
-</style></head><body><div class="app">${cuerpo}</div>${tabbar}</body></html>`;
+
+  /* sidebar (solo escritorio) */
+  .shell{min-height:100vh}
+  .sidebar{display:none}
+  .sidebar .brand{display:flex;align-items:center;gap:11px;font-weight:800;font-size:19px;color:var(--navy);letter-spacing:-.01em;margin-bottom:26px}
+  .sidebar .brand .iso{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,var(--green),var(--green-d));display:grid;place-items:center;font-size:19px;box-shadow:0 6px 14px -6px rgba(52,199,89,.7)}
+  .snav{display:flex;flex-direction:column;gap:4px}
+  .snav a{display:flex;align-items:center;gap:12px;padding:11px 13px;border-radius:12px;font-weight:600;font-size:15px;color:var(--muted)}
+  .snav a svg{width:22px;height:22px}
+  .snav a.on{background:rgba(52,199,89,.12);color:var(--green-d)}
+  .snav a:hover{background:var(--inset)}
+  .scsv{margin-top:auto;display:inline-flex;align-items:center;gap:7px;font-size:13.5px;color:var(--muted);padding:11px 13px;border-radius:12px}
+  .scsv:hover{background:var(--inset)}
+  .fcol-right .group{margin-bottom:0}
+
+  /* RESPONSIVE: a partir de 980px, layout de escritorio */
+  @media (min-width:980px){
+    body{background:#e3e8e5}
+    .shell{display:flex;max-width:1180px;margin:0 auto;background:var(--bg);min-height:100vh;box-shadow:0 0 90px -50px rgba(16,39,68,.45)}
+    .sidebar{display:flex;flex-direction:column;flex:0 0 250px;background:#fff;border-right:1px solid var(--sep);padding:28px 20px;position:sticky;top:0;height:100vh}
+    .app{flex:1;min-width:0;max-width:none;margin:0;padding:24px 36px 56px}
+    .px{padding-left:0;padding-right:0}
+    .tabbar{display:none}
+    .ltitle{padding-left:2px;padding-right:2px}
+    .grid2{grid-template-columns:repeat(4,1fr)}
+    .marcador{padding:22px 26px 20px}
+    .mnum{font-size:70px}
+    .bars{height:54px}
+    /* ficha en 2 columnas */
+    .ficha-grid{display:grid;grid-template-columns:minmax(0,360px) 1fr;gap:26px;align-items:start}
+    .fcol-right{position:sticky;top:24px}
+    .fcol-left .fhead{align-items:flex-start;text-align:left}
+    .fcol-left .fhead .fpills{justify-content:flex-start}
+    /* listas con ancho de lectura cómodo */
+    .llist,.zlist{max-width:none}
+  }
+  @media (min-width:1280px){
+    .app{padding:28px 56px 56px}
+  }
+</style></head><body>
+<div class="shell">${key ? sidebar(key, activo) : ''}<div class="app">${cuerpo}</div></div>
+${tabbarMobile && activo ? tabbar(key, activo) : ''}</body></html>`;
 }
 
 // SVGs reutilizables ----------------------------------------------------------
@@ -306,6 +347,15 @@ const tabbar = (key, activo) => `<nav class="tabbar">
   <a class="tab ${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen}Resumen</a>
   <a class="tab ${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm}CRM</a>
 </nav>`;
+
+const sidebar = (key, activo) => `<aside class="sidebar">
+  <div class="brand"><span class="iso">⚽</span> Pichangueros</div>
+  <nav class="snav">
+    <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Resumen</a>
+    <a class="${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm} CRM</a>
+  </nav>
+  <a class="scsv" href="/admin/leads.csv?key=${key}">⬇ Exportar CSV</a>
+</aside>`;
 
 function badges(l, sinResponder) {
   const z = ZONAS[l.zona];
@@ -404,7 +454,7 @@ function paginaResumen(db, key) {
 
       <div class="foot">Se actualiza solo cada 90 s · <a href="/admin/leads.csv?key=${key}" style="color:var(--green-d)">⬇ exportar CSV</a></div>
     </div>
-  `, { refresh: true, tabbar: tabbar(key, 'resumen') });
+  `, { refresh: true, activo: 'resumen', key });
 }
 
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
@@ -485,7 +535,7 @@ function paginaCRM(db, key, query) {
       ${lista}
       <div class="foot">Se actualiza solo cada 90 s · toca un lead para abrir su ficha</div>
     </div>
-  `, { refresh: true, tabbar: tabbar(key, 'crm') });
+  `, { refresh: true, activo: 'crm', key });
 }
 
 // ==============================================================================
@@ -522,6 +572,8 @@ function paginaFicha(db, key, numero) {
         <a class="navback" href="/admin/leads?key=${key}&vista=crm">${SVG.back} CRM</a>
         <a class="wabtn" href="https://wa.me/${esc(numero)}" target="_blank" rel="noopener">${SVG.wa} WhatsApp</a>
       </div>
+      <div class="ficha-grid">
+        <div class="fcol-left stack">
       <div class="fhead">
         <div class="fava" style="background:${avatarColor(numero)}">${esc(iniciales(lead.nombre, numero))}</div>
         <h2>${esc(lead.nombre || 'Sin nombre')}</h2>
@@ -533,7 +585,6 @@ function paginaFicha(db, key, numero) {
         </div>
       </div>
 
-      <div class="stack">
         <div>
           <div class="shdr">Perfil</div>
           <div class="group">
@@ -585,14 +636,15 @@ function paginaFicha(db, key, numero) {
           </div>
         </div>
 
-        <div>
+        </div>
+        <div class="fcol-right">
           <div class="shdr">Conversación</div>
           <div class="chat">${chat}</div>
         </div>
       </div>
       <div class="foot">⚽ Pichangueros CRM</div>
     </div>
-  `, { refresh: false, tabbar: '' });
+  `, { refresh: false, activo: 'crm', key, tabbarMobile: false });
 }
 
 module.exports = { registrarPanel, paginaResumen, paginaCRM, paginaFicha };
