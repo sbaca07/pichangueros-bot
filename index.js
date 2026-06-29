@@ -10,9 +10,10 @@
  *   4. Handoff: quejas y casos especiales → el bot se calla para ese contacto
  *      y avisa por WhatsApp al número de control (NOTIFY_NUMBER).
  *
- * MODO SEGURO (SAFE_MODE=true): el cerebro solo responde a los números de
- * ALLOWED_TESTERS. Al resto los registra en la BD sin responder. Cuando Clarck
- * apruebe el guion en el checkpoint → SAFE_MODE=false y atiende a todos.
+ * MODO SEGURO (SAFE_MODE=true): el bot solo RESPONDE a los números de
+ * ALLOWED_TESTERS. Al resto los registra Y el cerebro les EXTRAE los datos
+ * (nombre/edad/zona) para enriquecer el CRM, pero sin enviarles nada ni avisar
+ * a Clarck. Cuando Clarck apruebe el guion → SAFE_MODE=false y atiende a todos.
  *
  * Comandos del número de control (NOTIFY_NUMBER), por DM al bot:
  *   kipi estado               → resumen: conexión, leads, handoffs
@@ -152,11 +153,10 @@ async function manejarMensaje(sock, msg) {
     return;
   }
 
-  // MODO SEGURO: el cerebro solo atiende a los testers autorizados.
-  if (SAFE_MODE && !ALLOWED_TESTERS.includes(numero)) {
-    console.log(`[SAFE_MODE] DM de ${numero} registrado sin responder: "${body}"`);
-    return;
-  }
+  // MODO SEGURO (silencio): el cerebro SIGUE leyendo para extraer datos
+  // (nombre/edad/distrito/zona) y enriquecer el CRM, pero el bot no envía
+  // nada al contacto ni avisa a Clarck. Los ALLOWED_TESTERS sí reciben todo.
+  const modoSilencio = SAFE_MODE && !ALLOWED_TESTERS.includes(numero);
 
   if (!brain.cerebroActivo()) {
     console.log(`[brain OFF] DM de ${numero} registrado (falta OPENAI_API_KEY): "${body}"`);
@@ -179,7 +179,7 @@ async function manejarMensaje(sock, msg) {
   if (datosCompletos && lead.estado === 'nuevo') {
     const estado = actualizado.zona === 'otra' ? 'lista_espera' : 'datos_completos';
     db.updateLead(numero, { estado });
-    await notificarControl(
+    if (!modoSilencio) await notificarControl(
       sock,
       `🆕 Lead completo: ${actualizado.nombre} (${actualizado.edad}) · ${actualizado.distrito} → zona ${actualizado.zona || '?'} · wa.me/${numero}`
     );
@@ -187,18 +187,20 @@ async function manejarMensaje(sock, msg) {
 
   if (decision.handoff) {
     db.setHandoff(numero, decision.handoff_motivo);
-    await notificarControl(
+    if (!modoSilencio) await notificarControl(
       sock,
       `🔔 Para Clarck — ${decision.handoff_motivo || 'caso especial'}\nContacto: ${actualizado.nombre || 'sin nombre'} · wa.me/${numero}\nÚltimo mensaje: "${body}"\n(El bot dejó de responderle. Para reactivarlo: kipi reactivar ${numero})`
     );
   }
 
-  if (decision.reply) {
+  if (decision.reply && !modoSilencio) {
     // Naturalidad anti-spam: "escribiendo…" + pausa corta antes de responder.
     try { await sock.sendPresenceUpdate('composing', from); } catch (_) {}
     await sleep(1500 + Math.random() * 2000);
     await sock.sendMessage(from, { text: decision.reply });
     db.saveMessage(numero, 'assistant', decision.reply);
+  } else if (modoSilencio) {
+    console.log(`[SAFE_MODE] ${numero}: datos extraídos sin responder.`);
   }
 }
 

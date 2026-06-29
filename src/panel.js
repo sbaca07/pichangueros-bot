@@ -176,9 +176,13 @@ ${refresh ? '<meta http-equiv="refresh" content="90">' : ''}
   .mlabel{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#9fb6d6}
   .mdelta{font-size:12px;font-weight:700;color:#5fe487;background:rgba(52,199,89,.14);padding:4px 10px;border-radius:999px}
   .mnum{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:62px;line-height:.92;color:#fff;margin-top:2px}
-  .bars{display:flex;align-items:flex-end;gap:3px;height:40px;margin-top:8px}
-  .bars span{flex:1;background:linear-gradient(180deg,#5fe487,#34c759);border-radius:3px 3px 1px 1px;min-height:3px;opacity:.9}
-  .bars span.hot{background:linear-gradient(180deg,#cde96b,var(--lime))}
+  .bars{display:flex;align-items:flex-end;gap:3px;height:62px;margin-top:10px}
+  .bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%}
+  .bar .bn{font-size:9px;font-weight:700;color:#a9c2e6;line-height:1;min-height:10px}
+  .bar .track{flex:1;width:100%;display:flex;align-items:flex-end}
+  .bar .track i{width:100%;background:linear-gradient(180deg,#5fe487,#34c759);border-radius:3px 3px 1px 1px;min-height:3px;display:block;opacity:.95}
+  .bar.hot .track i{background:linear-gradient(180deg,#cde96b,var(--lime))}
+  .bar.hot .bn{color:var(--lime)}
   .bars-x{display:flex;justify-content:space-between;font-size:9.5px;color:#7e97b8;margin-top:5px}
 
   /* banner */
@@ -316,7 +320,7 @@ ${refresh ? '<meta http-equiv="refresh" content="90">' : ''}
     .grid2{grid-template-columns:repeat(4,1fr)}
     .marcador{padding:22px 26px 20px}
     .mnum{font-size:70px}
-    .bars{height:54px}
+    .bars{height:80px}
     /* ficha en 2 columnas */
     .ficha-grid{display:grid;grid-template-columns:minmax(0,360px) 1fr;gap:26px;align-items:start}
     .fcol-right{position:sticky;top:24px}
@@ -409,9 +413,10 @@ function paginaResumen(db, key) {
       <span class="zval">${n}</span></div>`;
 
   const barras = dias.map((x) => {
-    const h = Math.max(6, Math.round((x.n / maxN) * 100));
+    const h = x.n ? Math.max(8, Math.round((x.n / maxN) * 100)) : 0;
     const hot = x.n >= maxN * 0.75 && x.n > 0;
-    return `<span class="${hot ? 'hot' : ''}" style="height:${h}%" title="${x.d}: ${x.n}"></span>`;
+    return `<div class="bar ${hot ? 'hot' : ''}" title="${x.d}: ${x.n} ${x.n === 1 ? 'contacto' : 'contactos'}">
+      <span class="bn">${x.n || ''}</span><div class="track"><i style="height:${h}%"></i></div></div>`;
   }).join('');
 
   const bannerSeguro = `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=responder" style="text-decoration:none">
