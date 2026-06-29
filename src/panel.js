@@ -1,27 +1,30 @@
 /**
- * Panel CRM (Semana 3) — "marcador nocturno".
+ * Panel CRM (Semana 3 · rediseño iOS 2026-06-29) — "del marcador a la cancha".
  *
- * Diseño basado en benchmark de CRMs WhatsApp-first (ver crm-design.md):
- * Kommo (pipeline por etapas) · Callbell (cola sin responder) · Pipedrive
- * (acciones de 1 toque, mobile-first) · OnePageCRM (próxima acción con fecha).
+ * Tres vistas, estética iOS (claro, Inter + Barlow Condensed, acento verde
+ * #34C759 = verde de sistema y de cancha):
+ *   Resumen → dashboard de data (marcador-estadio, métricas, crecimiento, zonas)
+ *   CRM     → lista de leads con la cola "sin responder" al frente
+ *   Ficha   → perfil + pipeline + etiquetas + seguimiento + notas + chat
  *
  * Rutas (todas con ?key=ADMIN_KEY; sin key → 404):
- *   GET  /admin/leads            dashboard: marcador, filtros, búsqueda, cards
- *   GET  /admin/leads&numero=N   ficha de contacto: perfil + CRM + chat
- *   GET  /admin/leads.csv        export CSV
- *   POST /admin/lead/estado      cambia etapa del pipeline (1 toque)
- *   POST /admin/lead/reactivar   saca del handoff (el bot vuelve a atender)
- *   POST /admin/lead/etiquetas   guarda etiquetas (separadas por coma)
- *   POST /admin/lead/seguimiento fecha + nota de próxima acción
- *   POST /admin/lead/nota        agrega una nota al historial
+ *   GET  /admin/leads                  → Resumen (dashboard)
+ *   GET  /admin/leads?vista=crm        → lista CRM (con filtros/búsqueda)
+ *   GET  /admin/leads?numero=N         → ficha de contacto
+ *   GET  /admin/leads.csv              → export CSV
+ *   POST /admin/lead/estado            → cambia etapa del pipeline (1 toque)
+ *   POST /admin/lead/reactivar         → saca del handoff (el bot vuelve a atender)
+ *   POST /admin/lead/etiquetas         → guarda etiquetas (separadas por coma)
+ *   POST /admin/lead/seguimiento       → fecha + nota de próxima acción
+ *   POST /admin/lead/nota              → agrega una nota al historial
  */
 const esc = (v) =>
   String(v ?? '—').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const ZONAS = {
-  brena: { nombre: 'Breña', color: '#3ddc6e' },
-  comas: { nombre: 'Comas', color: '#4f8df9' },
-  otra: { nombre: 'Otra zona', color: '#b9a44c' },
+  brena: { nombre: 'Breña', color: '#34c759' },
+  comas: { nombre: 'Comas', color: '#007aff' },
+  otra: { nombre: 'Otra zona', color: '#64748b' },
 };
 
 // Pipeline (etapas) — orden y etiquetas pensadas para el flujo de Clarck.
@@ -34,7 +37,24 @@ const ESTADOS = {
   inactivo: 'Inactivo 💤',
 };
 
-const hoyLima = () => new Date(Date.now() - 5 * 3600e3).toISOString().slice(0, 10);
+// Colores de avatar (monograma) — se elige de forma estable por número.
+const AVATARES = [
+  'linear-gradient(135deg,#34c759,#27a64a)', 'linear-gradient(135deg,#5ac8fa,#007aff)',
+  'linear-gradient(135deg,#ff9f0a,#ff7a00)', 'linear-gradient(135deg,#bf5af2,#8944ab)',
+  'linear-gradient(135deg,#ff453a,#cc2f26)', 'linear-gradient(135deg,#64748b,#475569)',
+  'linear-gradient(135deg,#30b0c7,#0a7e8c)', 'linear-gradient(135deg,#ffcc00,#e0a000)',
+];
+const avatarColor = (numero) => AVATARES[[...String(numero)].reduce((a, c) => a + c.charCodeAt(0), 0) % AVATARES.length];
+const iniciales = (nombre, numero) => {
+  if (!nombre) return String(numero).slice(-2);
+  const p = nombre.trim().split(/\s+/);
+  return ((p[0]?.[0] || '') + (p[1]?.[0] || '')).toUpperCase() || String(numero).slice(-2);
+};
+
+const MS_DIA = 86400e3;
+const fechaLima = (offsetDias = 0) => new Date(Date.now() - 5 * 3600e3 + offsetDias * MS_DIA).toISOString().slice(0, 10);
+const hoyLima = () => fechaLima(0);
+const horaCorta = (ts) => esc((ts || '').slice(5, 16)); // MM-DD HH:MM
 
 function registrarPanel(app, db) {
   const express = require('express');
@@ -106,111 +126,298 @@ function registrarPanel(app, db) {
     const key = encodeURIComponent(req.query.key);
     const numero = (req.query.numero || '').replace(/\D/g, '');
     if (numero) return res.send(paginaFicha(db, key, numero));
-    res.send(paginaDashboard(db, key, req.query));
+    if (req.query.vista === 'crm') return res.send(paginaCRM(db, key, req.query));
+    res.send(paginaResumen(db, key));
   });
 }
 
-// ------------------------------------------------------------------------------
-function baseHtml(titulo, cuerpo, autoRefresh) {
+// ==============================================================================
+//  Base HTML + sistema de diseño iOS
+// ==============================================================================
+function baseHtml(titulo, cuerpo, { refresh = false, tabbar = '' } = {}) {
   return `<!doctype html><html lang="es"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${esc(titulo)}</title>
-${autoRefresh ? '<meta http-equiv="refresh" content="90">' : ''}
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+${refresh ? '<meta http-equiv="refresh" content="90">' : ''}
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root{
-    --campo:#08130c; --carta:#0e2014; --linea:rgba(242,247,243,.12);
-    --tiza:#f2f7f3; --gris:#8fa697; --cesped:#3ddc6e; --azul:#4f8df9; --rojo:#ff5d5d; --ambar:#ffc24b;
+    --bg:#eef1ef; --card:#fff; --ink:#0b1b12; --muted:#6b7c72; --faint:#9aa7a0;
+    --sep:#e7eae8; --inset:#f4f6f5;
+    --green:#34c759; --green-d:#27a64a; --navy:#142847; --navy2:#1c3661;
+    --amber:#ff9500; --amber-d:#c26f00; --red:#ff3b30; --blue:#007aff; --lime:#8fc12c;
   }
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{
-    font-family:'Barlow',sans-serif; color:var(--tiza); background:var(--campo);
-    background-image:
-      radial-gradient(ellipse 90% 50% at 50% -10%, rgba(61,220,110,.14), transparent 60%),
-      repeating-linear-gradient(90deg, transparent 0 72px, rgba(255,255,255,.015) 72px 144px);
-    min-height:100vh; padding:18px 14px 60px;
-  }
-  .wrap{max-width:880px;margin:0 auto}
-  header{display:flex;align-items:baseline;justify-content:space-between;border-bottom:2px dashed var(--linea);padding-bottom:14px;margin-bottom:18px;gap:10px}
-  h1{font-family:'Barlow Condensed';font-weight:800;font-size:clamp(24px,6vw,38px);letter-spacing:.04em;text-transform:uppercase}
-  h1 .punto{color:var(--cesped)}
-  header a.csv{color:var(--gris);font-size:13px;text-decoration:none;border:1px solid var(--linea);padding:6px 12px;border-radius:999px;white-space:nowrap}
-  .marcador{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
-  .tanteo{background:var(--carta);border:1px solid var(--linea);border-radius:14px;padding:12px 8px;text-align:center;animation:sube .45s ease both;text-decoration:none;color:inherit;display:block}
-  .tanteo:nth-child(2){animation-delay:.06s}.tanteo:nth-child(3){animation-delay:.12s}.tanteo:nth-child(4){animation-delay:.18s}
-  .tanteo b{font-family:'Barlow Condensed';font-weight:800;font-size:clamp(26px,7vw,40px);display:block;line-height:1}
-  .tanteo span{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--gris)}
-  .tanteo.alerta b{color:var(--rojo)} .tanteo.verde b{color:var(--cesped)} .tanteo.ambar b{color:var(--ambar)}
-  @keyframes sube{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-  .buscar{display:flex;gap:8px;margin-bottom:12px}
-  .buscar input{flex:1;background:var(--carta);border:1px solid var(--linea);border-radius:999px;padding:9px 16px;color:var(--tiza);font-family:inherit;font-size:14px;outline:none}
-  .buscar input::placeholder{color:var(--gris)}
-  .buscar button{background:var(--cesped);color:#06210f;border:none;border-radius:999px;padding:9px 18px;font-weight:600;font-family:inherit}
-  .filtros{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
-  .filtros a{font-size:13px;font-weight:600;color:var(--gris);text-decoration:none;border:1px solid var(--linea);padding:7px 14px;border-radius:999px}
-  .filtros a.on{color:#06210f;background:var(--cesped);border-color:var(--cesped)}
-  .filtros a.rojo.on{background:var(--rojo);border-color:var(--rojo);color:#2a0606}
-  .filtros a.ambar.on{background:var(--ambar);border-color:var(--ambar);color:#2a1d06}
-  .lead{display:block;background:var(--carta);border:1px solid var(--linea);border-left:4px solid var(--borde,var(--linea));border-radius:14px;padding:14px;margin-bottom:10px;text-decoration:none;color:inherit;animation:sube .4s ease both}
-  .lead:active{background:#13301d}
-  .lead .fila1{display:flex;justify-content:space-between;align-items:center;gap:8px}
-  .lead .nombre{font-family:'Barlow Condensed';font-weight:800;font-size:20px;letter-spacing:.02em}
-  .lead .hora{font-size:12px;color:var(--gris);white-space:nowrap}
-  .lead .fila2{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-  .pill{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:4px 10px;border-radius:999px;border:1px solid var(--linea);color:var(--gris)}
-  .pill.zona{color:#06210f;border:none}
-  .pill.handoff{background:var(--rojo);border:none;color:#2a0606}
-  .pill.resp{background:var(--ambar);border:none;color:#2a1d06}
-  .pill.venc{border-color:var(--rojo);color:var(--rojo)}
-  .pill.tag{border-style:dashed}
-  .vacio{color:var(--gris);text-align:center;padding:50px 0;font-size:15px}
-  .nota{color:var(--gris);font-size:12px;text-align:center;margin-top:26px}
-  /* --- ficha --- */
-  .volver{display:inline-block;color:var(--gris);text-decoration:none;font-size:14px;margin-bottom:14px}
-  .bloque{background:var(--carta);border:1px solid var(--linea);border-radius:14px;padding:14px;margin-bottom:12px}
-  .bloque h3{font-family:'Barlow Condensed';font-weight:800;font-size:15px;letter-spacing:.12em;text-transform:uppercase;color:var(--gris);margin-bottom:10px}
-  .datos{display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:14px}
-  .datos b{color:var(--gris);font-weight:500;display:block;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
-  .etapas{display:flex;gap:6px;flex-wrap:wrap}
-  .etapas button{font-family:inherit;font-size:12px;font-weight:600;padding:7px 12px;border-radius:999px;border:1px solid var(--linea);background:transparent;color:var(--gris)}
-  .etapas button.on{background:var(--azul);border-color:var(--azul);color:#061325}
-  form.inline{display:flex;gap:8px;flex-wrap:wrap}
-  form.inline input{flex:1;min-width:120px;background:#0a1810;border:1px solid var(--linea);border-radius:10px;padding:9px 12px;color:var(--tiza);font-family:inherit;font-size:14px;outline:none}
-  form.inline button{background:var(--cesped);color:#06210f;border:none;border-radius:10px;padding:9px 16px;font-weight:600;font-family:inherit}
-  .btn-rojo{background:var(--rojo)!important;color:#2a0606!important}
-  .notas p{font-size:14px;border-left:3px solid var(--linea);padding:4px 10px;margin-bottom:8px}
-  .notas time{display:block;font-size:11px;color:var(--gris)}
-  .chat{display:flex;flex-direction:column;gap:8px}
-  .burbuja{max-width:82%;padding:10px 14px;border-radius:16px;font-size:15px;line-height:1.45;white-space:pre-wrap;word-break:break-word}
-  .burbuja.user{align-self:flex-start;background:#1b3526;border-bottom-left-radius:4px}
-  .burbuja.bot{align-self:flex-end;background:#123150;border-bottom-right-radius:4px}
-  .burbuja time{display:block;font-size:10px;color:var(--gris);margin-top:5px;text-align:right}
-  .wa{display:inline-block;background:var(--cesped);color:#06210f;font-weight:600;text-decoration:none;padding:10px 18px;border-radius:999px;font-size:14px}
-</style></head><body><div class="wrap">${cuerpo}</div></body></html>`;
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+  body{font-family:'Inter',-apple-system,'Segoe UI',sans-serif;color:var(--ink);background:var(--bg);
+    min-height:100vh;line-height:1.4}
+  a{color:inherit;text-decoration:none}
+  .app{max-width:480px;margin:0 auto;min-height:100vh;background:var(--bg);
+    padding:calc(env(safe-area-inset-top) + 8px) 0 96px;position:relative}
+  .px{padding-left:16px;padding-right:16px}
+
+  /* large title */
+  .ltitle{padding:6px 18px 10px;display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
+  .ltitle .eyebrow{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--green-d);margin-bottom:2px}
+  .ltitle h2{font-size:30px;font-weight:800;letter-spacing:-.02em;line-height:1}
+  .live{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--green-d);
+    background:rgba(52,199,89,.12);padding:5px 11px;border-radius:999px;white-space:nowrap}
+  .live i{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,199,89,.5)}70%{box-shadow:0 0 0 7px rgba(52,199,89,0)}100%{box-shadow:0 0 0 0 rgba(52,199,89,0)}}
+  .csv{font-size:13px;color:var(--muted);border:1px solid var(--sep);background:var(--card);padding:6px 12px;border-radius:999px;white-space:nowrap}
+
+  /* scoreboard hero */
+  .marcador{background:linear-gradient(160deg,#1c3661,#102744);border-radius:24px;padding:18px 20px 16px;
+    color:#fff;position:relative;overflow:hidden;box-shadow:0 14px 30px -16px rgba(16,39,68,.7);margin:2px 0 0}
+  .marcador::before{content:"";position:absolute;inset:0;
+    background:repeating-linear-gradient(90deg,transparent 0 30px,rgba(255,255,255,.025) 30px 60px)}
+  .marcador>*{position:relative}
+  .mtop{display:flex;justify-content:space-between;align-items:center}
+  .mlabel{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#9fb6d6}
+  .mdelta{font-size:12px;font-weight:700;color:#5fe487;background:rgba(52,199,89,.14);padding:4px 10px;border-radius:999px}
+  .mnum{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:62px;line-height:.92;color:#fff;margin-top:2px}
+  .bars{display:flex;align-items:flex-end;gap:3px;height:40px;margin-top:8px}
+  .bars span{flex:1;background:linear-gradient(180deg,#5fe487,#34c759);border-radius:3px 3px 1px 1px;min-height:3px;opacity:.9}
+  .bars span.hot{background:linear-gradient(180deg,#cde96b,var(--lime))}
+  .bars-x{display:flex;justify-content:space-between;font-size:9.5px;color:#7e97b8;margin-top:5px}
+
+  /* banner */
+  .banner{display:flex;gap:12px;align-items:center;background:#fff7e8;border:1px solid #ffe2ad;border-radius:18px;padding:13px 15px;margin-top:14px}
+  .banner.ok{background:#eafaf0;border-color:#b7ebca}
+  .bic{flex:0 0 auto;width:34px;height:34px;border-radius:10px;background:var(--amber);display:grid;place-items:center;font-size:18px}
+  .banner.ok .bic{background:var(--green)}
+  .btxt{font-size:12.5px;line-height:1.35;color:#7a5300}
+  .banner.ok .btxt{color:#1c6b3a}
+  .btxt b{font-weight:700}
+
+  /* stat grid */
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-top:14px}
+  .stat{background:var(--card);border-radius:18px;padding:14px 15px;box-shadow:0 1px 2px rgba(11,27,18,.04);display:block}
+  .stat .sn{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:34px;line-height:1}
+  .stat .sl{font-size:12px;color:var(--muted);font-weight:500;margin-top:3px}
+  .stat.amber .sn{color:var(--amber)} .stat.green .sn{color:var(--green-d)} .stat.navy .sn{color:var(--navy2)} .stat.red .sn{color:var(--red)}
+  .stat .chip{float:right;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px}
+  .chip.up{background:rgba(52,199,89,.14);color:var(--green-d)}
+  .chip.wait{background:rgba(255,149,0,.14);color:var(--amber-d)}
+
+  /* section header */
+  .shdr{font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);padding:18px 6px 8px}
+  .shdr small{text-transform:none;letter-spacing:0;font-weight:500}
+
+  /* zona rows */
+  .zlist{background:var(--card);border-radius:18px;overflow:hidden}
+  .zrow{display:flex;align-items:center;gap:12px;padding:12px 15px;border-bottom:1px solid var(--sep)}
+  .zrow:last-child{border-bottom:none}
+  .zdot{width:11px;height:11px;border-radius:3px;flex:0 0 auto}
+  .zname{font-size:14.5px;font-weight:600;flex:0 0 96px}
+  .ztrack{flex:1;height:7px;background:var(--inset);border-radius:999px;overflow:hidden}
+  .ztrack i{display:block;height:100%;border-radius:999px}
+  .zval{font-size:13px;font-weight:600;color:var(--muted);flex:0 0 auto;min-width:40px;text-align:right}
+
+  /* search + chips */
+  .search{display:flex;align-items:center;gap:8px;background:var(--inset);border-radius:12px;padding:0 13px;margin:2px 0 4px}
+  .search svg{flex:0 0 auto;color:var(--faint)}
+  .search input{flex:1;border:none;background:transparent;outline:none;font:inherit;font-size:15px;padding:10px 0;color:var(--ink)}
+  .search input::placeholder{color:var(--faint)}
+  .search button{border:none;background:var(--green);color:#fff;font:inherit;font-weight:600;font-size:13px;padding:7px 14px;border-radius:9px;margin:5px 0}
+  .chips{display:flex;gap:7px;padding:8px 2px 4px;flex-wrap:wrap}
+  .fchip{font-size:12.5px;font-weight:600;color:var(--muted);background:var(--card);border:1px solid var(--sep);padding:7px 13px;border-radius:999px;white-space:nowrap}
+  .fchip.on{background:var(--navy2);color:#fff;border-color:var(--navy2)}
+  .fchip.amber.on{background:var(--amber);border-color:var(--amber);color:#fff}
+  .fchip.red.on{background:var(--red);border-color:var(--red);color:#fff}
+
+  /* lead list */
+  .llist{background:var(--card);border-radius:18px;overflow:hidden;box-shadow:0 1px 2px rgba(11,27,18,.04)}
+  .lrow{display:flex;align-items:center;gap:13px;padding:12px 14px;border-bottom:1px solid var(--sep);position:relative}
+  .lrow:last-child{border-bottom:none}
+  .lrow:active{background:var(--inset)}
+  .ava{width:44px;height:44px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;font-weight:700;font-size:15px;color:#fff}
+  .lbody{flex:1;min-width:0;overflow:hidden;display:flex;flex-direction:column}
+  .lname{font-size:15.5px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .lsub{font-size:12.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+  .lmeta{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:0 0 auto;margin-left:10px}
+  .ltime{font-size:11.5px;color:var(--faint);white-space:nowrap}
+  .badge{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;white-space:nowrap}
+  .b-wait{background:rgba(255,149,0,.15);color:var(--amber-d)}
+  .b-hand{background:rgba(255,59,48,.13);color:#cc2f26}
+  .b-done{background:rgba(52,199,89,.15);color:var(--green-d)}
+  .b-new{background:var(--inset);color:var(--muted)}
+  .b-zona{color:#fff}
+  .chev{color:#c7d0cb;flex:0 0 auto}
+  .dotnew{position:absolute;left:5px;top:50%;transform:translateY(-50%);width:7px;height:7px;border-radius:50%;background:var(--amber)}
+  .vacio{color:var(--muted);text-align:center;padding:48px 16px;font-size:15px}
+
+  /* ficha */
+  .navbar{display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px}
+  .navback{display:inline-flex;align-items:center;gap:2px;color:var(--green-d);font-size:16px;font-weight:500}
+  .wabtn{display:inline-flex;align-items:center;gap:6px;background:var(--green);color:#fff;font-size:13px;font-weight:600;padding:8px 14px;border-radius:999px;box-shadow:0 4px 12px -4px rgba(52,199,89,.6)}
+  .fhead{display:flex;flex-direction:column;align-items:center;text-align:center;padding:4px 0 12px}
+  .fava{width:74px;height:74px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:26px;color:#fff;margin-bottom:10px}
+  .fhead h2{font-size:21px;font-weight:700;letter-spacing:-.01em}
+  .fnum{font-size:13px;color:var(--muted);margin-top:2px}
+  .fpills{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap;justify-content:center}
+  .pz{font-size:11.5px;font-weight:700;padding:5px 12px;border-radius:999px;color:#fff}
+
+  .group{background:var(--card);border-radius:18px;overflow:hidden;box-shadow:0 1px 2px rgba(11,27,18,.04)}
+  .grow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 15px;border-bottom:1px solid var(--sep);font-size:14.5px}
+  .grow:last-child{border-bottom:none}
+  .grow .k{color:var(--muted)} .grow .v{font-weight:600;text-align:right}
+  .pipe{display:flex;gap:6px;flex-wrap:wrap;padding:13px 14px}
+  .pstep{font-family:inherit;font-size:12px;font-weight:600;padding:7px 12px;border-radius:999px;background:var(--inset);color:var(--muted);border:none}
+  .pstep.on{background:var(--blue);color:#fff}
+  form.inline{display:flex;gap:8px;flex-wrap:wrap;padding:12px 14px}
+  form.inline input{flex:1;min-width:130px;background:var(--inset);border:1px solid var(--sep);border-radius:11px;padding:10px 13px;color:var(--ink);font:inherit;font-size:14px;outline:none}
+  form.inline button{background:var(--green);color:#fff;border:none;border-radius:11px;padding:10px 16px;font:inherit;font-weight:600}
+  .btn-rojo{background:var(--red)!important}
+  .notas-list{padding:0 14px 12px}
+  .notas-list p{font-size:14px;border-left:3px solid var(--sep);padding:4px 10px;margin-bottom:8px}
+  .notas-list time{display:block;font-size:11px;color:var(--faint)}
+  .chat{padding:8px 4px 2px;display:flex;flex-direction:column;gap:6px}
+  .bub{max-width:80%;padding:8px 12px;border-radius:18px;font-size:14px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
+  .bub.in{align-self:flex-start;background:#e9ebec;color:#0b1b12;border-bottom-left-radius:5px}
+  .bub.out{align-self:flex-end;background:var(--green);color:#fff;border-bottom-right-radius:5px}
+  .bub time{display:block;font-size:10px;margin-top:3px;opacity:.55;text-align:right}
+  .noreply{align-self:center;display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;color:var(--amber-d);background:rgba(255,149,0,.12);border:1px dashed #ffce8a;padding:5px 12px;border-radius:999px;margin:6px 0}
+
+  .stack>*+*{margin-top:6px}
+  .foot{color:var(--faint);font-size:12px;text-align:center;padding:22px 16px 6px}
+
+  /* tab bar */
+  .tabbar{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;
+    height:calc(64px + env(safe-area-inset-bottom));background:rgba(255,255,255,.88);backdrop-filter:blur(20px);
+    border-top:1px solid var(--sep);display:flex;padding:8px 0 env(safe-area-inset-bottom);z-index:50}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--faint);font-size:10.5px;font-weight:600}
+  .tab svg{width:25px;height:25px}
+  .tab.on{color:var(--green-d)}
+</style></head><body><div class="app">${cuerpo}</div>${tabbar}</body></html>`;
 }
 
-function badges(l, key, sinResponder) {
+// SVGs reutilizables ----------------------------------------------------------
+const SVG = {
+  chev: '<svg class="chev" width="8" height="14" viewBox="0 0 8 14"><path d="m1 1 6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>',
+  lupa: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.6"/><path d="m11 11 3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  back: '<svg width="9" height="16" viewBox="0 0 9 16"><path d="M8 1 1 8l7 7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>',
+  wa: '<svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M12 2a10 10 0 0 0-8.6 15l-1.3 4.7 4.8-1.3A10 10 0 1 0 12 2Zm5.3 14.1c-.2.6-1.3 1.2-1.8 1.2-.5.1-1 .1-1.7-.1-.4-.1-1-.3-1.6-.6-2.9-1.3-4.8-4.2-4.9-4.4-.2-.2-1.2-1.6-1.2-3 0-1.5.7-2.2 1-2.5.2-.3.6-.4.8-.4h.6c.2 0 .4 0 .6.5l.8 2c.1.2.1.4 0 .5l-.4.6-.3.3c-.2.2-.3.4-.2.6.2.4.8 1.3 1.6 2 .9.8 1.7 1.1 2.1 1.3.3.1.5.1.7-.1l.7-.9c.2-.3.4-.2.6-.1l1.9.9c.2.1.4.2.4.3.1.2.1.7-.1 1.2Z"/></svg>',
+  iResumen: '<svg viewBox="0 0 24 24" fill="none"><path d="M4 13h6v7H4zM14 4h6v16h-6zM4 4h6v6H4z" fill="currentColor"/></svg>',
+  iCrm: '<svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="3.4" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.6-3.2 3-5 5.5-5s4.9 1.8 5.5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16.5 7.5c1.7 0 3 1.3 3 3s-1.3 3-3 3M18 19c-.2-1.6-.8-3-2-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+};
+
+const tabbar = (key, activo) => `<nav class="tabbar">
+  <a class="tab ${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen}Resumen</a>
+  <a class="tab ${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm}CRM</a>
+</nav>`;
+
+function badges(l, sinResponder) {
   const z = ZONAS[l.zona];
   const vencido = l.proxima_accion && l.proxima_accion <= hoyLima();
   const tags = (l.etiquetas || '').split(',').filter(Boolean);
   return `
-    ${l.handoff ? `<span class="pill handoff">🔔 ${esc(l.handoff_motivo || 'derivado')}</span>` : ''}
-    ${sinResponder ? '<span class="pill resp">📥 sin responder</span>' : ''}
-    ${vencido ? `<span class="pill venc">⏰ ${esc(l.proxima_nota || 'seguimiento')}</span>` : ''}
-    ${z ? `<span class="pill zona" style="background:${z.color}">${z.nombre}</span>` : ''}
-    <span class="pill">${esc(ESTADOS[l.estado] || l.estado)}</span>
-    ${tags.map((t) => `<span class="pill tag">${esc(t)}</span>`).join('')}`;
+    ${l.handoff ? `<span class="badge b-hand">🔔 ${esc(l.handoff_motivo || 'derivado')}</span>` : ''}
+    ${sinResponder ? '<span class="badge b-wait">📥 sin responder</span>' : ''}
+    ${vencido ? `<span class="badge b-wait">⏰ ${esc(l.proxima_nota || 'seguimiento')}</span>` : ''}
+    ${z ? `<span class="badge b-zona" style="background:${z.color}">${z.nombre}</span>` : ''}
+    <span class="badge b-new">${esc(ESTADOS[l.estado] || l.estado)}</span>
+    ${tags.map((t) => `<span class="badge b-new">${esc(t)}</span>`).join('')}`;
 }
 
-function paginaDashboard(db, key, query) {
+// ==============================================================================
+//  Vista 1 · RESUMEN (dashboard)
+// ==============================================================================
+function paginaResumen(db, key) {
   const todos = db.listLeads();
   const roles = db.ultimosRoles();
   const sinResp = (l) => roles[l.numero] === 'user' && !l.handoff;
   const hoy = hoyLima();
-  const paraHoy = todos.filter((l) => l.proxima_accion && l.proxima_accion <= hoy);
-  const enHandoff = todos.filter((l) => l.handoff);
-  const colaResp = todos.filter(sinResp);
+
+  // Altas por día (últimos 14, terminando hoy Lima).
+  const porDia = {};
+  for (const l of todos) {
+    const d = (l.creado_en || '').slice(0, 10);
+    if (d) porDia[d] = (porDia[d] || 0) + 1;
+  }
+  const dias = [];
+  for (let i = 13; i >= 0; i--) { const d = fechaLima(-i); dias.push({ d, n: porDia[d] || 0 }); }
+  const maxN = Math.max(1, ...dias.map((x) => x.n));
+  const semana = dias.slice(-7).reduce((a, x) => a + x.n, 0);
+  const previa = dias.slice(0, 7).reduce((a, x) => a + x.n, 0);
+  const delta = previa ? Math.round(((semana - previa) / previa) * 100) : (semana ? 100 : 0);
+  const hoyN = porDia[hoy] || 0;
+
+  const colaResp = todos.filter(sinResp).length;
+  const enHandoff = todos.filter((l) => l.handoff).length;
+  const paraHoy = todos.filter((l) => l.proxima_accion && l.proxima_accion <= hoy).length;
+
+  // Por zona (las clasificadas + las que faltan).
+  const zc = { brena: 0, comas: 0, otra: 0 };
+  let clasificadas = 0;
+  for (const l of todos) if (ZONAS[l.zona]) { zc[l.zona] = (zc[l.zona] || 0) + 1; clasificadas++; }
+  const sinClasificar = todos.length - clasificadas;
+  const maxZ = Math.max(1, zc.brena, zc.comas, zc.otra, sinClasificar);
+  const zrow = (nombre, n, color) =>
+    `<div class="zrow"><span class="zdot" style="background:${color}"></span><span class="zname">${nombre}</span>
+      <span class="ztrack"><i style="width:${Math.max(3, Math.round((n / maxZ) * 100))}%;background:${color}"></i></span>
+      <span class="zval">${n}</span></div>`;
+
+  const barras = dias.map((x) => {
+    const h = Math.max(6, Math.round((x.n / maxN) * 100));
+    const hot = x.n >= maxN * 0.75 && x.n > 0;
+    return `<span class="${hot ? 'hot' : ''}" style="height:${h}%" title="${x.d}: ${x.n}"></span>`;
+  }).join('');
+
+  const bannerSeguro = `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=responder" style="text-decoration:none">
+    <div class="bic">🔒</div>
+    <div class="btxt"><b>Modo seguro activo.</b> El bot registra a todos pero todavía no responde.
+      <b>${colaResp} ${colaResp === 1 ? 'persona' : 'personas'}</b> esperando respuesta — se activa con un cambio.</div></a>`;
+
+  return baseHtml('Pichangueros — Resumen', `
+    <div class="ltitle">
+      <div><div class="eyebrow">Pichangueros</div><h2>Resumen</h2></div>
+      <span class="live"><i></i> En vivo</span>
+    </div>
+    <div class="px">
+      <div class="marcador">
+        <div class="mtop"><span class="mlabel">Contactos captados</span>
+          <span class="mdelta">▲ +${semana} esta semana</span></div>
+        <div class="mnum">${todos.length}</div>
+        <div class="bars">${barras}</div>
+        <div class="bars-x"><span>${dias[0].d.slice(8)} ${mesCorto(dias[0].d)}</span><span>hoy</span></div>
+      </div>
+
+      ${bannerSeguro}
+
+      <div class="grid2">
+        <a class="stat green" href="/admin/leads?key=${key}&vista=crm">${delta ? `<span class="chip up">▲ ${delta}%</span>` : ''}<div class="sn">${semana}</div><div class="sl">Esta semana</div></a>
+        <div class="stat navy"><div class="sn">${hoyN}</div><div class="sl">Nuevos hoy</div></div>
+        <a class="stat amber" href="/admin/leads?key=${key}&vista=crm&filtro=responder"><span class="chip wait">pendiente</span><div class="sn">${colaResp}</div><div class="sl">Sin responder</div></a>
+        <a class="stat ${enHandoff ? 'red' : ''}" href="/admin/leads?key=${key}&vista=crm&filtro=handoff"><div class="sn">${enHandoff}</div><div class="sl">Para Clarck</div></a>
+      </div>
+
+      <div class="shdr">Por zona</div>
+      <div class="zlist">
+        ${zrow('Breña', zc.brena, ZONAS.brena.color)}
+        ${zrow('Comas', zc.comas, ZONAS.comas.color)}
+        ${zc.otra ? zrow('Otras zonas', zc.otra, ZONAS.otra.color) : ''}
+        ${sinClasificar ? zrow('Por clasificar', sinClasificar, 'var(--faint)') : ''}
+      </div>
+
+      ${paraHoy ? `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=hoy" style="margin-top:12px;text-decoration:none"><div class="bic">⏰</div><div class="btxt"><b>${paraHoy} seguimiento${paraHoy === 1 ? '' : 's'} para hoy.</b> Toca para verlos.</div></a>` : ''}
+
+      <div class="foot">Se actualiza solo cada 90 s · <a href="/admin/leads.csv?key=${key}" style="color:var(--green-d)">⬇ exportar CSV</a></div>
+    </div>
+  `, { refresh: true, tabbar: tabbar(key, 'resumen') });
+}
+
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const mesCorto = (yyyymmdd) => MESES[Number((yyyymmdd || '').slice(5, 7)) - 1] || '';
+
+// ==============================================================================
+//  Vista 2 · CRM (lista de leads)
+// ==============================================================================
+function paginaCRM(db, key, query) {
+  const todos = db.listLeads();
+  const roles = db.ultimosRoles();
+  const sinResp = (l) => roles[l.numero] === 'user' && !l.handoff;
+  const hoy = hoyLima();
 
   const q = (query.q || '').trim().toLowerCase();
   const zona = ZONAS[query.zona] ? query.zona : '';
@@ -221,113 +428,171 @@ function paginaDashboard(db, key, query) {
   if (filtro === 'handoff') leads = leads.filter((l) => l.handoff);
   if (filtro === 'responder') leads = leads.filter(sinResp);
   if (filtro === 'hoy') leads = leads.filter((l) => l.proxima_accion && l.proxima_accion <= hoy);
-  // prioridad visual: handoff → sin responder → resto
-  leads = [...leads.filter((l) => l.handoff), ...leads.filter((l) => !l.handoff && sinResp(l)), ...leads.filter((l) => !l.handoff && !sinResp(l))];
 
-  const chip = (href, label, on, extra = '') =>
-    `<a class="${extra}${on ? ' on' : ''}" href="?key=${key}${href}">${label}</a>`;
+  // Dos grupos: necesitan respuesta (handoff o sin responder) y el resto.
+  const urgentes = leads.filter((l) => l.handoff || sinResp(l));
+  const resto = leads.filter((l) => !(l.handoff || sinResp(l)));
 
-  const cards = leads.map((l, i) => `
-    <a class="lead" style="--borde:${l.handoff ? 'var(--rojo)' : sinResp(l) ? 'var(--ambar)' : (ZONAS[l.zona] || { color: 'var(--linea)' }).color};animation-delay:${Math.min(i * 0.04, 0.4)}s" href="?key=${key}&numero=${esc(l.numero)}">
-      <div class="fila1"><span class="nombre">${esc(l.nombre || 'Sin nombre')}</span><span class="hora">${esc((l.actualizado_en || '').slice(5, 16))}</span></div>
-      <div class="fila2">${badges(l, key, sinResp(l))}</div>
-    </a>`).join('');
+  const chip = (extra, label, on, cls = '') =>
+    `<a class="fchip ${cls}${on ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${extra}">${label}</a>`;
+
+  const fila = (l) => {
+    const sr = sinResp(l);
+    const z = ZONAS[l.zona];
+    const ultima = db.getHistory(l.numero, 1)[0];
+    const sub = l.handoff ? esc(l.handoff_motivo || 'derivado a Clarck')
+      : ultima && ultima.rol === 'user' ? `"${esc((ultima.texto || '').slice(0, 40))}"`
+      : [l.distrito ? esc(l.distrito) : null, l.edad ? `${l.edad} años` : null].filter(Boolean).join(' · ') || 'sin datos aún';
+    const badge = l.handoff ? '<span class="badge b-hand">🔔 Clarck</span>'
+      : sr ? '<span class="badge b-wait">sin responder</span>'
+      : l.estado === 'lista_espera' ? '<span class="badge b-new">en espera</span>'
+      : l.estado && l.estado !== 'nuevo' ? `<span class="badge b-done">${esc(ESTADOS[l.estado] || l.estado)}</span>`
+      : z ? `<span class="badge b-zona" style="background:${z.color}">${z.nombre}</span>` : '';
+    return `<a class="lrow" href="/admin/leads?key=${key}&numero=${esc(l.numero)}">
+      ${(l.handoff || sr) ? '<span class="dotnew" style="background:' + (l.handoff ? 'var(--red)' : 'var(--amber)') + '"></span>' : ''}
+      <span class="ava" style="background:${avatarColor(l.numero)}">${esc(iniciales(l.nombre, l.numero))}</span>
+      <span class="lbody"><span class="lname">${esc(l.nombre || 'Sin nombre')}</span><span class="lsub">${sub}</span></span>
+      <span class="lmeta"><span class="ltime">${horaCorta(l.actualizado_en)}</span>${badge}</span>
+      ${SVG.chev}</a>`;
+  };
+
+  const grupo = (titulo, arr) => arr.length
+    ? `<div class="shdr">${titulo} · ${arr.length}</div><div class="llist">${arr.map(fila).join('')}</div>` : '';
+
+  const lista = (urgentes.length || resto.length)
+    ? grupo('Necesitan respuesta', urgentes) + grupo('Todos', resto)
+    : '<p class="vacio">Sin pichangueros en este filtro todavía ⚽</p>';
 
   return baseHtml('Pichangueros — CRM', `
-    <header>
-      <h1>Pichangueros<span class="punto">.</span> CRM</h1>
-      <a class="csv" href="/admin/leads.csv?key=${key}">⬇ CSV</a>
-    </header>
-    <div class="marcador">
-      <a class="tanteo verde" href="?key=${key}"><b>${todos.length}</b><span>Leads</span></a>
-      <a class="tanteo ambar" href="?key=${key}&filtro=responder"><b>${colaResp.length}</b><span>Sin responder</span></a>
-      <a class="tanteo${paraHoy.length ? ' alerta' : ''}" href="?key=${key}&filtro=hoy"><b>${paraHoy.length}</b><span>Para hoy</span></a>
-      <a class="tanteo${enHandoff.length ? ' alerta' : ''}" href="?key=${key}&filtro=handoff"><b>${enHandoff.length}</b><span>Para Clarck</span></a>
+    <div class="ltitle"><div><div class="eyebrow">${todos.length} contactos</div><h2>CRM</h2></div>
+      <a class="csv" href="/admin/leads.csv?key=${key}">⬇ CSV</a></div>
+    <div class="px">
+      <form class="search" method="get" action="/admin/leads">
+        ${SVG.lupa}
+        <input type="hidden" name="key" value="${key}"><input type="hidden" name="vista" value="crm">
+        <input name="q" value="${esc(query.q || '')}" placeholder="Buscar nombre, número, distrito…">
+        ${q ? '<button>Buscar</button>' : ''}
+      </form>
+      <div class="chips">
+        ${chip('', 'Todos', !zona && !filtro && !q)}
+        ${chip('&filtro=responder', '📥 Sin responder', filtro === 'responder', 'amber')}
+        ${chip('&filtro=handoff', '🔔 Clarck', filtro === 'handoff', 'red')}
+        ${chip('&filtro=hoy', '⏰ Para hoy', filtro === 'hoy', 'amber')}
+        ${chip('&zona=brena', 'Breña', zona === 'brena')}
+        ${chip('&zona=comas', 'Comas', zona === 'comas')}
+        ${chip('&zona=otra', 'Otras', zona === 'otra')}
+      </div>
+      ${lista}
+      <div class="foot">Se actualiza solo cada 90 s · toca un lead para abrir su ficha</div>
     </div>
-    <form class="buscar" method="get" action="/admin/leads">
-      <input type="hidden" name="key" value="${key}">
-      <input name="q" value="${esc(query.q || '')}" placeholder="Buscar por nombre, número, distrito o etiqueta…">
-      <button>Buscar</button>
-    </form>
-    <div class="filtros">
-      ${chip('', 'Todos', !zona && !filtro && !q)}
-      ${chip('&zona=brena', 'Breña', zona === 'brena')}
-      ${chip('&zona=comas', 'Comas', zona === 'comas')}
-      ${chip('&zona=otra', 'Otras', zona === 'otra')}
-      ${chip('&filtro=responder', '📥 Sin responder', filtro === 'responder', 'ambar')}
-      ${chip('&filtro=hoy', '⏰ Para hoy', filtro === 'hoy', 'ambar')}
-      ${chip('&filtro=handoff', '🔔 Derivados', filtro === 'handoff', 'rojo')}
-    </div>
-    ${cards || '<p class="vacio">Sin pichangueros en este filtro todavía ⚽</p>'}
-    <p class="nota">Se actualiza solo cada 90 s · toca un lead para abrir su ficha</p>
-  `, true);
+  `, { refresh: true, tabbar: tabbar(key, 'crm') });
 }
 
+// ==============================================================================
+//  Vista 3 · FICHA (contacto)
+// ==============================================================================
 function paginaFicha(db, key, numero) {
   const lead = db.getOrCreateLead(numero);
   const msgs = db.getHistory(numero, 200);
   const notas = db.getNotas(numero);
   const roles = db.ultimosRoles();
   const keyRaw = decodeURIComponent(key);
+  const sinResp = roles[numero] === 'user' && !lead.handoff;
+  const z = ZONAS[lead.zona];
 
   const botonesEtapa = Object.entries(ESTADOS).map(([v, label]) => `
     <form method="post" action="/admin/lead/estado" style="display:inline">
       <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
       <input type="hidden" name="estado" value="${v}">
-      <button class="${lead.estado === v ? 'on' : ''}">${label}</button>
+      <button class="pstep ${lead.estado === v ? 'on' : ''}">${label}</button>
     </form>`).join('');
 
+  const hayBot = msgs.some((m) => m.rol !== 'user');
   const burbujas = msgs.map((m) => `
-    <div class="burbuja ${m.rol === 'user' ? 'user' : 'bot'}">${esc(m.texto)}<time>${esc((m.creado_en || '').slice(5, 16))}</time></div>`).join('');
+    <div class="bub ${m.rol === 'user' ? 'in' : 'out'}">${esc(m.texto)}<time>${horaCorta(m.creado_en)}</time></div>`).join('');
+  const chat = msgs.length
+    ? burbujas + (!hayBot ? '<div class="noreply">🔒 El bot no respondió · modo seguro</div>' : '')
+    : '<p class="vacio">Sin mensajes.</p>';
+
+  const dato = (k, v, color) => `<div class="grow"><span class="k">${k}</span><span class="v"${color ? ` style="color:${color}"` : ''}>${esc(v)}</span></div>`;
 
   return baseHtml(`Ficha · ${lead.nombre || numero}`, `
-    <a class="volver" href="/admin/leads?key=${key}">← Volver al CRM</a>
-    <header><h1>${esc(lead.nombre || numero)}<span class="punto">.</span></h1>
-      <a class="wa" href="https://wa.me/${esc(numero)}" target="_blank">WhatsApp →</a></header>
-
-    <div class="bloque"><h3>Perfil</h3>
-      <div class="datos">
-        <div><b>Número</b>${esc(numero)}</div><div><b>Edad</b>${esc(lead.edad)}</div>
-        <div><b>Distrito</b>${esc(lead.distrito)}</div><div><b>Zona</b>${esc((ZONAS[lead.zona] || {}).nombre || lead.zona)}</div>
+    <div class="px">
+      <div class="navbar">
+        <a class="navback" href="/admin/leads?key=${key}&vista=crm">${SVG.back} CRM</a>
+        <a class="wabtn" href="https://wa.me/${esc(numero)}" target="_blank" rel="noopener">${SVG.wa} WhatsApp</a>
       </div>
-      <div class="fila2" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">${badges(lead, key, roles[numero] === 'user' && !lead.handoff)}</div>
-      ${lead.handoff ? `
-      <form method="post" action="/admin/lead/reactivar" style="margin-top:12px">
-        <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
-        <button class="btn-rojo" style="border:none;border-radius:10px;padding:10px 16px;font-weight:600;font-family:inherit">🔓 Reactivar bot para este contacto</button>
-      </form>` : ''}
+      <div class="fhead">
+        <div class="fava" style="background:${avatarColor(numero)}">${esc(iniciales(lead.nombre, numero))}</div>
+        <h2>${esc(lead.nombre || 'Sin nombre')}</h2>
+        <div class="fnum">+${esc(numero)}</div>
+        <div class="fpills">
+          ${z ? `<span class="pz" style="background:${z.color}">${z.nombre}</span>` : ''}
+          ${lead.handoff ? `<span class="pz" style="background:var(--red)">🔔 ${esc(lead.handoff_motivo || 'derivado')}</span>` : ''}
+          ${sinResp ? '<span class="pz" style="background:var(--amber)">📥 Sin responder</span>' : ''}
+        </div>
+      </div>
+
+      <div class="stack">
+        <div>
+          <div class="shdr">Perfil</div>
+          <div class="group">
+            ${dato('Edad', lead.edad)}
+            ${dato('Distrito', lead.distrito)}
+            ${dato('Zona', (z && z.nombre) || lead.zona, z && z.color)}
+            ${dato('Etapa', ESTADOS[lead.estado] || lead.estado)}
+          </div>
+        </div>
+
+        ${lead.handoff ? `<form method="post" action="/admin/lead/reactivar">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
+          <button class="wabtn btn-rojo" style="width:100%;justify-content:center;border:none;padding:13px;font-size:14px">🔓 Reactivar el bot para este contacto</button>
+        </form>` : ''}
+
+        <div>
+          <div class="shdr">Etapa</div>
+          <div class="group"><div class="pipe">${botonesEtapa}</div></div>
+        </div>
+
+        <div>
+          <div class="shdr">Etiquetas <small>(separadas por coma)</small></div>
+          <div class="group"><form class="inline" method="post" action="/admin/lead/etiquetas">
+            <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
+            <input name="etiquetas" value="${esc(lead.etiquetas || '')}" placeholder="casero, paga efectivo, VIP…">
+            <button>Guardar</button>
+          </form></div>
+        </div>
+
+        <div>
+          <div class="shdr">Próxima acción</div>
+          <div class="group"><form class="inline" method="post" action="/admin/lead/seguimiento">
+            <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
+            <input type="date" name="fecha" value="${esc(lead.proxima_accion || '')}">
+            <input name="nota" value="${esc(lead.proxima_nota || '')}" placeholder="ej. avisarle del cupo del viernes">
+            <button>Guardar</button>
+          </form></div>
+        </div>
+
+        <div>
+          <div class="shdr">Notas</div>
+          <div class="group">
+            <form class="inline" method="post" action="/admin/lead/nota">
+              <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
+              <input name="texto" placeholder="ej. vino con 3 amigos, buen arquero…">
+              <button>+ Nota</button>
+            </form>
+            <div class="notas-list">${notas.map((n) => `<p>${esc(n.texto)}<time>${esc((n.creado_en || '').slice(0, 16))}</time></p>`).join('') || '<p style="border:none;color:var(--faint)">Sin notas.</p>'}</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="shdr">Conversación</div>
+          <div class="chat">${chat}</div>
+        </div>
+      </div>
+      <div class="foot">⚽ Pichangueros CRM</div>
     </div>
-
-    <div class="bloque"><h3>Etapa</h3><div class="etapas">${botonesEtapa}</div></div>
-
-    <div class="bloque"><h3>Etiquetas <small style="text-transform:none;letter-spacing:0">(separadas por coma)</small></h3>
-      <form class="inline" method="post" action="/admin/lead/etiquetas">
-        <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
-        <input name="etiquetas" value="${esc(lead.etiquetas || '')}" placeholder="casero, paga efectivo, VIP…">
-        <button>Guardar</button>
-      </form>
-    </div>
-
-    <div class="bloque"><h3>Próxima acción</h3>
-      <form class="inline" method="post" action="/admin/lead/seguimiento">
-        <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
-        <input type="date" name="fecha" value="${esc(lead.proxima_accion || '')}">
-        <input name="nota" value="${esc(lead.proxima_nota || '')}" placeholder="ej. avisarle del cupo del viernes">
-        <button>Guardar</button>
-      </form>
-    </div>
-
-    <div class="bloque notas"><h3>Notas</h3>
-      <form class="inline" method="post" action="/admin/lead/nota" style="margin-bottom:10px">
-        <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
-        <input name="texto" placeholder="ej. vino con 3 amigos, buen arquero…">
-        <button>+ Nota</button>
-      </form>
-      ${notas.map((n) => `<p>${esc(n.texto)}<time>${esc((n.creado_en || '').slice(0, 16))}</time></p>`).join('') || '<p style="color:var(--gris);border:none">Sin notas.</p>'}
-    </div>
-
-    <div class="bloque"><h3>Conversación</h3><div class="chat">${burbujas || '<p class="vacio">Sin mensajes.</p>'}</div></div>
-  `, false);
+  `, { refresh: false, tabbar: '' });
 }
 
-module.exports = { registrarPanel };
+module.exports = { registrarPanel, paginaResumen, paginaCRM, paginaFicha };
