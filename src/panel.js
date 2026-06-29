@@ -18,6 +18,8 @@
  *   POST /admin/lead/seguimiento       → fecha + nota de próxima acción
  *   POST /admin/lead/nota              → agrega una nota al historial
  */
+const sheetsync = require('./sheetsync');
+
 const esc = (v) =>
   String(v ?? '—').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -120,6 +122,13 @@ function registrarPanel(app, db) {
     res.send(['numero,nombre,edad,distrito,zona,estado,handoff,handoff_motivo,etiquetas,proxima_accion,creado_en', ...filas].join('\n'));
   });
 
+  // Respaldar a Google Sheet ahora (backup manual desde el panel).
+  app.get('/admin/sync-sheet', async (req, res) => {
+    if (!autorizado(req, res)) return;
+    const r = await sheetsync.syncToSheet(db);
+    res.redirect(`/admin/leads?key=${encodeURIComponent(req.query.key)}&sync=${r.ok ? r.n : 'err'}`);
+  });
+
   // --- Vistas ----------------------------------------------------------------------
   app.get('/admin/leads', (req, res) => {
     if (!autorizado(req, res)) return;
@@ -127,7 +136,7 @@ function registrarPanel(app, db) {
     const numero = (req.query.numero || '').replace(/\D/g, '');
     if (numero) return res.send(paginaFicha(db, key, numero));
     if (req.query.vista === 'crm') return res.send(paginaCRM(db, key, req.query));
-    res.send(paginaResumen(db, key));
+    res.send(paginaResumen(db, key, req.query));
   });
 }
 
@@ -304,7 +313,8 @@ ${refresh ? '<meta http-equiv="refresh" content="90">' : ''}
   .snav a svg{width:22px;height:22px}
   .snav a.on{background:rgba(52,199,89,.12);color:var(--green-d)}
   .snav a:hover{background:var(--inset)}
-  .scsv{margin-top:auto;display:inline-flex;align-items:center;gap:7px;font-size:13.5px;color:var(--muted);padding:11px 13px;border-radius:12px}
+  .sbottom{margin-top:auto;display:flex;flex-direction:column;gap:2px}
+  .scsv{display:inline-flex;align-items:center;gap:7px;font-size:13.5px;color:var(--muted);padding:11px 13px;border-radius:12px}
   .scsv:hover{background:var(--inset)}
   .fcol-right .group{margin-bottom:0}
 
@@ -358,7 +368,10 @@ const sidebar = (key, activo) => `<aside class="sidebar">
     <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Resumen</a>
     <a class="${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm} CRM</a>
   </nav>
-  <a class="scsv" href="/admin/leads.csv?key=${key}">⬇ Exportar CSV</a>
+  <div class="sbottom">
+    ${sheetsync.activo() ? `<a class="scsv" href="/admin/sync-sheet?key=${key}">☁ Respaldar a Sheet</a>` : ''}
+    <a class="scsv" href="/admin/leads.csv?key=${key}">⬇ Exportar CSV</a>
+  </div>
 </aside>`;
 
 function badges(l, sinResponder) {
@@ -377,7 +390,7 @@ function badges(l, sinResponder) {
 // ==============================================================================
 //  Vista 1 · RESUMEN (dashboard)
 // ==============================================================================
-function paginaResumen(db, key) {
+function paginaResumen(db, key, query = {}) {
   const todos = db.listLeads();
   const roles = db.ultimosRoles();
   const sinResp = (l) => roles[l.numero] === 'user' && !l.handoff;
@@ -430,6 +443,7 @@ function paginaResumen(db, key) {
       <span class="live"><i></i> En vivo</span>
     </div>
     <div class="px">
+      ${query.sync ? `<div class="banner ${query.sync === 'err' ? '' : 'ok'}" style="margin:0 0 12px"><div class="bic">☁</div><div class="btxt">${query.sync === 'err' ? 'No se pudo respaldar al Sheet — revisá SHEET_WEBHOOK_URL/SHEET_SECRET.' : `<b>Respaldado al Google Sheet</b> · ${esc(query.sync)} leads.`}</div></div>` : ''}
       <div class="marcador">
         <div class="mtop"><span class="mlabel">Contactos captados</span>
           <span class="mdelta">▲ +${semana} esta semana</span></div>

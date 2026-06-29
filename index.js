@@ -36,6 +36,7 @@ const {
 
 const db = require('./src/db');
 const brain = require('./src/brain');
+const sheet = require('./src/sheetsync');
 
 const PORT = process.env.PORT || 10000;
 const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || '.wwebjs_auth';
@@ -285,6 +286,9 @@ app.get('/', (_req, res) => {
 
 // Panel de control (src/panel.js): /admin/leads?key=ADMIN_KEY (+ CSV export)
 require('./src/panel').registrarPanel(app, db);
+
+// Espejo a Google Sheet (backup + visibilidad): al arrancar + cada 6 h.
+sheet.programarSync(db);
 
 app.get('/qr', (_req, res) => {
   if (connectionState === 'ready') {
