@@ -12,11 +12,13 @@ Bot de WhatsApp para Pichangueros (KIPI). Ruta **no oficial** (Baileys, sin nave
 
 ## Dónde se edita qué
 
-| Cambio | Archivo |
+| Cambio | Dónde |
 |---|---|
-| Precios, sedes, horarios, links de grupos, Yape | `config/negocio.js` (solo datos, sin código) |
+| Precios, sedes, horarios, links de grupos, Yape, textos fijos | Panel admin → `/admin/leads?vista=config` (sin tocar código ni redesplegar) |
 | Tono, flujo del filtro, reglas del asistente | `src/brain.js` (system prompt) |
 | Leads y conversaciones | SQLite en `<disco>/data/pichangueros.db` |
+
+`config/negocio.js` ya NO se usa en producción — solo sirvió para sembrar la tabla `config`/`sedes` la primera vez que corrió esta versión. Los valores en vivo están en la BD; edítalos desde el panel.
 
 ## Variables de entorno
 

@@ -122,11 +122,52 @@ function registrarPanel(app, db) {
     res.send(['numero,nombre,edad,distrito,zona,estado,handoff,handoff_motivo,etiquetas,proxima_accion,creado_en', ...filas].join('\n'));
   });
 
+  // Backup manual: descarga el .db completo (checkpoint del WAL primero para
+  // que el archivo tenga todo lo escrito hasta este momento).
+  app.get('/admin/backup-db', (req, res) => {
+    if (!autorizado(req, res)) return;
+    db.checkpoint();
+    res.download(db.dbPath, `pichangueros-${hoyLima()}.db`);
+  });
+
   // Respaldar a Google Sheet ahora (backup manual desde el panel).
   app.get('/admin/sync-sheet', async (req, res) => {
     if (!autorizado(req, res)) return;
     const r = await sheetsync.syncToSheet(db);
     res.redirect(`/admin/leads?key=${encodeURIComponent(req.query.key)}&sync=${r.ok ? r.n : 'err'}`);
+  });
+
+  // --- Configuración del negocio (sedes, precios, textos) — sin tocar código ------
+  const volverAConfig = (req, res) => res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=config`);
+
+  app.post('/admin/config/general', (req, res) => {
+    if (!autorizado(req, res)) return;
+    db.setConfig(req.body);
+    volverAConfig(req, res);
+  });
+
+  app.post('/admin/config/sede', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const campos = {
+      zona: req.body.zona === 'comas' ? 'comas' : 'brena',
+      nombre: (req.body.nombre || '').trim(),
+      cancha: (req.body.cancha || '').trim(),
+      cupo: req.body.cupo ? Number(req.body.cupo) : null,
+      ubicacion: (req.body.ubicacion || '').trim(),
+      horario: (req.body.horario || '').trim(),
+      estacionamiento: (req.body.estacionamiento || '').trim(),
+    };
+    if (campos.nombre) {
+      if (req.body.id) db.updateSede(Number(req.body.id), campos);
+      else db.addSede(campos);
+    }
+    volverAConfig(req, res);
+  });
+
+  app.post('/admin/config/sede/eliminar', (req, res) => {
+    if (!autorizado(req, res)) return;
+    db.deleteSede(Number(req.body.id));
+    volverAConfig(req, res);
   });
 
   // --- Vistas ----------------------------------------------------------------------
@@ -136,6 +177,7 @@ function registrarPanel(app, db) {
     const numero = (req.query.numero || '').replace(/\D/g, '');
     if (numero) return res.send(paginaFicha(db, key, numero));
     if (req.query.vista === 'crm') return res.send(paginaCRM(db, key, req.query));
+    if (req.query.vista === 'config') return res.send(paginaConfig(db, key));
     res.send(paginaResumen(db, key, req.query));
   });
 }
@@ -280,7 +322,12 @@ ${refresh ? '<meta http-equiv="refresh" content="90">' : ''}
   .pstep.on{background:var(--blue);color:#fff}
   form.inline{display:flex;gap:8px;flex-wrap:wrap;padding:12px 14px}
   form.inline input{flex:1;min-width:130px;background:var(--inset);border:1px solid var(--sep);border-radius:11px;padding:10px 13px;color:var(--ink);font:inherit;font-size:14px;outline:none}
+  form.inline textarea{flex-basis:100%;background:var(--inset);border:1px solid var(--sep);border-radius:11px;padding:10px 13px;color:var(--ink);font:inherit;font-size:14px;outline:none;resize:vertical;min-height:64px}
   form.inline button{background:var(--green);color:#fff;border:none;border-radius:11px;padding:10px 16px;font:inherit;font-weight:600}
+  form.inline label{flex-basis:100%;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:-4px}
+  .config-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 14px;border-bottom:1px solid var(--sep)}
+  .config-row:last-child{border-bottom:none}
+  .config-row input{flex:1;min-width:90px}
   .btn-rojo{background:var(--red)!important}
   .notas-list{padding:0 14px 12px}
   .notas-list p{font-size:14px;border-left:3px solid var(--sep);padding:4px 10px;margin-bottom:8px}
@@ -355,11 +402,13 @@ const SVG = {
   wa: '<svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M12 2a10 10 0 0 0-8.6 15l-1.3 4.7 4.8-1.3A10 10 0 1 0 12 2Zm5.3 14.1c-.2.6-1.3 1.2-1.8 1.2-.5.1-1 .1-1.7-.1-.4-.1-1-.3-1.6-.6-2.9-1.3-4.8-4.2-4.9-4.4-.2-.2-1.2-1.6-1.2-3 0-1.5.7-2.2 1-2.5.2-.3.6-.4.8-.4h.6c.2 0 .4 0 .6.5l.8 2c.1.2.1.4 0 .5l-.4.6-.3.3c-.2.2-.3.4-.2.6.2.4.8 1.3 1.6 2 .9.8 1.7 1.1 2.1 1.3.3.1.5.1.7-.1l.7-.9c.2-.3.4-.2.6-.1l1.9.9c.2.1.4.2.4.3.1.2.1.7-.1 1.2Z"/></svg>',
   iResumen: '<svg viewBox="0 0 24 24" fill="none"><path d="M4 13h6v7H4zM14 4h6v16h-6zM4 4h6v6H4z" fill="currentColor"/></svg>',
   iCrm: '<svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="3.4" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.6-3.2 3-5 5.5-5s4.9 1.8 5.5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16.5 7.5c1.7 0 3 1.3 3 3s-1.3 3-3 3M18 19c-.2-1.6-.8-3-2-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  iConfig: '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13.5a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V20a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.04-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.04H4a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.56-1.04 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H10a1.7 1.7 0 0 0 1.04-1.56V4a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V10a1.7 1.7 0 0 0 1.56 1.04H20a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.56 1.04Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
 };
 
 const tabbar = (key, activo) => `<nav class="tabbar">
   <a class="tab ${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen}Resumen</a>
   <a class="tab ${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm}CRM</a>
+  <a class="tab ${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig}Config</a>
 </nav>`;
 
 const sidebar = (key, activo) => `<aside class="sidebar">
@@ -367,10 +416,12 @@ const sidebar = (key, activo) => `<aside class="sidebar">
   <nav class="snav">
     <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Resumen</a>
     <a class="${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm} CRM</a>
+    <a class="${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig} Config</a>
   </nav>
   <div class="sbottom">
     ${sheetsync.activo() ? `<a class="scsv" href="/admin/sync-sheet?key=${key}">☁ Respaldar a Sheet</a>` : ''}
     <a class="scsv" href="/admin/leads.csv?key=${key}">⬇ Exportar CSV</a>
+    <a class="scsv" href="/admin/backup-db?key=${key}">💾 Descargar backup BD</a>
   </div>
 </aside>`;
 
@@ -666,4 +717,85 @@ function paginaFicha(db, key, numero) {
   `, { refresh: false, activo: 'crm', key, tabbarMobile: false });
 }
 
-module.exports = { registrarPanel, paginaResumen, paginaCRM, paginaFicha };
+// ==============================================================================
+//  Config — sedes, precios y textos del negocio (editable, sin tocar código)
+// ==============================================================================
+function paginaConfig(db, key) {
+  const keyRaw = decodeURIComponent(key);
+  const c = db.getConfigMap();
+  const sedesPorZona = { brena: db.listSedes('brena'), comas: db.listSedes('comas') };
+
+  const filaSede = (zona, s) => `
+    <form class="inline" method="post" action="/admin/config/sede">
+      <input type="hidden" name="key" value="${esc(keyRaw)}">
+      <input type="hidden" name="zona" value="${zona}">
+      ${s ? `<input type="hidden" name="id" value="${s.id}">` : ''}
+      <input name="nombre" value="${esc(s?.nombre || '')}" placeholder="Nombre de la sede" required>
+      <input name="cancha" value="${esc(s?.cancha || '')}" placeholder="Cancha (opcional)">
+      <input name="cupo" type="number" min="1" value="${esc(s?.cupo ?? '')}" placeholder="Cupo" style="max-width:90px">
+      <input name="ubicacion" value="${esc(s?.ubicacion || '')}" placeholder="Link de ubicación">
+      <input name="horario" value="${esc(s?.horario || '')}" placeholder="Horario">
+      <input name="estacionamiento" value="${esc(s?.estacionamiento || '')}" placeholder="Estacionamiento (opcional)">
+      <button>${s ? 'Guardar' : '+ Agregar sede'}</button>
+    </form>
+    ${s ? `<form method="post" action="/admin/config/sede/eliminar" style="padding:0 14px 12px">
+      <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${s.id}">
+      <button class="btn-rojo" style="border:none;border-radius:11px;color:#fff;padding:8px 14px;font:inherit;font-size:13px" onclick="return confirm('¿Eliminar esta sede?')">Eliminar</button>
+    </form>` : ''}`;
+
+  const bloqueZona = (zona, nombreZona) => `
+    <div class="shdr">Sedes · ${nombreZona} <small>(precio S/ ${esc(c[`precio_${zona}`])} por jugador)</small></div>
+    <div class="group">
+      ${sedesPorZona[zona].map((s) => filaSede(zona, s)).join('') || '<p style="padding:14px;color:var(--faint);font-size:14px">Sin sedes todavía.</p>'}
+    </div>
+    <div class="group" style="margin-top:8px">${filaSede(zona, null)}</div>`;
+
+  return baseHtml('Config · Pichangueros', `
+    <div class="px">
+      <div class="ltitle"><div><div class="eyebrow">Ajustes</div><h2>Configuración</h2></div></div>
+
+      <div class="shdr">General <small>(no requiere redesplegar)</small></div>
+      <div class="group">
+        <form class="inline" method="post" action="/admin/config/general">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <label>Marca</label>
+          <input name="marca" value="${esc(c.marca)}">
+          <label>Yape — número</label>
+          <input name="yape_numero" value="${esc(c.yape_numero)}">
+          <label>Yape — titular</label>
+          <input name="yape_titular" value="${esc(c.yape_titular)}">
+          <label>Precio Breña (S/)</label>
+          <input name="precio_brena" type="number" value="${esc(c.precio_brena)}">
+          <label>Precio Comas (S/)</label>
+          <input name="precio_comas" type="number" value="${esc(c.precio_comas)}">
+          <label>Link grupo WhatsApp — Breña</label>
+          <input name="grouplink_brena" value="${esc(c.grouplink_brena)}" placeholder="https://chat.whatsapp.com/…">
+          <label>Link grupo WhatsApp — Comas</label>
+          <input name="grouplink_comas" value="${esc(c.grouplink_comas)}" placeholder="https://chat.whatsapp.com/…">
+          <label>Hora de llegada</label>
+          <input name="hora_llegada" value="${esc(c.hora_llegada)}">
+          <label>Emojis de la casa <small>(separados por coma)</small></label>
+          <input name="emojis" value="${esc(c.emojis)}">
+          <label>Política de pago</label>
+          <textarea name="pago">${esc(c.pago)}</textarea>
+          <label>Política de devoluciones</label>
+          <textarea name="devoluciones">${esc(c.devoluciones)}</textarea>
+          <label>Reglas de convivencia</label>
+          <textarea name="convivencia">${esc(c.convivencia)}</textarea>
+          <label>Mecánica para jugar <small>(el bot la manda tal cual)</small></label>
+          <textarea name="mecanica" style="min-height:110px">${esc(c.mecanica)}</textarea>
+          <label>Mensaje de bienvenida <small>(el bot lo manda tal cual)</small></label>
+          <textarea name="bienvenida" style="min-height:110px">${esc(c.bienvenida)}</textarea>
+          <button>Guardar cambios generales</button>
+        </form>
+      </div>
+
+      ${bloqueZona('brena', 'Breña')}
+      ${bloqueZona('comas', 'Comas')}
+
+      <div class="foot">⚽ Pichangueros · Config</div>
+    </div>
+  `, { refresh: false, activo: 'config', key });
+}
+
+module.exports = { registrarPanel, paginaResumen, paginaCRM, paginaFicha, paginaConfig };

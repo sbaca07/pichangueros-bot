@@ -10,7 +10,7 @@
  * como en la Semana 1 (solo registra, no responde).
  */
 const OpenAI = require('openai');
-const negocio = require('../config/negocio');
+const db = require('./db');
 
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
@@ -50,7 +50,7 @@ const RESPONSE_SCHEMA = {
   },
 };
 
-function describirZonas() {
+function describirZonas(negocio) {
   return Object.values(negocio.zonas)
     .map((z) => {
       const sedes = z.sedes
@@ -65,6 +65,7 @@ function describirZonas() {
 }
 
 function buildSystemPrompt(lead) {
+  const negocio = db.getNegocio(); // se lee fresco en cada mensaje: precios/sedes se editan sin redesplegar
   const faltantes = [];
   if (!lead.nombre) faltantes.push('nombres y apellidos');
   if (!lead.edad) faltantes.push('edad');
@@ -78,7 +79,7 @@ function buildSystemPrompt(lead) {
 - Trata al jugador de "pichanguero". Valores de la comunidad: ${negocio.reglas.convivencia}
 
 ## Datos del negocio (ÚNICA fuente de verdad — NUNCA inventes precios, horarios, sedes ni links)
-${describirZonas()}
+${describirZonas(negocio)}
 
 Pago: por Yape al ${negocio.yape.numero} (${negocio.yape.titular}). ${negocio.reglas.pago}
 Devoluciones: ${negocio.reglas.devoluciones}

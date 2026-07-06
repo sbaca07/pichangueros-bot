@@ -1,7 +1,11 @@
 /**
  * Datos del negocio — fuente: Brief de Clarck (Google Docs, 2026-06-10).
  *
- * TODO editar acá cuando cambien precios/sedes/horarios (NO tocar el cerebro).
+ * YA NO es la fuente en vivo: este archivo solo sirvió para sembrar la tabla
+ * `config`/`sedes` (src/db.js) la primera vez que corrió esta versión del bot.
+ * De ahí en adelante, precios/sedes/horarios/textos se editan en el panel
+ * admin (`/admin/leads?vista=config`), no acá. Se deja el archivo como
+ * referencia histórica del brief original.
  * Los precios suben en ~1 mes: Breña 15→18, Comas 10→13.
  *
  * PENDIENTE CONFIRMAR CON CLARCK (el brief llegó con la tabla corrupta):

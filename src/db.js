@@ -5,6 +5,12 @@
  * Tablas:
  *   leads     — un registro por contacto: datos del filtro + estado + handoff
  *   mensajes  — historial de conversación (para darle memoria al cerebro)
+ *   config    — datos del negocio (precios, textos, links) editables en
+ *               /admin/leads?vista=config, sin tocar código ni redesplegar
+ *   sedes     — canchas por zona (Breña/Comas), editables desde el mismo panel
+ *
+ * config/sedes se siembran UNA VEZ desde config/negocio.js si están vacías
+ * (primer deploy con esta versión); de ahí en adelante viven solo en la BD.
  */
 const fs = require('fs');
 const path = require('path');
@@ -15,7 +21,8 @@ const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || '.wwebjs_auth';
 const DATA_DIR = path.join(AUTH_PATH, 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new DatabaseSync(path.join(DATA_DIR, 'pichangueros.db'));
+const DB_PATH = path.join(DATA_DIR, 'pichangueros.db');
+const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL;');
 
 db.exec(`
@@ -48,7 +55,58 @@ db.exec(`
     texto TEXT NOT NULL,
     creado_en TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS config (
+    clave TEXT PRIMARY KEY,
+    valor TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS sedes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zona TEXT NOT NULL,              -- 'brena' | 'comas' (mismas zonas que clasifica el cerebro)
+    nombre TEXT NOT NULL,
+    cancha TEXT,
+    cupo INTEGER,
+    ubicacion TEXT,
+    horario TEXT,
+    estacionamiento TEXT,
+    orden INTEGER NOT NULL DEFAULT 0
+  );
 `);
+
+// Semilla única: si config/sedes están vacías, las llenamos con los valores
+// que hoy vive en config/negocio.js. Desde acá se editan en el panel admin
+// (vista=config), no hace falta tocar código ni redesplegar para un precio,
+// horario o sede nueva.
+if (db.prepare('SELECT COUNT(*) AS n FROM config').get().n === 0) {
+  const negocio = require('../config/negocio');
+  const stmtSetConfig = db.prepare('INSERT INTO config (clave, valor) VALUES (?, ?)');
+  const sembrar = (clave, valor) => stmtSetConfig.run(clave, valor ?? '');
+  sembrar('marca', negocio.marca);
+  sembrar('yape_numero', negocio.yape.numero);
+  sembrar('yape_titular', negocio.yape.titular);
+  sembrar('precio_brena', String(negocio.zonas.brena.precio));
+  sembrar('precio_comas', String(negocio.zonas.comas.precio));
+  sembrar('grouplink_brena', negocio.zonas.brena.groupLink || '');
+  sembrar('grouplink_comas', negocio.zonas.comas.groupLink || '');
+  sembrar('hora_llegada', negocio.reglas.horaLlegada);
+  sembrar('pago', negocio.reglas.pago);
+  sembrar('devoluciones', negocio.reglas.devoluciones);
+  sembrar('convivencia', negocio.reglas.convivencia);
+  sembrar('mecanica', negocio.mecanica);
+  sembrar('bienvenida', negocio.bienvenida);
+  sembrar('emojis', negocio.emojis.join(','));
+
+  const stmtSede = db.prepare(
+    'INSERT INTO sedes (zona, nombre, cancha, cupo, ubicacion, horario, estacionamiento, orden) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  );
+  for (const [zonaKey, zona] of Object.entries(negocio.zonas)) {
+    zona.sedes.forEach((s, i) => {
+      stmtSede.run(zonaKey, s.nombre, s.cancha || null, s.cupo ?? null, s.ubicacion || null, s.horario || null, s.estacionamiento || null, i);
+    });
+  }
+  console.log('[config] Tabla config/sedes sembrada desde config/negocio.js — de acá en adelante se edita en /admin/leads?vista=config.');
+}
 
 // Migración suave del CRM (2026-06-10): agrega columnas si la BD es anterior.
 const colsLeads = db.prepare('PRAGMA table_info(leads)').all().map((c) => c.name);
@@ -152,7 +210,83 @@ function stats() {
   };
 }
 
+/** Vuelca el WAL al archivo principal antes de servirlo como backup descargable. */
+function checkpoint() {
+  db.exec('PRAGMA wal_checkpoint(FULL);');
+}
+
+// --- Configuración del negocio (editable en /admin/leads?vista=config) --------
+const CAMPOS_CONFIG = [
+  'marca', 'yape_numero', 'yape_titular', 'precio_brena', 'precio_comas',
+  'grouplink_brena', 'grouplink_comas', 'hora_llegada', 'pago', 'devoluciones',
+  'convivencia', 'mecanica', 'bienvenida', 'emojis',
+];
+
+function getConfigMap() {
+  const mapa = {};
+  for (const r of db.prepare('SELECT clave, valor FROM config').all()) mapa[r.clave] = r.valor;
+  return mapa;
+}
+
+/** Guarda solo las claves conocidas (evita inyectar claves arbitrarias desde el form). */
+function setConfig(campos) {
+  const stmt = db.prepare(
+    'INSERT INTO config (clave, valor) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor'
+  );
+  for (const clave of CAMPOS_CONFIG) {
+    if (campos[clave] !== undefined) stmt.run(clave, campos[clave]);
+  }
+}
+
+function listSedes(zona) {
+  return zona
+    ? db.prepare('SELECT * FROM sedes WHERE zona = ? ORDER BY orden, id').all(zona)
+    : db.prepare('SELECT * FROM sedes ORDER BY zona, orden, id').all();
+}
+
+function addSede(campos) {
+  db.prepare(
+    'INSERT INTO sedes (zona, nombre, cancha, cupo, ubicacion, horario, estacionamiento, orden) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(campos.zona, campos.nombre, campos.cancha || null, campos.cupo || null, campos.ubicacion || null, campos.horario || null, campos.estacionamiento || null, campos.orden || 0);
+}
+
+function updateSede(id, campos) {
+  db.prepare('UPDATE sedes SET zona=?, nombre=?, cancha=?, cupo=?, ubicacion=?, horario=?, estacionamiento=? WHERE id=?')
+    .run(campos.zona, campos.nombre, campos.cancha || null, campos.cupo || null, campos.ubicacion || null, campos.horario || null, campos.estacionamiento || null, id);
+}
+
+function deleteSede(id) {
+  db.prepare('DELETE FROM sedes WHERE id = ?').run(id);
+}
+
+/** Arma el mismo shape que antes exportaba config/negocio.js, ahora desde la BD. */
+function getNegocio() {
+  const c = getConfigMap();
+  const sedesDe = (zona) => listSedes(zona).map((s) => ({
+    nombre: s.nombre, cancha: s.cancha, cupo: s.cupo, ubicacion: s.ubicacion, horario: s.horario, estacionamiento: s.estacionamiento,
+  }));
+  return {
+    marca: c.marca || 'Pichangueros',
+    yape: { numero: c.yape_numero || '', titular: c.yape_titular || '', tipo: 'personal' },
+    zonas: {
+      brena: { nombre: 'Breña', precio: Number(c.precio_brena) || 0, sedes: sedesDe('brena'), groupLink: c.grouplink_brena || null },
+      comas: { nombre: 'Comas', precio: Number(c.precio_comas) || 0, sedes: sedesDe('comas'), groupLink: c.grouplink_comas || null },
+    },
+    reglas: {
+      horaLlegada: c.hora_llegada || '',
+      pago: c.pago || '',
+      devoluciones: c.devoluciones || '',
+      convivencia: c.convivencia || '',
+    },
+    mecanica: c.mecanica || '',
+    bienvenida: c.bienvenida || '',
+    emojis: (c.emojis || '').split(',').map((e) => e.trim()).filter(Boolean),
+  };
+}
+
 module.exports = {
   getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
   setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles,
+  checkpoint, dbPath: DB_PATH,
+  getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
 };
