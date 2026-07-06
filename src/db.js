@@ -36,8 +36,8 @@ db.exec(`
     estado TEXT NOT NULL DEFAULT 'nuevo', -- nuevo | datos_completos | invitado_grupo | lista_espera
     handoff INTEGER NOT NULL DEFAULT 0,   -- 1 = lo atiende Clarck, bot en silencio
     handoff_motivo TEXT,
-    creado_en TEXT NOT NULL DEFAULT (datetime('now')),
-    actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+    creado_en TEXT NOT NULL DEFAULT (datetime('now', '-5 hours')),
+    actualizado_en TEXT NOT NULL DEFAULT (datetime('now', '-5 hours'))
   );
 
   CREATE TABLE IF NOT EXISTS mensajes (
@@ -45,7 +45,7 @@ db.exec(`
     numero TEXT NOT NULL,
     rol TEXT NOT NULL,                    -- 'user' | 'assistant'
     texto TEXT NOT NULL,
-    creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+    creado_en TEXT NOT NULL DEFAULT (datetime('now', '-5 hours'))
   );
   CREATE INDEX IF NOT EXISTS idx_mensajes_numero ON mensajes(numero, id);
 
@@ -53,7 +53,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     numero TEXT NOT NULL,
     texto TEXT NOT NULL,
-    creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+    creado_en TEXT NOT NULL DEFAULT (datetime('now', '-5 hours'))
   );
 
   CREATE TABLE IF NOT EXISTS config (
@@ -108,6 +108,22 @@ if (db.prepare('SELECT COUNT(*) AS n FROM config').get().n === 0) {
   console.log('[config] Tabla config/sedes sembrada desde config/negocio.js — de acá en adelante se edita en /admin/leads?vista=config.');
 }
 
+// Migración de huso horario (2026-07-06): creado_en/actualizado_en se guardaban
+// con datetime('now') de SQLite, que es UTC — pero el negocio opera en Lima
+// (UTC-5, sin horario de verano) y el panel los muestra tal cual, sin convertir.
+// Resultado: todo se veía 5 h adelantado (una conversación de las 9pm aparecía
+// como si fuera 2am). Se corrige lo ya guardado UNA sola vez (resta 5 h) y de
+// acá en adelante se guarda directo en hora de Lima (datetime('now','-5 hours')).
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'tz_migrado_2026_07'").get()) {
+  db.exec(`
+    UPDATE leads SET creado_en = datetime(creado_en, '-5 hours'), actualizado_en = datetime(actualizado_en, '-5 hours');
+    UPDATE mensajes SET creado_en = datetime(creado_en, '-5 hours');
+    UPDATE notas SET creado_en = datetime(creado_en, '-5 hours');
+  `);
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('tz_migrado_2026_07', '1')").run();
+  console.log('[tz] Timestamps existentes corregidos de UTC a hora de Lima (una sola vez).');
+}
+
 // Migración suave del CRM (2026-06-10): agrega columnas si la BD es anterior.
 const colsLeads = db.prepare('PRAGMA table_info(leads)').all().map((c) => c.name);
 if (!colsLeads.includes('etiquetas')) db.exec('ALTER TABLE leads ADD COLUMN etiquetas TEXT');
@@ -143,7 +159,7 @@ function updateLead(numero, campos) {
   }
   if (!sets.length) return;
   valores.push(numero);
-  db.prepare(`UPDATE leads SET ${sets.join(', ')}, actualizado_en = datetime('now') WHERE numero = ?`).run(...valores);
+  db.prepare(`UPDATE leads SET ${sets.join(', ')}, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?`).run(...valores);
 }
 
 function saveMessage(numero, rol, texto) {
@@ -160,7 +176,7 @@ function setHandoff(numero, motivo) {
 }
 
 function clearHandoff(numero) {
-  db.prepare("UPDATE leads SET handoff = 0, handoff_motivo = NULL, actualizado_en = datetime('now') WHERE numero = ?").run(numero);
+  db.prepare("UPDATE leads SET handoff = 0, handoff_motivo = NULL, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?").run(numero);
 }
 
 function listLeads() {
@@ -171,15 +187,15 @@ function listLeads() {
 
 // --- CRM ----------------------------------------------------------------------
 function setEstado(numero, estado) {
-  db.prepare("UPDATE leads SET estado = ?, actualizado_en = datetime('now') WHERE numero = ?").run(estado, numero);
+  db.prepare("UPDATE leads SET estado = ?, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?").run(estado, numero);
 }
 
 function setEtiquetas(numero, etiquetas) {
-  db.prepare("UPDATE leads SET etiquetas = ?, actualizado_en = datetime('now') WHERE numero = ?").run(etiquetas || null, numero);
+  db.prepare("UPDATE leads SET etiquetas = ?, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?").run(etiquetas || null, numero);
 }
 
 function setSeguimiento(numero, fecha, nota) {
-  db.prepare("UPDATE leads SET proxima_accion = ?, proxima_nota = ?, actualizado_en = datetime('now') WHERE numero = ?")
+  db.prepare("UPDATE leads SET proxima_accion = ?, proxima_nota = ?, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?")
     .run(fecha || null, nota || null, numero);
 }
 
