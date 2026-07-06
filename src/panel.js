@@ -112,6 +112,14 @@ function registrarPanel(app, db) {
     volverAFicha(req, res);
   });
 
+  // Borra un contacto completo (pruebas internas, spam) — no vuelve a la ficha
+  // (quedaría vacía) sino a la lista del CRM.
+  app.post('/admin/lead/eliminar', (req, res) => {
+    if (!autorizado(req, res)) return;
+    db.deleteLead((req.body.numero || '').replace(/\D/g, ''));
+    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=crm`);
+  });
+
   // --- Export CSV ----------------------------------------------------------------
   app.get('/admin/leads.csv', (req, res) => {
     if (!autorizado(req, res)) return;
@@ -738,6 +746,11 @@ function paginaFicha(db, key, numero) {
             <div class="notas-list">${notas.map((n) => `<p>${esc(n.texto)}<time>${esc((n.creado_en || '').slice(0, 16))}</time></p>`).join('') || '<p style="border:none;color:var(--faint)">Sin notas.</p>'}</div>
           </div>
         </div>
+
+        <form method="post" action="/admin/lead/eliminar" onsubmit="return confirm('¿Eliminar este contacto y todo su historial? No se puede deshacer.')">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
+          <button style="width:100%;background:none;border:1px dashed var(--red);color:var(--red);border-radius:11px;padding:10px;font:inherit;font-size:13px">🗑 Eliminar contacto (prueba/spam)</button>
+        </form>
 
         </div>
         <div class="fcol-right">

@@ -192,6 +192,14 @@ function clearHandoff(numero) {
   db.prepare("UPDATE leads SET handoff = 0, handoff_motivo = NULL, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?").run(numero);
 }
 
+/** Borra un contacto completo (leads, mensajes, notas, pagos) — ej. pruebas internas o spam. */
+function deleteLead(numero) {
+  db.prepare('DELETE FROM mensajes WHERE numero = ?').run(numero);
+  db.prepare('DELETE FROM notas WHERE numero = ?').run(numero);
+  db.prepare('DELETE FROM pagos WHERE numero = ?').run(numero);
+  db.prepare('DELETE FROM leads WHERE numero = ?').run(numero);
+}
+
 function listLeads() {
   return db
     .prepare('SELECT numero, nombre, edad, distrito, zona, estado, handoff, handoff_motivo, etiquetas, proxima_accion, proxima_nota, creado_en, actualizado_en FROM leads ORDER BY actualizado_en DESC')
@@ -336,7 +344,7 @@ function getNegocio() {
 
 module.exports = {
   getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
-  setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles,
+  setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead,
   checkpoint, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
