@@ -61,7 +61,7 @@ const fechaLima = (offsetDias = 0) => new Date(Date.now() - 5 * 3600e3 + offsetD
 const hoyLima = () => fechaLima(0);
 const horaCorta = (ts) => esc((ts || '').slice(5, 16)); // MM-DD HH:MM
 
-function registrarPanel(app, db) {
+function registrarPanel(app, db, conexion = null) {
   const express = require('express');
   app.use(express.urlencoded({ extended: false }));
 
@@ -190,6 +190,13 @@ function registrarPanel(app, db) {
     volverAConfig(req, res);
   });
 
+  // --- Conexión (WhatsApp): desconectar / cambiar de número --------------------
+  app.post('/admin/conexion/desconectar', async (req, res) => {
+    if (!autorizado(req, res)) return;
+    if (conexion) await conexion.desconectar();
+    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=conexion`);
+  });
+
   // --- Vistas ----------------------------------------------------------------------
   app.get('/admin/leads', (req, res) => {
     if (!autorizado(req, res)) return;
@@ -198,6 +205,7 @@ function registrarPanel(app, db) {
     if (numero) return res.send(paginaFicha(db, key, numero));
     if (req.query.vista === 'crm') return res.send(paginaCRM(db, key, req.query));
     if (req.query.vista === 'config') return res.send(paginaConfig(db, key));
+    if (req.query.vista === 'conexion') return res.send(paginaConexion(key, conexion));
     res.send(paginaResumen(db, key, req.query));
   });
 }
@@ -209,7 +217,7 @@ function baseHtml(titulo, cuerpo, { refresh = false, activo = '', key = '', tabb
   return `<!doctype html><html lang="es"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${esc(titulo)}</title>
-${refresh ? '<meta http-equiv="refresh" content="90">' : ''}
+${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ? refresh : 90}">` : ''}
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -423,12 +431,14 @@ const SVG = {
   iResumen: '<svg viewBox="0 0 24 24" fill="none"><path d="M4 13h6v7H4zM14 4h6v16h-6zM4 4h6v6H4z" fill="currentColor"/></svg>',
   iCrm: '<svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="3.4" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.6-3.2 3-5 5.5-5s4.9 1.8 5.5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16.5 7.5c1.7 0 3 1.3 3 3s-1.3 3-3 3M18 19c-.2-1.6-.8-3-2-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   iConfig: '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13.5a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V20a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.04-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.04H4a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.56-1.04 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H10a1.7 1.7 0 0 0 1.04-1.56V4a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V10a1.7 1.7 0 0 0 1.56 1.04H20a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.56 1.04Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+  iConexion: '<svg viewBox="0 0 24 24" fill="none"><path d="M9 15l6-6M10.5 6.5l.9-.9a4 4 0 0 1 5.66 5.66l-.9.9M13.5 17.5l-.9.9a4 4 0 0 1-5.66-5.66l.9-.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
 };
 
 const tabbar = (key, activo) => `<nav class="tabbar">
   <a class="tab ${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen}Resumen</a>
   <a class="tab ${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm}CRM</a>
   <a class="tab ${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig}Config</a>
+  <a class="tab ${activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=conexion">${SVG.iConexion}Conexión</a>
 </nav>`;
 
 const sidebar = (key, activo) => `<aside class="sidebar">
@@ -437,6 +447,7 @@ const sidebar = (key, activo) => `<aside class="sidebar">
     <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Resumen</a>
     <a class="${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm} CRM</a>
     <a class="${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig} Config</a>
+    <a class="${activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=conexion">${SVG.iConexion} Conexión</a>
   </nav>
   <div class="sbottom">
     ${sheetsync.activo() ? `<a class="scsv" href="/admin/sync-sheet?key=${key}">☁ Respaldar a Sheet</a>` : ''}
@@ -844,4 +855,63 @@ function paginaConfig(db, key) {
   `, { refresh: false, activo: 'config', key });
 }
 
-module.exports = { registrarPanel, paginaResumen, paginaCRM, paginaFicha, paginaConfig };
+// ==============================================================================
+//  Conexión — estado de WhatsApp, número enlazado, QR en vivo, desconectar
+// ==============================================================================
+function paginaConexion(key, conexion) {
+  const keyRaw = decodeURIComponent(key);
+  const estado = conexion ? conexion.estado() : 'desconocido';
+  const numero = conexion ? conexion.numero() : null;
+  const qr = conexion ? conexion.qr() : null;
+  const conectado = estado === 'ready';
+
+  // Refresco automático: rápido mientras se muestra el QR (cambia cada ~20s),
+  // lento cuando ya está conectado (solo para reflejar cambios de estado).
+  const refresh = conectado ? 30 : 6;
+
+  const cuerpo = conectado
+    ? `<div class="group" style="text-align:center;padding:26px 20px">
+         <div style="font-size:40px;line-height:1">✅</div>
+         <div style="font-size:19px;font-weight:800;margin-top:8px">Conectado a WhatsApp</div>
+         <div style="font-size:15px;color:var(--muted);margin-top:4px">Número enlazado</div>
+         <div style="font-size:26px;font-weight:800;font-family:'Barlow Condensed',sans-serif;letter-spacing:.02em;margin-top:2px">
+           ${numero ? `+${esc(numero)}` : 'no disponible'}</div>
+       </div>
+       <div class="shdr">Cambiar de número / desconectar</div>
+       <div class="group" style="padding:16px">
+         <p style="font-size:13.5px;color:var(--muted);line-height:1.45;margin-bottom:14px">
+           Al desconectar, el bot cierra la sesión actual y muestra un código QR nuevo acá mismo.
+           Para enlazar OTRO número, desconecta y escanea el nuevo QR desde ese WhatsApp
+           (Ajustes → Dispositivos vinculados → Vincular dispositivo). Mientras tanto el bot no
+           responde a nadie.</p>
+         <form method="post" action="/admin/conexion/desconectar"
+               onsubmit="return confirm('¿Desconectar el bot de WhatsApp? Dejará de responder hasta que escanees un QR nuevo.')">
+           <input type="hidden" name="key" value="${esc(keyRaw)}">
+           <button class="btn-rojo" style="width:100%;border:none;border-radius:12px;color:#fff;padding:13px;font:inherit;font-weight:700;font-size:14px">
+             🔌 Desconectar / cambiar número</button>
+         </form>
+       </div>`
+    : `<div class="banner px" style="margin:0 0 14px"><div class="bic">📴</div>
+         <div class="btxt"><b>El bot no está conectado.</b> ${estado === 'qr' || qr ? 'Escanea el código de abajo para enlazar un número.' : 'Reconectando… en unos segundos aparecerá el código QR.'}</div></div>
+       <div class="group" style="text-align:center;padding:22px 20px">
+         ${qr
+           ? `<img src="${qr}" alt="Código QR de WhatsApp" style="width:280px;max-width:82vw;height:auto;border-radius:12px"/>
+              <div style="font-size:13.5px;color:var(--muted);margin-top:12px;line-height:1.45">
+                Desde el WhatsApp que quieres enlazar:<br><b>Ajustes → Dispositivos vinculados → Vincular dispositivo</b><br>
+                y apunta la cámara a este código.</div>`
+           : `<div style="font-size:34px">⏳</div>
+              <div style="font-size:15px;color:var(--muted);margin-top:8px">Generando código QR… esta página se actualiza sola.</div>`}
+       </div>`;
+
+  return baseHtml('Conexión · Pichangueros', `
+    <div class="px">
+      <div class="ltitle"><div><div class="eyebrow">WhatsApp</div><h2>Conexión</h2></div>
+        <span class="live" style="${conectado ? '' : 'background:rgba(255,149,0,.14);color:var(--amber-d)'}">
+          <i style="${conectado ? '' : 'background:var(--amber)'}"></i> ${conectado ? 'En vivo' : esc(estado)}</span></div>
+      ${cuerpo}
+      <div class="foot">⚽ Pichangueros · Conexión${conexion ? '' : ' (no disponible)'}</div>
+    </div>
+  `, { refresh, activo: 'conexion', key });
+}
+
+module.exports = { registrarPanel, paginaResumen, paginaCRM, paginaFicha, paginaConfig, paginaConexion };

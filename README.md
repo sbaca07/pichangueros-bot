@@ -23,6 +23,8 @@ Bot de WhatsApp para Pichangueros (KIPI). Ruta **no oficial** (Baileys, sin nave
 
 Export de leads: **CSV** (plano, para pegar en cualquier lado) o **Excel** (`src/excel.js` — con colores e identidad de Pichangueros, zona coloreada, handoff resaltado, WhatsApp como link, autofiltro). Botones en el sidebar del panel y arriba del CRM.
 
+Conexión de WhatsApp: pestaña **Conexión** en el panel (`/admin/leads?vista=conexion`) — muestra el estado, el número al que está enlazado, y si no está conectado, el **QR en vivo** (se refresca solo) para (re)vincular. Botón **Desconectar / cambiar número** que cierra la sesión y genera un QR nuevo para enlazar otro número. El número enlazado también sale en el health endpoint (`GET /` → `linkedNumber`).
+
 ## Variables de entorno
 
 Ver `.env.example`. Las nuevas de la Semana 2: `OPENAI_API_KEY` (sin ella el cerebro queda apagado y el bot solo registra), `OPENAI_MODEL` (default `gpt-4o-mini`), `ALLOWED_TESTERS`, `NOTIFY_NUMBER`.

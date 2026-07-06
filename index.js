@@ -59,6 +59,8 @@ const NOTIFY_NUMBER = (process.env.NOTIFY_NUMBER || '').replace(/\D/g, '');
 
 let lastQrDataUrl = null;
 let connectionState = 'starting'; // starting | qr | ready | disconnected
+let linkedNumber = null; // número de WhatsApp al que está enlazado (se llena al conectar)
+let currentSock = null;  // socket activo de Baileys (para poder desconectar desde el panel)
 
 process.on('unhandledRejection', (r) => console.error('[unhandledRejection]', r));
 process.on('uncaughtException', (e) => console.error('[uncaughtException]', e && e.message ? e.message : e));
@@ -248,6 +250,7 @@ async function startBot() {
     browser: ['Pichangueros', 'Chrome', '1.0.0'],
     syncFullHistory: false, // no descargar todo el historial (más liviano)
   });
+  currentSock = sock;
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -265,7 +268,9 @@ async function startBot() {
     if (connection === 'open') {
       connectionState = 'ready';
       lastQrDataUrl = null;
-      console.log('[READY] ✅ Pichangueros Bot conectado a WhatsApp.');
+      // sock.user.id viene como "51915395067:XX@s.whatsapp.net" — nos quedamos con los dígitos del número.
+      linkedNumber = jidToNumero(sock.user?.id) || null;
+      console.log(`[READY] ✅ Pichangueros Bot conectado a WhatsApp${linkedNumber ? ` (número ${linkedNumber})` : ''}.`);
     }
 
     if (connection === 'close') {
@@ -276,8 +281,9 @@ async function startBot() {
       console.warn(`[CLOSE] Conexión cerrada (code=${code}, loggedOut=${loggedOut}).`);
 
       if (loggedOut) {
-        // Sesión cerrada desde el celular: limpiar y pedir QR nuevo.
+        // Sesión cerrada (desde el celular o desde el panel): limpiar y pedir QR nuevo.
         connectionState = 'disconnected';
+        linkedNumber = null;
         try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); } catch (_) {}
       } else {
         connectionState = 'starting';
@@ -307,14 +313,31 @@ app.get('/', (_req, res) => {
     service: 'pichangueros-bot',
     engine: 'baileys',
     state: connectionState,
+    linkedNumber, // número de WhatsApp enlazado (null si aún no conecta)
     safeMode: SAFE_MODE,
     brain: brain.cerebroActivo(),
     leads: db.stats(),
   });
 });
 
+// Controlador de conexión que el panel usa para su vista "Conexión":
+// leer estado/número/QR y poder desconectar (logout → limpia sesión → nuevo QR).
+const conexion = {
+  estado: () => connectionState,
+  numero: () => linkedNumber,
+  qr: () => lastQrDataUrl,
+  async desconectar() {
+    if (!currentSock) return false;
+    // logout() dispara connection.close con loggedOut=true → el handler de arriba
+    // borra la sesión y reconecta, generando un QR nuevo para (re)enlazar.
+    try { await currentSock.logout(); } catch (e) { console.error('[conexion] logout:', e.message); }
+    linkedNumber = null;
+    return true;
+  },
+};
+
 // Panel de control (src/panel.js): /admin/leads?key=ADMIN_KEY (+ CSV export)
-require('./src/panel').registrarPanel(app, db);
+require('./src/panel').registrarPanel(app, db, conexion);
 
 // Espejo a Google Sheet (backup + visibilidad): al arrancar + cada 6 h.
 sheet.programarSync(db);
