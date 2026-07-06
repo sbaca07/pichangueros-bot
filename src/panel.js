@@ -12,6 +12,8 @@
  *   GET  /admin/leads?vista=crm        → lista CRM (con filtros/búsqueda)
  *   GET  /admin/leads?numero=N         → ficha de contacto
  *   GET  /admin/leads.csv              → export CSV
+ *   GET  /admin/leads.xlsx             → export Excel (con marca, colores, autofiltro)
+ *   GET  /admin/backup-db              → descarga el .db completo (backup manual)
  *   POST /admin/lead/estado            → cambia etapa del pipeline (1 toque)
  *   POST /admin/lead/reactivar         → saca del handoff (el bot vuelve a atender)
  *   POST /admin/lead/etiquetas         → guarda etiquetas (separadas por coma)
@@ -19,6 +21,7 @@
  *   POST /admin/lead/nota              → agrega una nota al historial
  */
 const sheetsync = require('./sheetsync');
+const { buildLeadsWorkbook } = require('./excel');
 
 const esc = (v) =>
   String(v ?? '—').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -120,6 +123,15 @@ function registrarPanel(app, db) {
     res.set('Content-Type', 'text/csv; charset=utf-8');
     res.set('Content-Disposition', 'attachment; filename="pichangueros-leads.csv"');
     res.send(['numero,nombre,edad,distrito,zona,estado,handoff,handoff_motivo,etiquetas,proxima_accion,creado_en', ...filas].join('\n'));
+  });
+
+  // Export Excel — bonito y de marca (vs. el CSV plano), mismos datos.
+  app.get('/admin/leads.xlsx', async (req, res) => {
+    if (!autorizado(req, res)) return;
+    const buffer = await buildLeadsWorkbook(db);
+    res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.set('Content-Disposition', `attachment; filename="pichangueros-leads-${hoyLima()}.xlsx"`);
+    res.send(Buffer.from(buffer));
   });
 
   // Backup manual: descarga el .db completo (checkpoint del WAL primero para
@@ -421,6 +433,7 @@ const sidebar = (key, activo) => `<aside class="sidebar">
   <div class="sbottom">
     ${sheetsync.activo() ? `<a class="scsv" href="/admin/sync-sheet?key=${key}">☁ Respaldar a Sheet</a>` : ''}
     <a class="scsv" href="/admin/leads.csv?key=${key}">⬇ Exportar CSV</a>
+    <a class="scsv" href="/admin/leads.xlsx?key=${key}">📊 Exportar Excel</a>
     <a class="scsv" href="/admin/backup-db?key=${key}">💾 Descargar backup BD</a>
   </div>
 </aside>`;
@@ -585,7 +598,10 @@ function paginaCRM(db, key, query) {
 
   return baseHtml('Pichangueros — CRM', `
     <div class="ltitle"><div><div class="eyebrow">${todos.length} contactos</div><h2>CRM</h2></div>
-      <a class="csv" href="/admin/leads.csv?key=${key}">⬇ CSV</a></div>
+      <div style="display:flex;gap:8px">
+        <a class="csv" href="/admin/leads.csv?key=${key}">⬇ CSV</a>
+        <a class="csv" href="/admin/leads.xlsx?key=${key}">📊 Excel</a>
+      </div></div>
     <div class="px">
       <form class="search" method="get" action="/admin/leads">
         ${SVG.lupa}

@@ -20,6 +20,8 @@ Bot de WhatsApp para Pichangueros (KIPI). Ruta **no oficial** (Baileys, sin nave
 
 `config/negocio.js` ya NO se usa en producción — solo sirvió para sembrar la tabla `config`/`sedes` la primera vez que corrió esta versión. Los valores en vivo están en la BD; edítalos desde el panel.
 
+Export de leads: **CSV** (plano, para pegar en cualquier lado) o **Excel** (`src/excel.js` — con colores e identidad de Pichangueros, zona coloreada, handoff resaltado, WhatsApp como link, autofiltro). Botones en el sidebar del panel y arriba del CRM.
+
 ## Variables de entorno
 
 Ver `.env.example`. Las nuevas de la Semana 2: `OPENAI_API_KEY` (sin ella el cerebro queda apagado y el bot solo registra), `OPENAI_MODEL` (default `gpt-4o-mini`), `ALLOWED_TESTERS`, `NOTIFY_NUMBER`.
