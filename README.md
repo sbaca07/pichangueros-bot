@@ -2,13 +2,14 @@
 
 Bot de WhatsApp para Pichangueros (KIPI). Ruta **no oficial** (Baileys, sin navegador) como dispositivo vinculado, always-on en Render.
 
-## Estado: Semana 2 (el cerebro: IA + captura de leads)
+## Estado: Semana 4 (Yape + IA)
 
 - Se conecta a WhatsApp por QR (escaneado **una sola vez**, sesión persistida en disco). Página `/qr` para escanear desde el navegador. (Semana 1 ✅)
 - **Cerebro IA** (`src/brain.js`): responde con el tono de Clarck (del brief), contesta FAQs con datos reales y guía el filtro de nuevos (nombre, edad, distrito → grupo de su zona o lista de espera).
 - **Captura de leads** (`src/db.js`): SQLite en el disco persistente. Todo contacto queda registrado con sus datos y el historial de conversación — incluso si el bot no le responde.
 - **Handoff a Clarck**: quejas, pagos en efectivo y casos especiales → el bot se calla para ese contacto y avisa al número de control.
 - **MODO SEGURO** (`SAFE_MODE=true`): el cerebro solo atiende a `ALLOWED_TESTERS`; al resto lo registra en silencio. Cuando Clarck apruebe el guion → `SAFE_MODE=false`.
+- **Pagos por Yape** (`src/pagos.js`): si llega una imagen, se intenta leer como voucher (OpenAI visión) antes de pasarla al cerebro conversacional. Verifica el monto contra el precio de la zona y detecta reenvíos del mismo comprobante (anti-fraude); lo que no calza queda "por revisar" — visible en la ficha del contacto y en un banner del Resumen. Todavía no hay concepto de "partido/fecha" (eso es Semana 5): el pago se registra contra el contacto, no contra una convocatoria puntual.
 
 ## Dónde se edita qué
 

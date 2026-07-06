@@ -72,6 +72,19 @@ db.exec(`
     estacionamiento TEXT,
     orden INTEGER NOT NULL DEFAULT 0
   );
+
+  CREATE TABLE IF NOT EXISTS pagos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    numero TEXT NOT NULL,
+    monto REAL,
+    titular TEXT,                    -- nombre del remitente que lee la IA del voucher
+    numero_operacion TEXT,           -- para detectar reenvíos del mismo comprobante
+    estado TEXT NOT NULL DEFAULT 'confirmado', -- confirmado | revisar
+    motivo TEXT,                     -- por qué quedó en revisar (monto no coincide, repetido, ilegible)
+    creado_en TEXT NOT NULL DEFAULT (datetime('now', '-5 hours'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_pagos_numero ON pagos(numero);
+  CREATE INDEX IF NOT EXISTS idx_pagos_operacion ON pagos(numero_operacion);
 `);
 
 // Semilla única: si config/sedes están vacías, las llenamos con los valores
@@ -183,6 +196,27 @@ function listLeads() {
   return db
     .prepare('SELECT numero, nombre, edad, distrito, zona, estado, handoff, handoff_motivo, etiquetas, proxima_accion, proxima_nota, creado_en, actualizado_en FROM leads ORDER BY actualizado_en DESC')
     .all();
+}
+
+// --- Pagos (Yape + IA) ---------------------------------------------------------
+function registrarPago({ numero, monto, titular, numero_operacion, estado, motivo }) {
+  db.prepare(
+    'INSERT INTO pagos (numero, monto, titular, numero_operacion, estado, motivo) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(numero, monto ?? null, titular || null, numero_operacion || null, estado || 'confirmado', motivo || null);
+}
+
+/** Busca un pago YA CONFIRMADO con el mismo número de operación (anti-reenvío). */
+function buscarPagoConfirmado(numero_operacion) {
+  if (!numero_operacion) return null;
+  return db.prepare("SELECT * FROM pagos WHERE numero_operacion = ? AND estado = 'confirmado' LIMIT 1").get(numero_operacion);
+}
+
+function listPagos(numero) {
+  return db.prepare('SELECT * FROM pagos WHERE numero = ? ORDER BY id DESC').all(numero);
+}
+
+function pagosPorRevisar() {
+  return db.prepare("SELECT COUNT(*) AS n FROM pagos WHERE estado = 'revisar'").get().n;
 }
 
 // --- CRM ----------------------------------------------------------------------
@@ -304,5 +338,6 @@ module.exports = {
   getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
   setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles,
   checkpoint, dbPath: DB_PATH,
+  registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
 };

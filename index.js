@@ -1,14 +1,19 @@
 /**
- * Pichangueros Bot — Semana 2 (el cerebro: IA + captura de leads) · motor: Baileys
+ * Pichangueros Bot — Semana 4 (Yape + IA) · motor: Baileys
  *
  * Qué hace ahora:
  *   1. Conexión a WhatsApp por QR, sesión persistida, reconexión automática (Semana 1).
  *   2. Cerebro IA (src/brain.js): responde con el tono de Clarck, contesta FAQs
- *      con datos reales (config/negocio.js) y guía el filtro de jugadores nuevos.
+ *      con datos reales (editables en /admin/leads?vista=config) y guía el
+ *      filtro de jugadores nuevos.
  *   3. Captura de leads (src/db.js): todo contacto queda en SQLite con nombre,
  *      edad, distrito y zona — incluso si el bot no le responde (MODO SEGURO).
  *   4. Handoff: quejas y casos especiales → el bot se calla para ese contacto
  *      y avisa por WhatsApp al número de control (NOTIFY_NUMBER).
+ *   5. Pagos por Yape (src/pagos.js): si el mensaje trae una imagen, se intenta
+ *      leer como voucher (monto/titular/n° de operación) antes de pasar al
+ *      cerebro conversacional. Anti-reenvío + valida el monto contra el precio
+ *      de la zona del contacto; lo que no calza queda "por revisar" en el CRM.
  *
  * MODO SEGURO (SAFE_MODE=true): el bot solo RESPONDE a los números de
  * ALLOWED_TESTERS. Al resto los registra Y el cerebro les EXTRAE los datos
@@ -32,10 +37,12 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  downloadMediaMessage,
 } = require('@whiskeysockets/baileys');
 
 const db = require('./src/db');
 const brain = require('./src/brain');
+const pagos = require('./src/pagos');
 const sheet = require('./src/sheetsync');
 
 const PORT = process.env.PORT || 10000;
@@ -158,6 +165,28 @@ async function manejarMensaje(sock, msg) {
   // (nombre/edad/distrito/zona) y enriquecer el CRM, pero el bot no envía
   // nada al contacto ni avisa a Clarck. Los ALLOWED_TESTERS sí reciben todo.
   const modoSilencio = SAFE_MODE && !ALLOWED_TESTERS.includes(numero);
+
+  // Posible comprobante de Yape: se procesa aparte del cerebro conversacional
+  // (Semana 4). Si la imagen no es un voucher reconocible, sigue el flujo normal.
+  if (msg.message.imageMessage && pagos.cerebroActivo()) {
+    try {
+      const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage });
+      const resultado = await pagos.procesarVoucher(numero, lead.zona, buffer);
+      if (resultado) {
+        if (resultado.handoff) db.setHandoff(numero, resultado.motivoHandoff || 'Revisar comprobante de pago');
+        if (!modoSilencio) {
+          try { await sock.sendPresenceUpdate('composing', from); } catch (_) {}
+          await sleep(1000 + Math.random() * 1500);
+          await sock.sendMessage(from, { text: resultado.respuesta });
+          db.saveMessage(numero, 'assistant', resultado.respuesta);
+          if (resultado.handoff) await notificarControl(sock, `💸 Revisar pago de wa.me/${numero}: ${resultado.motivoHandoff}`);
+        } else {
+          console.log(`[SAFE_MODE] ${numero}: voucher procesado sin responder.`);
+        }
+        return; // no pasa al cerebro conversacional — ya se atendió como pago
+      }
+    } catch (e) { console.error('[pagos] Error procesando imagen:', e.message); }
+  }
 
   if (!brain.cerebroActivo()) {
     console.log(`[brain OFF] DM de ${numero} registrado (falta OPENAI_API_KEY): "${body}"`);

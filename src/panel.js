@@ -477,6 +477,7 @@ function paginaResumen(db, key, query = {}) {
   const colaResp = todos.filter(sinResp).length;
   const enHandoff = todos.filter((l) => l.handoff).length;
   const paraHoy = todos.filter((l) => l.proxima_accion && l.proxima_accion <= hoy).length;
+  const pagosRevisar = db.pagosPorRevisar();
 
   // Por zona (las clasificadas + las que faltan).
   const zc = { brena: 0, comas: 0, otra: 0 };
@@ -534,6 +535,7 @@ function paginaResumen(db, key, query = {}) {
       </div>
 
       ${paraHoy ? `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=hoy" style="margin-top:12px;text-decoration:none"><div class="bic">⏰</div><div class="btxt"><b>${paraHoy} seguimiento${paraHoy === 1 ? '' : 's'} para hoy.</b> Toca para verlos.</div></a>` : ''}
+      ${pagosRevisar ? `<div class="banner px" style="margin-top:12px"><div class="bic">💸</div><div class="btxt"><b>${pagosRevisar} pago${pagosRevisar === 1 ? '' : 's'} de Yape por revisar.</b> Monto no coincide, comprobante repetido o ilegible — entra a la ficha del contacto para verlo.</div></div>` : ''}
 
       <div class="foot">Se actualiza solo cada 90 s · <a href="/admin/leads.csv?key=${key}" style="color:var(--green-d)">⬇ exportar CSV</a></div>
     </div>
@@ -631,6 +633,7 @@ function paginaFicha(db, key, numero) {
   const lead = db.getOrCreateLead(numero);
   const msgs = db.getHistory(numero, 200);
   const notas = db.getNotas(numero);
+  const pagosLead = db.listPagos(numero);
   const roles = db.ultimosRoles();
   const keyRaw = decodeURIComponent(key);
   const sinResp = roles[numero] === 'user' && !lead.handoff;
@@ -709,6 +712,20 @@ function paginaFicha(db, key, numero) {
             <button>Guardar</button>
           </form></div>
         </div>
+
+        ${pagosLead.length ? `<div>
+          <div class="shdr">Pagos (Yape)</div>
+          <div class="group">
+            ${pagosLead.map((p) => `
+              <div class="grow" style="align-items:flex-start">
+                <span class="k">${p.monto != null ? `S/ ${esc(p.monto)}` : 'Monto ilegible'}${p.titular ? ` · ${esc(p.titular)}` : ''}<br>
+                  <small style="color:var(--faint)">${esc((p.creado_en || '').slice(0, 16))}${p.numero_operacion ? ` · op. ${esc(p.numero_operacion)}` : ''}</small>
+                  ${p.estado === 'revisar' && p.motivo ? `<br><small style="color:var(--red)">⚠ ${esc(p.motivo)}</small>` : ''}
+                </span>
+                <span class="v" style="color:${p.estado === 'confirmado' ? 'var(--green-d)' : 'var(--red)'}">${p.estado === 'confirmado' ? '✅ Confirmado' : '⚠ Revisar'}</span>
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
 
         <div>
           <div class="shdr">Notas</div>
