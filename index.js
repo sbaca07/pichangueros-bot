@@ -61,6 +61,7 @@ let lastQrDataUrl = null;
 let connectionState = 'starting'; // starting | qr | ready | disconnected
 let linkedNumber = null; // número de WhatsApp al que está enlazado (se llena al conectar)
 let currentSock = null;  // socket activo de Baileys (para poder desconectar desde el panel)
+let arrancando = false;  // candado: evita que se creen varios sockets en paralelo (corrompe la sesión → "Bad MAC")
 
 process.on('unhandledRejection', (r) => console.error('[unhandledRejection]', r));
 process.on('uncaughtException', (e) => console.error('[uncaughtException]', e && e.message ? e.message : e));
@@ -237,19 +238,52 @@ async function manejarMensaje(sock, msg) {
 }
 
 async function startBot() {
-  fs.mkdirSync(SESSION_DIR, { recursive: true });
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+  // Candado anti-sockets-duplicados: si ya hay un arranque en curso, no crear otro.
+  // Dos sockets compartiendo la misma sesión de disco corrompen el cifrado ("Bad MAC").
+  if (arrancando) { console.log('[reconnect] ya hay un arranque en curso, se ignora este.'); return; }
+  arrancando = true;
+
+  // Cerrar el socket anterior (si quedó vivo) antes de crear uno nuevo.
+  if (currentSock) {
+    try { currentSock.ev.removeAllListeners(); } catch (_) {}
+    try { currentSock.ws?.close(); } catch (_) {}
+    currentSock = null;
+  }
+
+  // Si el arranque falla antes de registrar los handlers, liberar el candado y reintentar
+  // (si no, 'arrancando' quedaría trabado en true y el bot no reconectaría nunca).
+  let state, saveCreds;
+  try {
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+    ({ state, saveCreds } = await useMultiFileAuthState(SESSION_DIR));
+  } catch (e) {
+    console.error('[startBot] Error inicializando sesión:', e.message);
+    arrancando = false;
+    setTimeout(startBot, 5000);
+    return;
+  }
 
   let version;
   try { ({ version } = await fetchLatestBaileysVersion()); } catch (_) { /* usa default */ }
 
-  const sock = makeWASocket({
-    version,
-    auth: state,
-    logger: pino({ level: 'silent' }),
-    browser: ['Pichangueros', 'Chrome', '1.0.0'],
-    syncFullHistory: false, // no descargar todo el historial (más liviano)
-  });
+  let sock;
+  try {
+    sock = makeWASocket({
+      version,
+      auth: state,
+      logger: pino({ level: 'silent' }),
+      browser: ['Pichangueros', 'Chrome', '1.0.0'],
+      syncFullHistory: false,       // no descargar todo el historial (más liviano)
+      markOnlineOnConnect: false,   // NO marcar la cuenta "en línea" (el bot es dispositivo secundario:
+                                    // así no le roba las notificaciones al celular ni genera tráfico extra)
+      keepAliveIntervalMs: 20000,   // ping cada 20s para mantener/detectar la conexión (evita timeouts 408)
+    });
+  } catch (e) {
+    console.error('[startBot] Error creando el socket:', e.message);
+    arrancando = false;
+    setTimeout(startBot, 5000);
+    return;
+  }
   currentSock = sock;
 
   sock.ev.on('creds.update', saveCreds);
@@ -268,6 +302,7 @@ async function startBot() {
     if (connection === 'open') {
       connectionState = 'ready';
       lastQrDataUrl = null;
+      arrancando = false; // arranque terminó OK; futuras reconexiones permitidas
       // sock.user.id viene como "51915395067:XX@s.whatsapp.net" — nos quedamos con los dígitos del número.
       linkedNumber = jidToNumero(sock.user?.id) || null;
       console.log(`[READY] ✅ Pichangueros Bot conectado a WhatsApp${linkedNumber ? ` (número ${linkedNumber})` : ''}.`);
@@ -279,6 +314,7 @@ async function startBot() {
         : undefined;
       const loggedOut = code === DisconnectReason.loggedOut;
       console.warn(`[CLOSE] Conexión cerrada (code=${code}, loggedOut=${loggedOut}).`);
+      arrancando = false; // este arranque terminó; permitir que el reconnect de abajo cree el próximo
 
       if (loggedOut) {
         // Sesión cerrada (desde el celular o desde el panel): limpiar y pedir QR nuevo.
@@ -288,7 +324,7 @@ async function startBot() {
       } else {
         connectionState = 'starting';
       }
-      setTimeout(startBot, 2000); // reconectar
+      setTimeout(startBot, 3000); // reconectar (el candado 'arrancando' evita duplicados)
     }
   });
 

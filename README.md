@@ -25,6 +25,8 @@ Export de leads: **CSV** (plano, para pegar en cualquier lado) o **Excel** (`src
 
 Conexión de WhatsApp: pestaña **Conexión** en el panel (`/admin/leads?vista=conexion`) — muestra el estado, el número al que está enlazado, y si no está conectado, el **QR en vivo** (se refresca solo) para (re)vincular. Botón **Desconectar / cambiar número** que cierra la sesión y genera un QR nuevo para enlazar otro número. El número enlazado también sale en el health endpoint (`GET /` → `linkedNumber`).
 
+Estabilidad de la conexión: `markOnlineOnConnect:false` (el bot es dispositivo secundario, no marca la cuenta "en línea" ni le roba notificaciones al celular), `keepAliveIntervalMs:20000` (ping para evitar timeouts 408), y un candado `arrancando` que impide que se creen dos sockets en paralelo — dos sockets sobre la misma sesión de disco corrompen el cifrado y producen errores **"Bad MAC"** (mensajes que no se pueden descifrar ni enviar). Nota: un brote corto de "Bad MAC" es esperable justo después de **re-enlazar a otro número** (los contactos tienen cacheadas las claves viejas del bot); se auto-resuelve en ~1-2 min.
+
 ## Variables de entorno
 
 Ver `.env.example`. Las nuevas de la Semana 2: `OPENAI_API_KEY` (sin ella el cerebro queda apagado y el bot solo registra), `OPENAI_MODEL` (default `gpt-4o-mini`), `ALLOWED_TESTERS`, `NOTIFY_NUMBER`.
