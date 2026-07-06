@@ -137,6 +137,27 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'tz_migrado_2026_07'").g
   console.log('[tz] Timestamps existentes corregidos de UTC a hora de Lima (una sola vez).');
 }
 
+// Migración de huso horario v2 (2026-07-06, mismo día): el fix de arriba puso
+// datetime('now','-5 hours') como DEFAULT de columna, pero CREATE TABLE IF NOT
+// EXISTS no toca tablas que ya existían en producción — el DEFAULT viejo (UTC)
+// se quedó pegado en el esquema real, así que todo insert nuevo entre el primer
+// deploy de este fix y este segundo (INSERT sin especificar creado_en) se
+// siguió guardando en UTC. Los INSERT de arriba ahora fijan la hora explícita
+// en la query (no dependen del DEFAULT), pero hay que corregir lo que ya quedó
+// mal: cualquier fila "en el futuro" respecto a la hora de Lima actual solo
+// pudo guardarse así por este bug — se le resta 5 h una sola vez.
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'tz_migrado_v2_2026_07'").get()) {
+  db.exec(`
+    UPDATE leads SET creado_en = datetime(creado_en, '-5 hours') WHERE creado_en > datetime('now', '-5 hours');
+    UPDATE leads SET actualizado_en = datetime(actualizado_en, '-5 hours') WHERE actualizado_en > datetime('now', '-5 hours');
+    UPDATE mensajes SET creado_en = datetime(creado_en, '-5 hours') WHERE creado_en > datetime('now', '-5 hours');
+    UPDATE notas SET creado_en = datetime(creado_en, '-5 hours') WHERE creado_en > datetime('now', '-5 hours');
+    UPDATE pagos SET creado_en = datetime(creado_en, '-5 hours') WHERE creado_en > datetime('now', '-5 hours');
+  `);
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('tz_migrado_v2_2026_07', '1')").run();
+  console.log('[tz-v2] Timestamps guardados en UTC por el bug del DEFAULT (tras el primer fix) corregidos a hora de Lima.');
+}
+
 // Migración suave del CRM (2026-06-10): agrega columnas si la BD es anterior.
 const colsLeads = db.prepare('PRAGMA table_info(leads)').all().map((c) => c.name);
 if (!colsLeads.includes('etiquetas')) db.exec('ALTER TABLE leads ADD COLUMN etiquetas TEXT');
@@ -144,8 +165,16 @@ if (!colsLeads.includes('proxima_accion')) db.exec('ALTER TABLE leads ADD COLUMN
 if (!colsLeads.includes('proxima_nota')) db.exec('ALTER TABLE leads ADD COLUMN proxima_nota TEXT');
 
 const stmtGetLead = db.prepare('SELECT * FROM leads WHERE numero = ?');
-const stmtNewLead = db.prepare('INSERT INTO leads (numero) VALUES (?)');
-const stmtSaveMsg = db.prepare('INSERT INTO mensajes (numero, rol, texto) VALUES (?, ?, ?)');
+// OJO: los DEFAULT de las columnas creado_en/actualizado_en quedaron fijados en
+// UTC en las tablas que ya existían en producción (CREATE TABLE IF NOT EXISTS
+// no actualiza tablas existentes) — por eso estos INSERT fijan la hora de Lima
+// explícita en la query en vez de depender del DEFAULT de la columna.
+const stmtNewLead = db.prepare(
+  "INSERT INTO leads (numero, creado_en, actualizado_en) VALUES (?, datetime('now', '-5 hours'), datetime('now', '-5 hours'))"
+);
+const stmtSaveMsg = db.prepare(
+  "INSERT INTO mensajes (numero, rol, texto, creado_en) VALUES (?, ?, ?, datetime('now', '-5 hours'))"
+);
 const stmtHistory = db.prepare(
   'SELECT rol, texto, creado_en FROM mensajes WHERE numero = ? ORDER BY id DESC LIMIT ?'
 );
@@ -209,7 +238,7 @@ function listLeads() {
 // --- Pagos (Yape + IA) ---------------------------------------------------------
 function registrarPago({ numero, monto, titular, numero_operacion, estado, motivo }) {
   db.prepare(
-    'INSERT INTO pagos (numero, monto, titular, numero_operacion, estado, motivo) VALUES (?, ?, ?, ?, ?, ?)'
+    "INSERT INTO pagos (numero, monto, titular, numero_operacion, estado, motivo, creado_en) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
   ).run(numero, monto ?? null, titular || null, numero_operacion || null, estado || 'confirmado', motivo || null);
 }
 
@@ -242,7 +271,7 @@ function setSeguimiento(numero, fecha, nota) {
 }
 
 function addNota(numero, texto) {
-  db.prepare('INSERT INTO notas (numero, texto) VALUES (?, ?)').run(numero, texto);
+  db.prepare("INSERT INTO notas (numero, texto, creado_en) VALUES (?, ?, datetime('now', '-5 hours'))").run(numero, texto);
 }
 
 function getNotas(numero) {
