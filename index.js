@@ -145,9 +145,19 @@ async function manejarMensaje(sock, msg) {
   if (!body) return;
   const numero = numeroDe(msg); // resuelve LID → número real cuando se puede
 
+  // A DÓNDE responder. Si el chat llega con LID anónimo (xxx@lid), WhatsApp
+  // muestra "escribiendo…" pero NO entrega el texto enviado a ese @lid → hay
+  // que responder al JID del número real (senderPn). Si no es LID, se responde
+  // al mismo chat de siempre.
+  const pnJid = msg.key.senderPn || msg.key.participantPn || null;
+  const destino = (from.endsWith('@lid') && pnJid) ? pnJid : from;
+  if (ALLOWED_TESTERS.includes(numero)) {
+    console.log(`[dbg tester] numero=${numero} remoteJid=${from} senderPn=${pnJid || '-'} → destino=${destino}`);
+  }
+
   // Comando de prueba (sigue vivo como chequeo rápido de conexión)
   if (body.toLowerCase() === TEST_TRIGGER) {
-    await sock.sendMessage(from, { text: '✅ Pichangueros Bot conectado y funcionando. (modo prueba)' });
+    await sock.sendMessage(destino, { text: '✅ Pichangueros Bot conectado y funcionando. (modo prueba)' });
     return;
   }
 
@@ -178,9 +188,9 @@ async function manejarMensaje(sock, msg) {
       if (resultado) {
         if (resultado.handoff) db.setHandoff(numero, resultado.motivoHandoff || 'Revisar comprobante de pago');
         if (!modoSilencio) {
-          try { await sock.sendPresenceUpdate('composing', from); } catch (_) {}
+          try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
           await sleep(1000 + Math.random() * 1500);
-          await sock.sendMessage(from, { text: resultado.respuesta });
+          await sock.sendMessage(destino, { text: resultado.respuesta });
           db.saveMessage(numero, 'assistant', resultado.respuesta);
           if (resultado.handoff) await notificarControl(sock, `💸 Revisar pago de wa.me/${numero}: ${resultado.motivoHandoff}`);
         } else {
@@ -228,9 +238,9 @@ async function manejarMensaje(sock, msg) {
 
   if (decision.reply && !modoSilencio) {
     // Naturalidad anti-spam: "escribiendo…" + pausa corta antes de responder.
-    try { await sock.sendPresenceUpdate('composing', from); } catch (_) {}
+    try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
     await sleep(1500 + Math.random() * 2000);
-    await sock.sendMessage(from, { text: decision.reply });
+    await sock.sendMessage(destino, { text: decision.reply });
     db.saveMessage(numero, 'assistant', decision.reply);
   } else if (modoSilencio) {
     console.log(`[SAFE_MODE] ${numero}: datos extraídos sin responder.`);
