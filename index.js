@@ -56,6 +56,10 @@ const ALLOWED_TESTERS = (process.env.ALLOWED_TESTERS || '')
   .split(',').map((n) => n.replace(/\D/g, '')).filter(Boolean);
 // Número de control: recibe avisos de leads/handoffs y puede usar comandos kipi.
 const NOTIFY_NUMBER = (process.env.NOTIFY_NUMBER || '').replace(/\D/g, '');
+// Fallback de vinculación SIN QR: si está seteado (solo dígitos, con código de
+// país) y la sesión aún no está registrada, se pide un código de 8 dígitos para
+// vincular desde WhatsApp > Dispositivos vinculados > "Vincular con número".
+const PAIR_NUMBER = (process.env.PAIR_NUMBER || '').replace(/\D/g, '');
 
 let lastQrDataUrl = null;
 let connectionState = 'starting'; // starting | qr | ready | disconnected
@@ -145,12 +149,13 @@ async function manejarMensaje(sock, msg) {
   if (!body) return;
   const numero = numeroDe(msg); // resuelve LID → número real cuando se puede
 
-  // A DÓNDE responder. Si el chat llega con LID anónimo (xxx@lid), WhatsApp
-  // muestra "escribiendo…" pero NO entrega el texto enviado a ese @lid → hay
-  // que responder al JID del número real (senderPn). Si no es LID, se responde
-  // al mismo chat de siempre.
+  // A DÓNDE responder: SIEMPRE al mismo JID por el que llegó el mensaje (from),
+  // sea un número normal o un LID anónimo (xxx@lid). Baileys >=6.7.10 mapea la
+  // sesión de cifrado del LID internamente. Reescribir el destino a mano
+  // (LID → número real vía senderPn) rompía la entrega: el mensaje se cifraba
+  // sin error pero nunca le llegaba al contacto.
   const pnJid = msg.key.senderPn || msg.key.participantPn || null;
-  const destino = (from.endsWith('@lid') && pnJid) ? pnJid : from;
+  const destino = from;
   if (ALLOWED_TESTERS.includes(numero)) {
     console.log(`[dbg tester] numero=${numero} remoteJid=${from} senderPn=${pnJid || '-'} → destino=${destino}`);
   }
@@ -241,6 +246,7 @@ async function manejarMensaje(sock, msg) {
     try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
     await sleep(1500 + Math.random() * 2000);
     await sock.sendMessage(destino, { text: decision.reply });
+    console.log(`[send] → ${destino} (${decision.reply.length} chars)`);
     db.saveMessage(numero, 'assistant', decision.reply);
   } else if (modoSilencio) {
     console.log(`[SAFE_MODE] ${numero}: datos extraídos sin responder.`);
@@ -298,6 +304,18 @@ async function startBot() {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // Vinculación por CÓDIGO (sin QR). Solo si PAIR_NUMBER está seteado y la sesión
+  // todavía no está registrada. Clarck escribe el código en su WhatsApp:
+  // Dispositivos vinculados → "Vincular con número de teléfono".
+  if (PAIR_NUMBER && !state.creds.registered) {
+    try {
+      await sleep(3000); // dar tiempo a que el socket abra el canal antes de pedirlo
+      const code = await sock.requestPairingCode(PAIR_NUMBER);
+      const bonito = code?.match(/.{1,4}/g)?.join('-') || code;
+      console.log(`[PAIR] Código de vinculación: ${bonito}  → WhatsApp > Dispositivos vinculados > Vincular con número`);
+    } catch (e) { console.error('[PAIR] No se pudo generar el código:', e.message); }
+  }
+
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -345,6 +363,16 @@ async function startBot() {
         if (!msg.message || msg.key.fromMe) continue;
         await manejarMensaje(sock, msg);
       } catch (e) { console.error('[message] Error:', e.message); }
+    }
+  });
+
+  // Recibos de ENTREGA de lo que enviamos: sirve para confirmar que el mensaje
+  // llegó de verdad (no basta con que sendMessage no tire error).
+  // status: 2=servidor recibió · 3=entregado al celular · 4=leído.
+  sock.ev.on('messages.update', (updates) => {
+    for (const u of updates) {
+      if (u.update?.status === undefined) continue;
+      console.log(`[ack] ${u.key?.remoteJid} status=${u.update.status} (2=servidor 3=entregado 4=leído)`);
     }
   });
 }
