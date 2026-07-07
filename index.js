@@ -162,7 +162,10 @@ async function manejarMensaje(sock, msg) {
 
   // Comando de prueba (sigue vivo como chequeo rápido de conexión)
   if (body.toLowerCase() === TEST_TRIGGER) {
-    await sock.sendMessage(destino, { text: '✅ Pichangueros Bot conectado y funcionando. (modo prueba)' });
+    try {
+      const sent = await sock.sendMessage(destino, { text: '✅ Pichangueros Bot conectado y funcionando. (modo prueba)' });
+      console.log(`[test-send] OK → ${destino} id=${sent?.key?.id}`);
+    } catch (e) { console.error(`[test-send] ERROR → ${destino}:`, e?.message); }
     return;
   }
 
@@ -245,8 +248,10 @@ async function manejarMensaje(sock, msg) {
     // Naturalidad anti-spam: "escribiendo…" + pausa corta antes de responder.
     try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
     await sleep(1500 + Math.random() * 2000);
-    await sock.sendMessage(destino, { text: decision.reply });
-    console.log(`[send] → ${destino} (${decision.reply.length} chars)`);
+    try {
+      const sent = await sock.sendMessage(destino, { text: decision.reply });
+      console.log(`[send] OK → ${destino} id=${sent?.key?.id} (${decision.reply.length} chars)`);
+    } catch (e) { console.error(`[send] ERROR → ${destino}:`, e?.message); }
     db.saveMessage(numero, 'assistant', decision.reply);
   } else if (modoSilencio) {
     console.log(`[SAFE_MODE] ${numero}: datos extraídos sin responder.`);
@@ -287,7 +292,7 @@ async function startBot() {
     sock = makeWASocket({
       version,
       auth: state,
-      logger: pino({ level: 'silent' }),
+      logger: pino({ level: process.env.BAILEYS_LOG_LEVEL || 'warn' }), // 'warn': ver errores de sesión/cifrado. Volver a 'silent' cuando esté estable.
       browser: ['Pichangueros', 'Chrome', '1.0.0'],
       syncFullHistory: false,       // no descargar todo el historial (más liviano)
       markOnlineOnConnect: false,   // NO marcar la cuenta "en línea" (el bot es dispositivo secundario:
