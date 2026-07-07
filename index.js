@@ -82,6 +82,26 @@ if ((process.env.RESET_SESSION || 'false') === 'true') {
   } catch (e) { console.error('[RESET] Error borrando sesión:', e.message); }
 }
 
+// Reset SOLO de las sesiones de cifrado por-contacto (RESET_SESSIONS_ONLY=true):
+// borra session-*/sender-key-* pero CONSERVA creds.json y app-state → el bot
+// sigue enlazado (SIN QR) y reconstruye sesiones limpias con cada contacto en
+// el próximo mensaje. Arregla corrupción tipo "Bad MAC" / "Key used already or
+// never filled" sin re-vincular. Quitar el flag tras el primer arranque OK.
+if ((process.env.RESET_SESSIONS_ONLY || 'false') === 'true') {
+  try {
+    if (fs.existsSync(SESSION_DIR)) {
+      let n = 0;
+      for (const f of fs.readdirSync(SESSION_DIR)) {
+        if (/^(session-|sender-key-)/.test(f)) {
+          fs.rmSync(path.join(SESSION_DIR, f), { force: true });
+          n++;
+        }
+      }
+      console.log(`[RESET] ${n} archivos de sesión borrados (RESET_SESSIONS_ONLY) — se mantiene el enlace; sesiones se reconstruyen solas.`);
+    }
+  } catch (e) { console.error('[RESET] Error borrando sesiones:', e.message); }
+}
+
 const jidToNumero = (jid) => (jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
