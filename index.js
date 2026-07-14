@@ -86,20 +86,40 @@ if ((process.env.RESET_SESSION || 'false') === 'true') {
 // borra session-*/sender-key-* pero CONSERVA creds.json y app-state → el bot
 // sigue enlazado (SIN QR) y reconstruye sesiones limpias con cada contacto en
 // el próximo mensaje. Arregla corrupción tipo "Bad MAC" / "Key used already or
-// never filled" sin re-vincular. Quitar el flag tras el primer arranque OK.
+// never filled" sin re-vincular. Es de UN SOLO disparo aunque el flag quede
+// puesto en Render: tras un borrado completo se escribe un marcador y los
+// siguientes arranques lo saltan (al quitar el flag se limpia el marcador,
+// así un futuro RESET_SESSIONS_ONLY=true vuelve a correr).
+const RESET_MARKER = path.join(SESSION_DIR, '.reset-sessions-done');
 if ((process.env.RESET_SESSIONS_ONLY || 'false') === 'true') {
   try {
-    if (fs.existsSync(SESSION_DIR)) {
-      let n = 0;
+    if (!fs.existsSync(SESSION_DIR)) {
+      console.warn(`[RESET] RESET_SESSIONS_ONLY=true pero ${SESSION_DIR} no existe — nada que borrar (¿WWEBJS_AUTH_PATH mal seteado o disco sin montar?).`);
+    } else if (fs.existsSync(RESET_MARKER)) {
+      console.log('[RESET] RESET_SESSIONS_ONLY sigue en true pero el borrado ya corrió (marcador presente) — no se repite. Quitar el flag en Render.');
+    } else {
+      let n = 0, fallas = 0;
       for (const f of fs.readdirSync(SESSION_DIR)) {
         if (/^(session-|sender-key-)/.test(f)) {
-          fs.rmSync(path.join(SESSION_DIR, f), { force: true });
-          n++;
+          try {
+            fs.rmSync(path.join(SESSION_DIR, f), { recursive: true, force: true });
+            n++;
+          } catch (e) {
+            fallas++;
+            console.error(`[RESET] No se pudo borrar ${f}:`, e.message);
+          }
         }
       }
-      console.log(`[RESET] ${n} archivos de sesión borrados (RESET_SESSIONS_ONLY) — se mantiene el enlace; sesiones se reconstruyen solas.`);
+      if (fallas === 0) {
+        fs.writeFileSync(RESET_MARKER, new Date().toISOString());
+        console.log(`[RESET] ${n} archivos de sesión borrados (RESET_SESSIONS_ONLY) — se mantiene el enlace; sesiones se reconstruyen solas.`);
+      } else {
+        console.error(`[RESET] Borrado INCOMPLETO: ${n} borrados, ${fallas} fallaron — NO se marca como hecho; se reintenta en el próximo arranque.`);
+      }
     }
   } catch (e) { console.error('[RESET] Error borrando sesiones:', e.message); }
+} else {
+  try { fs.rmSync(RESET_MARKER, { force: true }); } catch (_) {}
 }
 
 const jidToNumero = (jid) => (jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
