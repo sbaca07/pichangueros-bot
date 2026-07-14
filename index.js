@@ -453,6 +453,18 @@ const conexion = {
     linkedNumber = null;
     return true;
   },
+  // Envía un texto suelto (lo usa el panel: mensaje de prueba / aviso manual).
+  enviar: async (numero, texto) => {
+    if (!currentSock || connectionState !== 'ready') return { ok: false, error: 'bot no conectado' };
+    try {
+      const sent = await currentSock.sendMessage(`${numero}@s.whatsapp.net`, { text: texto });
+      console.log(`[send] OK → ${numero} id=${sent?.key?.id || '?'} (panel)`);
+      return { ok: true, id: sent?.key?.id || null };
+    } catch (e) {
+      console.error(`[send] ERROR → ${numero} (panel):`, e.message);
+      return { ok: false, error: e.message };
+    }
+  },
 };
 
 // Panel de control (src/panel.js): /admin/leads?key=ADMIN_KEY (+ CSV export)

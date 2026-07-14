@@ -191,6 +191,16 @@ function registrarPanel(app, db, conexion = null) {
   });
 
   // --- Conexión (WhatsApp): desconectar / cambiar de número --------------------
+  // Mensaje suelto desde el panel (prueba de conexión o aviso manual).
+  app.post('/admin/enviar', async (req, res) => {
+    if (!autorizado(req, res)) return;
+    const numero = (req.body.numero || '').replace(/\D/g, '');
+    const texto = (req.body.texto || '').trim().slice(0, 1000);
+    if (!numero || !texto) return res.status(400).json({ ok: false, error: 'faltan numero/texto' });
+    if (!conexion || !conexion.enviar) return res.status(500).json({ ok: false, error: 'conexión no disponible' });
+    res.json(await conexion.enviar(numero, texto));
+  });
+
   app.post('/admin/conexion/desconectar', async (req, res) => {
     if (!autorizado(req, res)) return;
     if (conexion) await conexion.desconectar();
@@ -509,6 +519,29 @@ function paginaResumen(db, key, query = {}) {
       <span class="ztrack"><i style="width:${Math.max(3, Math.round((n / maxZ) * 100))}%;background:${color}"></i></span>
       <span class="zval">${n}</span></div>`;
 
+  // Demanda por distrito (zona 'otra' = lista de espera): ¿dónde conviene abrir?
+  // Agrupa el distrito de texto libre normalizado (minúsculas, sin tildes).
+  const UMBRAL_PILOTO = 28; // ~2 pichangas llenas (14 c/u) → distrito candidato a piloto
+  const desde30 = fechaLima(-29);
+  const dd = {};
+  for (const l of todos) {
+    if (l.zona !== 'otra' || !(l.distrito || '').trim()) continue;
+    const k = l.distrito.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    if (!dd[k]) dd[k] = { nombre: l.distrito.trim().toLowerCase().replace(/(^|\s)\p{L}/gu, (c) => c.toUpperCase()), n: 0, mes: 0 };
+    dd[k].n++;
+    if ((l.creado_en || '').slice(0, 10) >= desde30) dd[k].mes++;
+  }
+  const distritos = Object.values(dd).sort((a, b) => b.n - a.n).slice(0, 8);
+  const maxD = Math.max(1, ...distritos.map((d) => d.n));
+  const drow = (d) => {
+    const listo = d.n >= UMBRAL_PILOTO;
+    const color = listo ? '#34c759' : '#64748b';
+    return `<div class="zrow"><span class="zdot" style="background:${color}"></span>
+      <span class="zname">${esc(d.nombre)}${listo ? ' 🔥' : ''}</span>
+      <span class="ztrack"><i style="width:${Math.max(3, Math.round((d.n / maxD) * 100))}%;background:${color}"></i></span>
+      <span class="zval">${d.n}${d.mes ? ` <small style="color:var(--faint);font-weight:400">+${d.mes} este mes</small>` : ''}</span></div>`;
+  };
+
   const barras = dias.map((x) => {
     const h = x.n ? Math.max(8, Math.round((x.n / maxN) * 100)) : 0;
     const hot = x.n >= maxN * 0.75 && x.n > 0;
@@ -552,6 +585,11 @@ function paginaResumen(db, key, query = {}) {
         ${zc.otra ? zrow('Otras zonas', zc.otra, ZONAS.otra.color) : ''}
         ${sinClasificar ? zrow('Por clasificar', sinClasificar, 'var(--faint)') : ''}
       </div>
+
+      ${distritos.length ? `
+      <div class="shdr">¿Dónde abrir? · demanda por distrito</div>
+      <div class="zlist">${distritos.map(drow).join('')}</div>
+      <div class="foot" style="padding:8px 2px 0">Referencia: ${UMBRAL_PILOTO}+ interesados ≈ 2 pichangas llenas → 🔥 candidato a piloto.</div>` : ''}
 
       ${paraHoy ? `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=hoy" style="margin-top:12px;text-decoration:none"><div class="bic">⏰</div><div class="btxt"><b>${paraHoy} seguimiento${paraHoy === 1 ? '' : 's'} para hoy.</b> Toca para verlos.</div></a>` : ''}
       ${pagosRevisar ? `<div class="banner px" style="margin-top:12px"><div class="bic">💸</div><div class="btxt"><b>${pagosRevisar} pago${pagosRevisar === 1 ? '' : 's'} de Yape por revisar.</b> Monto no coincide, comprobante repetido o ilegible — entra a la ficha del contacto para verlo.</div></div>` : ''}
