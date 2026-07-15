@@ -523,10 +523,15 @@ function paginaResumen(db, key, query = {}) {
   for (const l of todos) if (ZONAS[l.zona]) { zc[l.zona] = (zc[l.zona] || 0) + 1; clasificadas++; }
   const sinClasificar = todos.length - clasificadas;
   const maxZ = Math.max(1, zc.brena, zc.comas, zc.otra, sinClasificar);
-  const zrow = (nombre, n, color) =>
-    `<div class="zrow"><span class="zdot" style="background:${color}"></span><span class="zname">${nombre}</span>
+  // Cada fila es un link al CRM ya filtrado (todo el Resumen es navegable).
+  const zrow = (nombre, n, color, filtroUrl) => {
+    const inner = `<span class="zdot" style="background:${color}"></span><span class="zname">${nombre}</span>
       <span class="ztrack"><i style="width:${Math.max(3, Math.round((n / maxZ) * 100))}%;background:${color}"></i></span>
-      <span class="zval">${n}</span></div>`;
+      <span class="zval">${n}</span>`;
+    return filtroUrl
+      ? `<a class="zrow" href="/admin/leads?key=${key}&vista=crm${filtroUrl}">${inner}</a>`
+      : `<div class="zrow">${inner}</div>`;
+  };
 
   // Demanda por distrito (zona 'otra' = lista de espera): ¿dónde conviene abrir?
   // Agrupa el distrito de texto libre normalizado (minúsculas, sin tildes).
@@ -535,8 +540,8 @@ function paginaResumen(db, key, query = {}) {
   const dd = {};
   for (const l of todos) {
     if (l.zona !== 'otra' || !(l.distrito || '').trim()) continue;
-    const k = l.distrito.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    if (!dd[k]) dd[k] = { nombre: l.distrito.trim().toLowerCase().replace(/(^|\s)\p{L}/gu, (c) => c.toUpperCase()), n: 0, mes: 0 };
+    const k = normTexto(l.distrito);
+    if (!dd[k]) dd[k] = { k, nombre: l.distrito.trim().toLowerCase().replace(/(^|\s)\p{L}/gu, (c) => c.toUpperCase()), n: 0, mes: 0 };
     dd[k].n++;
     if ((l.creado_en || '').slice(0, 10) >= desde30) dd[k].mes++;
   }
@@ -545,10 +550,10 @@ function paginaResumen(db, key, query = {}) {
   const drow = (d) => {
     const listo = d.n >= UMBRAL_PILOTO;
     const color = listo ? '#34c759' : '#64748b';
-    return `<div class="zrow"><span class="zdot" style="background:${color}"></span>
+    return `<a class="zrow" href="/admin/leads?key=${key}&vista=crm&distrito=${encodeURIComponent(d.k)}"><span class="zdot" style="background:${color}"></span>
       <span class="zname">${esc(d.nombre)}${listo ? ' 🔥' : ''}</span>
       <span class="ztrack"><i style="width:${Math.max(3, Math.round((d.n / maxD) * 100))}%;background:${color}"></i></span>
-      <span class="zval">${d.n}${d.mes ? ` <small style="color:var(--faint);font-weight:400">+${d.mes} este mes</small>` : ''}</span></div>`;
+      <span class="zval">${d.n}${d.mes ? ` <small style="color:var(--faint);font-weight:400">+${d.mes} este mes</small>` : ''}</span></a>`;
   };
 
   // Cada barra es un link: toca un día → CRM filtrado a los contactos de ese día.
@@ -619,12 +624,12 @@ function paginaResumen(db, key, query = {}) {
       </div>
       <div class="foot" style="padding:8px 2px 0">"Escribieron" cuenta a <b>todos</b> los que chatean al número (también conocidos y jugadores antiguos), no solo interesados nuevos.</div>
 
-      <div class="shdr">Por zona</div>
+      <div class="shdr">Por zona <small>· toca para ver quiénes son</small></div>
       <div class="zlist">
-        ${zrow('Breña', zc.brena, ZONAS.brena.color)}
-        ${zrow('Comas', zc.comas, ZONAS.comas.color)}
-        ${zc.otra ? zrow('Otras zonas', zc.otra, ZONAS.otra.color) : ''}
-        ${sinClasificar ? zrow('Por clasificar', sinClasificar, 'var(--faint)') : ''}
+        ${zrow('Breña', zc.brena, ZONAS.brena.color, '&zona=brena')}
+        ${zrow('Comas', zc.comas, ZONAS.comas.color, '&zona=comas')}
+        ${zc.otra ? zrow('Otras zonas', zc.otra, ZONAS.otra.color, '&zona=otra') : ''}
+        ${sinClasificar ? zrow('Por clasificar', sinClasificar, 'var(--faint)', null) : ''}
       </div>
 
       ${distritos.length ? `
@@ -666,17 +671,23 @@ function paginaPagos(db, key, query = {}) {
   const fMedio = MEDIOS[query.medio] ? query.medio : '';
   const fPeriodo = ['hoy', '7d', '30d'].includes(query.periodo) ? query.periodo : '';
   const fDia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
-  let pagos = todosPagos;
-  if (fEstado) pagos = pagos.filter((p) => (fEstado === 'conf' ? p.estado === 'confirmado' : p.estado === 'revisar'));
-  if (fMedio) pagos = pagos.filter((p) => (p.medio || 'yape') === fMedio);
+
+  // "Alcance": medio + período/día (sin el filtro de estado). Las tarjetas de
+  // arriba se calculan sobre el alcance — estilo Power BI: tocas un filtro y
+  // TODO (tarjetas y listas) se recalcula sobre ese corte.
+  let alcance = todosPagos;
+  if (fMedio) alcance = alcance.filter((p) => (p.medio || 'yape') === fMedio);
   if (fDia) {
     // Un día puntual se revisa contra la app de Yape: orden cronológico (como Yape).
-    pagos = pagos.filter((p) => (p.creado_en || '').slice(0, 10) === fDia)
+    alcance = alcance.filter((p) => (p.creado_en || '').slice(0, 10) === fDia)
       .sort((a, b) => (a.creado_en || '').localeCompare(b.creado_en || '') || a.id - b.id);
   } else if (fPeriodo) {
     const desde = fPeriodo === 'hoy' ? hoy : fechaLima(fPeriodo === '7d' ? -6 : -29);
-    pagos = pagos.filter((p) => (p.creado_en || '').slice(0, 10) >= desde);
+    alcance = alcance.filter((p) => (p.creado_en || '').slice(0, 10) >= desde);
   }
+  const pagos = fEstado
+    ? alcance.filter((p) => (fEstado === 'conf' ? p.estado === 'confirmado' : p.estado === 'revisar'))
+    : alcance;
   const hayFiltro = Boolean(fEstado || fMedio || fPeriodo || fDia);
 
   const qs = (over) => {
@@ -691,9 +702,11 @@ function paginaPagos(db, key, query = {}) {
 
   const conf = pagos.filter((p) => p.estado === 'confirmado');
   const rev = pagos.filter((p) => p.estado === 'revisar');
-  const totalConf = todosPagos.filter((p) => p.estado === 'confirmado').reduce((a, p) => a + (p.monto || 0), 0);
-  const totalMes = todosPagos.filter((p) => p.estado === 'confirmado' && (p.creado_en || '').slice(0, 7) === mes).reduce((a, p) => a + (p.monto || 0), 0);
-  const totalFiltro = conf.reduce((a, p) => a + (p.monto || 0), 0);
+  // Tarjetas: siempre sobre el ALCANCE (reaccionan a medio/período/día).
+  const confAlcance = alcance.filter((p) => p.estado === 'confirmado');
+  const revAlcance = alcance.filter((p) => p.estado === 'revisar');
+  const totalAlcance = confAlcance.reduce((a, p) => a + (p.monto || 0), 0);
+  const cuposAlcance = confAlcance.reduce((a, p) => a + (p.cupos || 1), 0);
 
   const fila = (p) => {
     const m = MEDIOS[p.medio] || MEDIOS.otro;
@@ -726,10 +739,10 @@ function paginaPagos(db, key, query = {}) {
     </div>
     <div class="px">
       <div class="grid2">
-        <div class="stat green"><div class="sn">${soles(totalConf)}</div><div class="sl">Cobrado (confirmado)</div></div>
-        <div class="stat navy"><div class="sn">${soles(totalMes)}</div><div class="sl">Este mes</div></div>
-        <div class="stat"><div class="sn">${todosPagos.filter((p) => p.estado === 'confirmado').length}</div><div class="sl">Pagos confirmados</div></div>
-        <div class="stat ${todosPagos.some((p) => p.estado === 'revisar') ? 'amber' : ''}"><div class="sn">${todosPagos.filter((p) => p.estado === 'revisar').length}</div><div class="sl">Por revisar</div></div>
+        <div class="stat green"><div class="sn">${soles(totalAlcance)}</div><div class="sl">Cobrado${hayFiltro ? ' (filtro)' : ' (confirmado)'}</div></div>
+        <div class="stat navy"><div class="sn">${cuposAlcance}</div><div class="sl">Cupos pagados</div></div>
+        <a class="stat" href="/admin/leads?key=${key}&vista=pagos${qs({ estado: fEstado === 'conf' ? '' : 'conf' })}"><div class="sn">${confAlcance.length}</div><div class="sl">Pagos confirmados</div></a>
+        <a class="stat ${revAlcance.length ? 'amber' : ''}" href="/admin/leads?key=${key}&vista=pagos${qs({ estado: fEstado === 'rev' ? '' : 'rev' })}"><div class="sn">${revAlcance.length}</div><div class="sl">Por revisar</div></a>
       </div>
 
       <div class="chips">
@@ -754,8 +767,6 @@ function paginaPagos(db, key, query = {}) {
         <input type="date" name="dia" value="${fDia}" max="${hoy}">
         <button>Ver día</button>
       </form>
-      ${hayFiltro ? `<div class="shdr" style="padding-top:10px">Filtro activo <small>· ${pagos.length} pago${pagos.length === 1 ? '' : 's'} · ${soles(totalFiltro)} confirmados</small></div>` : ''}
-
       ${rev.length ? `
       <div class="shdr">Por revisar <small>· monto no coincide, comprobante repetido o ilegible — toca para ir a la ficha</small></div>
       <div class="llist">${rev.map(fila).join('')}</div>` : ''}

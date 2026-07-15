@@ -413,6 +413,36 @@ function getNegocio() {
   };
 }
 
+// Migración multi-cupo (2026-07-15, una sola vez): los pagos que quedaron
+// "revisar" por "monto no coincide" pero que son MÚLTIPLO exacto del precio
+// de su zona eran gente pagando varios cupos (amigos / ambos turnos), no un
+// error. Se re-confirman con sus cupos y, si el contacto quedó en handoff
+// SOLO por esa falsa alarma, se libera para que el bot vuelva a atenderlo.
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'multicupo_migrado_2026_07'").get()) {
+  const neg = getNegocio();
+  const precios = { brena: neg.zonas.brena.precio, comas: neg.zonas.comas.precio };
+  const filas = db.prepare(
+    "SELECT p.id, p.numero, p.monto, l.zona FROM pagos p JOIN leads l ON l.numero = p.numero WHERE p.estado = 'revisar' AND p.motivo LIKE 'Monto S/%'"
+  ).all();
+  let n = 0, liberados = 0;
+  for (const f of filas) {
+    const precio = precios[f.zona];
+    if (!precio || !f.monto) continue;
+    const c = Math.round(f.monto / precio);
+    if (c >= 1 && c <= 10 && Math.abs(f.monto - c * precio) <= 0.5) {
+      db.prepare("UPDATE pagos SET estado = 'confirmado', cupos = ?, motivo = NULL WHERE id = ?").run(c, f.id);
+      n++;
+      const lead = stmtGetLead.get(f.numero);
+      if (lead && lead.handoff && /^Monto Yape no (coincide|calza)/.test(lead.handoff_motivo || '')) {
+        db.prepare("UPDATE leads SET handoff = 0, handoff_motivo = NULL WHERE numero = ?").run(f.numero);
+        liberados++;
+      }
+    }
+  }
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('multicupo_migrado_2026_07', '1')").run();
+  if (n) console.log(`[multicupo] ${n} pagos "no coincide" re-confirmados como multi-cupo · ${liberados} contactos liberados del handoff.`);
+}
+
 module.exports = {
   getLead, getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
   setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead,
