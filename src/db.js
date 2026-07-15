@@ -179,6 +179,11 @@ const stmtHistory = db.prepare(
   'SELECT rol, texto, creado_en FROM mensajes WHERE numero = ? ORDER BY id DESC LIMIT ?'
 );
 
+/** Devuelve el lead si existe, sin crearlo (null si no existe). */
+function getLead(numero) {
+  return stmtGetLead.get(numero) || null;
+}
+
 function getOrCreateLead(numero) {
   let lead = stmtGetLead.get(numero);
   if (!lead) {
@@ -377,7 +382,7 @@ function getNegocio() {
 }
 
 module.exports = {
-  getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
+  getLead, getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
   setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead,
   checkpoint, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores,

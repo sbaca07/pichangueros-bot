@@ -122,41 +122,31 @@ if ((process.env.RESET_SESSIONS_ONLY || 'false') === 'true') {
   try { fs.rmSync(RESET_MARKER, { force: true }); } catch (_) {}
 }
 
-const jidToNumero = (jid) => (jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+const { desenvolver, extraerTexto, jidToNumero, numeroDe } = require('./src/mensajes');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Número real del remitente. WhatsApp a veces manda el chat con un LID
- * (ID anónimo, ej. 201382560821305@lid) en vez del número: en ese caso el
- * número real viene en key.senderPn. Si no viene, usamos los dígitos del LID
- * (peor que nada: identifica al contacto de forma estable igual).
- */
-function numeroDe(msg) {
-  const jid = msg.key.remoteJid || '';
-  if (jid.endsWith('@lid')) {
-    const pn = msg.key.senderPn || msg.key.participantPn || '';
-    if (pn) return jidToNumero(pn);
+// Ids de mensajes que ENVIÓ este bot: sirven para distinguir sus mensajes de
+// los que Clarck escribe a mano desde el celular (ambos llegan como fromMe).
+const idsEnviadosPorBot = new Set();
+function marcarEnviado(id) {
+  if (!id) return;
+  idsEnviadosPorBot.add(id);
+  if (idsEnviadosPorBot.size > 800) {
+    for (const viejo of idsEnviadosPorBot) { idsEnviadosPorBot.delete(viejo); if (idsEnviadosPorBot.size <= 400) break; }
   }
-  return jidToNumero(jid);
 }
 
-/** Saca el texto útil del mensaje; los adjuntos se vuelven un marcador para el cerebro. */
-function extraerTexto(msg) {
-  const m = msg.message;
-  if (!m) return '';
-  const texto = m.conversation || m.extendedTextMessage?.text || m.imageMessage?.caption || m.videoMessage?.caption;
-  if (texto) return texto.trim();
-  if (m.imageMessage) return '[el jugador envió una imagen]';
-  if (m.audioMessage) return '[el jugador envió un audio]';
-  if (m.stickerMessage) return '[el jugador envió un sticker]';
-  if (m.documentMessage) return '[el jugador envió un documento]';
-  return '';
+/** Único punto de salida de texto: envía y marca el id como "del bot". */
+async function enviarTexto(sock, jid, texto) {
+  const sent = await sock.sendMessage(jid, { text: texto });
+  marcarEnviado(sent?.key?.id);
+  return sent;
 }
 
 async function notificarControl(sock, texto) {
   if (!NOTIFY_NUMBER) return;
   try {
-    await sock.sendMessage(`${NOTIFY_NUMBER}@s.whatsapp.net`, { text: texto });
+    await enviarTexto(sock, `${NOTIFY_NUMBER}@s.whatsapp.net`, texto);
   } catch (e) { console.error('[notify] No se pudo avisar al número de control:', e.message); }
 }
 
@@ -166,19 +156,54 @@ async function comandoControl(sock, from, body) {
   if (texto === 'kipi estado') {
     const s = db.stats();
     const zonas = s.porZona.map((z) => `${z.zona}: ${z.n}`).join(', ') || 'sin clasificar aún';
-    await sock.sendMessage(from, {
-      text: `📊 Pichangueros Bot\nConexión: ${connectionState} · Modo seguro: ${SAFE_MODE ? 'ON' : 'OFF'} · Cerebro: ${brain.cerebroActivo() ? 'ON' : 'OFF (falta OPENAI_API_KEY)'}\nLeads: ${s.leads} (${s.completos} con datos) · Por zona: ${zonas}\nEn handoff: ${s.enHandoff}`,
-    });
+    await enviarTexto(sock, from,
+      `📊 Pichangueros Bot\nConexión: ${connectionState} · Modo seguro: ${SAFE_MODE ? 'ON' : 'OFF'} · Cerebro: ${brain.cerebroActivo() ? 'ON' : 'OFF (falta OPENAI_API_KEY)'}\nLeads: ${s.leads} (${s.completos} con datos) · Por zona: ${zonas}\nEn handoff: ${s.enHandoff}`);
     return true;
   }
   const reactivar = texto.match(/^kipi reactivar (\+?[\d\s-]+)$/);
   if (reactivar) {
     const numero = reactivar[1].replace(/\D/g, '');
     db.clearHandoff(numero);
-    await sock.sendMessage(from, { text: `✅ Listo: el bot vuelve a atender al ${numero}.` });
+    await enviarTexto(sock, from, `✅ Listo: el bot vuelve a atender al ${numero}.`);
     return true;
   }
   return false;
+}
+
+const avisosHandoff = new Map();   // numero → cuándo se re-avisó a control por última vez
+const disculpasBrain = new Map();  // numero → cuándo se le mandó la disculpa por falla de IA
+
+// Cola por contacto: los mensajes de un mismo número se atienden EN ORDEN.
+// Sin esto, dos mensajes rápidos del mismo jugador se procesan en paralelo y
+// el bot puede mandar respuestas cruzadas (p.ej. doble bienvenida).
+const colasPorNumero = new Map();
+function encolarPorNumero(numero, tarea) {
+  const anterior = colasPorNumero.get(numero) || Promise.resolve();
+  const siguiente = anterior
+    .then(tarea)
+    .catch((e) => console.error('[message] Error:', e.message))
+    .finally(() => { if (colasPorNumero.get(numero) === siguiente) colasPorNumero.delete(numero); });
+  colasPorNumero.set(numero, siguiente);
+  return siguiente;
+}
+
+/**
+ * Clarck contestó a mano desde su celular (fromMe que NO envió este bot):
+ * se guarda como respuesta del negocio para que el CRM muestre la conversación
+ * completa y el cerebro no repita lo que Clarck ya dijo. Solo si el contacto
+ * ya existe como lead — los chats personales de Clarck no entran al CRM.
+ */
+function registrarRespuestaManual(msg) {
+  const from = msg.key.remoteJid || '';
+  if (from.endsWith('@g.us') || from === 'status@broadcast') return;
+  if (idsEnviadosPorBot.has(msg.key.id)) return; // lo mandó este bot, ya está guardado
+  const texto = extraerTexto(msg);
+  if (!texto || texto.startsWith('[')) return;   // solo texto real, no adjuntos
+  const numero = numeroDe(msg);
+  if (!numero || numero === NOTIFY_NUMBER) return;
+  if (!db.getLead(numero)) return;
+  db.saveMessage(numero, 'assistant', texto);
+  console.log(`[manual] Respuesta a mano de Clarck → ${numero} guardada en el historial.`);
 }
 
 async function manejarMensaje(sock, msg) {
@@ -203,7 +228,7 @@ async function manejarMensaje(sock, msg) {
   // Comando de prueba (sigue vivo como chequeo rápido de conexión)
   if (body.toLowerCase() === TEST_TRIGGER) {
     try {
-      const sent = await sock.sendMessage(destino, { text: '✅ Pichangueros Bot conectado y funcionando. (modo prueba)' });
+      const sent = await enviarTexto(sock, destino, '✅ Pichangueros Bot conectado y funcionando. (modo prueba)');
       console.log(`[test-send] OK → ${destino} id=${sent?.key?.id}`);
     } catch (e) { console.error(`[test-send] ERROR → ${destino}:`, e?.message); }
     return;
@@ -216,20 +241,29 @@ async function manejarMensaje(sock, msg) {
   const lead = db.getOrCreateLead(numero);
   db.saveMessage(numero, 'user', body);
 
-  // Contacto derivado a Clarck: el bot no se mete.
-  if (lead.handoff) {
-    console.log(`[handoff] DM de ${numero} (lo atiende Clarck): "${body}"`);
-    return;
-  }
-
   // MODO SEGURO (silencio): el cerebro SIGUE leyendo para extraer datos
   // (nombre/edad/distrito/zona) y enriquecer el CRM, pero el bot no envía
   // nada al contacto ni avisa a Clarck. Los ALLOWED_TESTERS sí reciben todo.
   const modoSilencio = SAFE_MODE && !ALLOWED_TESTERS.includes(numero);
 
+  // Contacto derivado a Clarck: el bot no se mete — pero si el contacto sigue
+  // escribiendo, se le re-avisa al número de control (máx. 1 vez por hora por
+  // contacto) para que nadie quede hablándole al vacío si Clarck se olvidó.
+  if (lead.handoff) {
+    console.log(`[handoff] DM de ${numero} (lo atiende Clarck): "${body}"`);
+    const ultimo = avisosHandoff.get(numero) || 0;
+    if (!modoSilencio && Date.now() - ultimo > 60 * 60 * 1000) {
+      avisosHandoff.set(numero, Date.now());
+      await notificarControl(sock, `✋ ${lead.nombre || 'Contacto'} (wa.me/${numero}) está derivado a Clarck y sigue escribiendo: "${body.slice(0, 120)}"\nPara que el bot lo retome: kipi reactivar ${numero}`);
+    }
+    return;
+  }
+
   // Posible comprobante de Yape: se procesa aparte del cerebro conversacional
-  // (Semana 4). Si la imagen no es un voucher reconocible, sigue el flujo normal.
-  if (msg.message.imageMessage && pagos.cerebroActivo()) {
+  // (Semana 4). Se desenvuelve el mensaje porque los vouchers suelen llegar
+  // como foto "ver una sola vez". Si no es un voucher reconocible, sigue el
+  // flujo normal.
+  if (desenvolver(msg.message).imageMessage && pagos.cerebroActivo()) {
     try {
       const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage });
       const resultado = await pagos.procesarVoucher(numero, lead.zona, buffer);
@@ -238,7 +272,7 @@ async function manejarMensaje(sock, msg) {
         if (!modoSilencio) {
           try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
           await sleep(1000 + Math.random() * 1500);
-          await sock.sendMessage(destino, { text: resultado.respuesta });
+          await enviarTexto(sock, destino, resultado.respuesta);
           db.saveMessage(numero, 'assistant', resultado.respuesta);
           if (resultado.handoff) await notificarControl(sock, `💸 Revisar pago de wa.me/${numero}: ${resultado.motivoHandoff}`);
         } else {
@@ -255,7 +289,21 @@ async function manejarMensaje(sock, msg) {
   }
 
   const decision = await brain.pensar(lead, db.getHistory(numero), body);
-  if (!decision) return; // error de la IA: mejor silencio que una mala respuesta
+  if (!decision) {
+    // La IA falló (caída/cuota/timeout). Antes: silencio total. Ahora: una
+    // disculpa corta para no dejar la conversación en el vacío (máx. 1 cada
+    // 10 min por contacto, para no repetirla si la falla dura).
+    const ultima = disculpasBrain.get(numero) || 0;
+    if (!modoSilencio && Date.now() - ultima > 10 * 60 * 1000) {
+      disculpasBrain.set(numero, Date.now());
+      const disculpa = 'Uy, se me cruzaron los cables un segundo 🙈 ¿Me lo repites porfa? Si es algo urgente, Clarck te escribe en un momento.';
+      try {
+        await enviarTexto(sock, destino, disculpa);
+        db.saveMessage(numero, 'assistant', disculpa);
+      } catch (e) { console.error(`[send] ERROR fallback → ${destino}:`, e?.message); }
+    }
+    return;
+  }
 
   // Guardar lo que el cerebro extrajo (nunca pisa datos existentes con null).
   db.updateLead(numero, {
@@ -289,10 +337,18 @@ async function manejarMensaje(sock, msg) {
     try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
     await sleep(1500 + Math.random() * 2000);
     try {
-      const sent = await sock.sendMessage(destino, { text: decision.reply });
+      const sent = await enviarTexto(sock, destino, decision.reply);
       console.log(`[send] OK → ${destino} id=${sent?.key?.id} (${decision.reply.length} chars)`);
     } catch (e) { console.error(`[send] ERROR → ${destino}:`, e?.message); }
     db.saveMessage(numero, 'assistant', decision.reply);
+
+    // Si la respuesta incluyó el link del grupo de su zona, el lead ya quedó
+    // invitado → se marca solo (alimenta el embudo del Resumen).
+    const linkZona = actualizado.zona && actualizado.zona !== 'otra'
+      ? db.getNegocio().zonas[actualizado.zona]?.groupLink : null;
+    if (linkZona && decision.reply.includes(linkZona) && actualizado.estado !== 'invitado_grupo') {
+      db.setEstado(numero, 'invitado_grupo');
+    }
   } else if (modoSilencio) {
     console.log(`[SAFE_MODE] ${numero}: datos extraídos sin responder.`);
   }
@@ -405,8 +461,9 @@ async function startBot() {
     if (type !== 'notify') return;
     for (const msg of messages) {
       try {
-        if (!msg.message || msg.key.fromMe) continue;
-        await manejarMensaje(sock, msg);
+        if (!msg.message) continue;
+        if (msg.key.fromMe) { registrarRespuestaManual(msg); continue; }
+        encolarPorNumero(numeroDe(msg), () => manejarMensaje(sock, msg));
       } catch (e) { console.error('[message] Error:', e.message); }
     }
   });
@@ -457,7 +514,7 @@ const conexion = {
   enviar: async (numero, texto) => {
     if (!currentSock || connectionState !== 'ready') return { ok: false, error: 'bot no conectado' };
     try {
-      const sent = await currentSock.sendMessage(`${numero}@s.whatsapp.net`, { text: texto });
+      const sent = await enviarTexto(currentSock, `${numero}@s.whatsapp.net`, texto);
       console.log(`[send] OK → ${numero} id=${sent?.key?.id || '?'} (panel)`);
       return { ok: true, id: sent?.key?.id || null };
     } catch (e) {
