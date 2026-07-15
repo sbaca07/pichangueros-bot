@@ -599,7 +599,7 @@ function paginaResumen(db, key, query = {}) {
     const esHoy = x.d === hoy;
     const nDia = Number(x.d.slice(8));
     const etiqueta = esHoy ? 'hoy' : (i === 0 || nDia === 1 ? `${nDia}${mesCorto(x.d)}` : String(nDia));
-    return `<a class="bar ${hot ? 'hot' : ''}" href="/admin/leads?key=${key}&vista=crm&dia=${x.d}" title="${x.d}: ${x.nuevos} nuevos + ${x.rec} recurrentes — toca para ver los nuevos">
+    return `<a class="bar ${hot ? 'hot' : ''}" href="/admin/leads?key=${key}&vista=crm&dia=${x.d}" title="${x.d}: ${x.nuevos} nuevos + ${x.rec} recurrentes — toca para verlos">
       <span class="bn">${x.n || ''}</span>
       <div class="track">${x.rec ? `<i class="brec" style="height:${hRec}%"></i>` : ''}${x.nuevos ? `<i class="bnue" style="height:${hNue}%"></i>` : ''}</div>
       <span class="bd${esHoy ? ' bhoy' : ''}">${etiqueta}</span></a>`;
@@ -640,7 +640,7 @@ function paginaResumen(db, key, query = {}) {
           <span class="mdelta">▲ +${semana} esta semana</span></div>
         <div class="mnum">${todos.length}</div>
         <div class="bars">${barras}</div>
-        <div class="mfoot"><span style="color:#5fe487">■ Nuevos</span> (escriben por 1.ª vez) · <span style="color:#8fb3e0">■ Recurrentes</span> (ya registrados, volvieron a escribir) — solo chats directos, los grupos no cuentan. Toca una barra para ver los nuevos de ese día.</div>
+        <div class="mfoot"><span style="color:#5fe487">■ Nuevos</span> (escriben por 1.ª vez) · <span style="color:#8fb3e0">■ Recurrentes</span> (ya registrados, volvieron a escribir) — solo chats directos, los grupos no cuentan. Toca una barra para ver a todos los de ese día, separados en nuevos y recurrentes.</div>
       </div>
 
       ${bannerSeguro}
@@ -844,7 +844,16 @@ function paginaCRM(db, key, query) {
   if (filtro === 'handoff') leads = leads.filter((l) => l.handoff);
   if (filtro === 'responder') leads = leads.filter(sinResp);
   if (filtro === 'hoy') leads = leads.filter((l) => l.proxima_accion && l.proxima_accion <= hoy);
-  if (dia) leads = leads.filter((l) => (l.creado_en || '').slice(0, 10) === dia);
+  // Filtro por día: TODOS los que escribieron ese día (no solo los nuevos),
+  // distinguibles entre nuevos (se registraron ese día) y recurrentes.
+  const tipo = dia && ['nuevos', 'recurrentes'].includes(query.tipo) ? query.tipo : '';
+  const esNuevoEse = (l) => (l.creado_en || '').slice(0, 10) === dia;
+  if (dia) {
+    const activos = new Set(db.actividadPorDia(dia).filter((r) => r.d === dia).map((r) => r.numero));
+    leads = leads.filter((l) => activos.has(l.numero) || esNuevoEse(l));
+    if (tipo === 'nuevos') leads = leads.filter(esNuevoEse);
+    if (tipo === 'recurrentes') leads = leads.filter((l) => !esNuevoEse(l));
+  }
   if (distritoF) leads = leads.filter((l) => normTexto(l.distrito) === distritoF);
   if (estadoF === 'pago') {
     const pagaron = new Set(db.numerosPagadores());
@@ -873,7 +882,7 @@ function paginaCRM(db, key, query) {
 
   // Los chips COMBINAN filtros (no se pisan); tocar uno activo lo quita.
   const qsCrm = (over) => {
-    const p = { q: query.q || '', zona, filtro, estado: estadoF, dia, distrito: distritoF, ...over };
+    const p = { q: query.q || '', zona, filtro, estado: estadoF, dia, tipo, distrito: distritoF, ...over };
     return Object.entries(p).filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('');
   };
   const chip = (campo, valor, label, cls = '') => {
@@ -905,9 +914,14 @@ function paginaCRM(db, key, query) {
   const grupo = (titulo, arr) => arr.length
     ? `<div class="shdr">${titulo} · ${arr.length}</div><div class="llist">${arr.map(fila).join('')}</div>` : '';
 
-  const lista = (urgentes.length || resto.length)
-    ? grupo('Necesitan respuesta', urgentes) + grupo('Todos', resto)
-    : '<p class="vacio">Sin pichangueros en este filtro todavía ⚽</p>';
+  // Con filtro de día, la agrupación útil es nuevos vs recurrentes de ese día.
+  const lista = dia
+    ? (leads.length
+      ? grupo('🟢 Nuevos ese día', leads.filter(esNuevoEse)) + grupo('🔵 Recurrentes · ya estaban registrados', leads.filter((l) => !esNuevoEse(l)))
+      : '<p class="vacio">Nadie escribió ese día ⚽</p>')
+    : ((urgentes.length || resto.length)
+      ? grupo('Necesitan respuesta', urgentes) + grupo('Todos', resto)
+      : '<p class="vacio">Sin pichangueros en este filtro todavía ⚽</p>');
 
   return baseHtml('Pichangueros — CRM', `
     <div class="ltitle"><div><div class="eyebrow">${hayFiltro ? `${leads.length} de ${todos.length}` : todos.length} contactos</div><h2>CRM</h2></div>
@@ -937,7 +951,9 @@ function paginaCRM(db, key, query) {
         ${chip('estado', 'invitado_grupo', 'En grupo')}
         ${chip('estado', 'lista_espera', 'En espera')}
         ${chip('estado', 'pago', '💰 Pagaron')}
-        ${dia ? `<a class="fchip on" href="/admin/leads?key=${key}&vista=crm${qsCrm({ dia: '' })}">📅 ${Number(dia.slice(8))} ${mesCorto(dia)} ✕</a>` : ''}
+        ${dia ? `<a class="fchip on" href="/admin/leads?key=${key}&vista=crm${qsCrm({ dia: '', tipo: '' })}">📅 ${Number(dia.slice(8))} ${mesCorto(dia)} ✕</a>
+        <a class="fchip${tipo === 'nuevos' ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ tipo: tipo === 'nuevos' ? '' : 'nuevos' })}">🟢 Nuevos</a>
+        <a class="fchip${tipo === 'recurrentes' ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ tipo: tipo === 'recurrentes' ? '' : 'recurrentes' })}">🔵 Recurrentes</a>` : ''}
         ${distritoF ? `<a class="fchip on" href="/admin/leads?key=${key}&vista=crm${qsCrm({ distrito: '' })}">📍 ${esc(ddCrm[distritoF]?.label || distritoF)} ✕</a>` : ''}
       </div>
       ${distritosCrm.length ? `
