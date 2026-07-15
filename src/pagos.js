@@ -103,20 +103,29 @@ function evaluarVoucher(numero, zona, lectura) {
     };
   }
 
+  // El monto puede ser un MÚLTIPLO del precio: la gente paga por sus amigos
+  // ("me anota con 2 más" → 3 × precio) o por ambos turnos (2 × precio).
+  // Se acepta de 1 a 10 cupos exactos; cualquier otro monto queda "revisar".
   const precioEsperado = zona ? db.getNegocio().zonas[zona]?.precio : null;
-  const noCoincide = precioEsperado != null && monto != null && Math.abs(monto - precioEsperado) > 0.5;
-
-  if (noCoincide) {
-    return {
-      estado: 'revisar', motivo: `Monto S/${monto} no coincide con el precio de la zona (S/${precioEsperado})`, monto, titular, numeroOperacion,
-      respuesta: 'Recibí tu comprobante, pero el monto no coincide con el precio de tu zona — Clarck lo revisa en un momento 🙏',
-      handoff: true, motivoHandoff: `Monto Yape no coincide (S/${monto} vs S/${precioEsperado})`,
-    };
+  let cupos = 1;
+  if (precioEsperado != null && precioEsperado > 0 && monto != null) {
+    const n = Math.round(monto / precioEsperado);
+    const esMultiplo = n >= 1 && n <= 10 && Math.abs(monto - n * precioEsperado) <= 0.5;
+    if (!esMultiplo) {
+      return {
+        estado: 'revisar', motivo: `Monto S/${monto} no es múltiplo del precio de la zona (S/${precioEsperado})`, monto, titular, numeroOperacion, cupos: 1,
+        respuesta: 'Recibí tu comprobante, pero el monto no calza con el precio de tu zona — Clarck lo revisa en un momento 🙏',
+        handoff: true, motivoHandoff: `Monto Yape no calza (S/${monto} vs S/${precioEsperado})`,
+      };
+    }
+    cupos = n;
   }
 
   return {
-    estado: 'confirmado', motivo: null, monto, titular, numeroOperacion,
-    respuesta: `¡Listo! Registramos tu pago de S/${monto} ✅⚽`,
+    estado: 'confirmado', motivo: null, monto, titular, numeroOperacion, cupos,
+    respuesta: cupos > 1
+      ? `¡Listo! Registramos tu pago de S/${monto} por ${cupos} cupos ✅⚽ Pásame los nombres de los otros ${cupos - 1} jugador${cupos - 1 === 1 ? '' : 'es'} porfa 📝`
+      : `¡Listo! Registramos tu pago de S/${monto} ✅⚽`,
     handoff: false,
   };
 }
@@ -131,7 +140,7 @@ async function procesarVoucher(numero, zona, imageBuffer) {
   if (!lectura || !lectura.es_voucher_yape) return null;
 
   const r = evaluarVoucher(numero, zona, lectura);
-  db.registrarPago({ numero, monto: r.monto, titular: r.titular, numero_operacion: r.numeroOperacion, estado: r.estado, motivo: r.motivo, medio: lectura.medio || 'yape' });
+  db.registrarPago({ numero, monto: r.monto, titular: r.titular, numero_operacion: r.numeroOperacion, estado: r.estado, motivo: r.motivo, medio: lectura.medio || 'yape', cupos: r.cupos });
   return { respuesta: r.respuesta, handoff: r.handoff, motivoHandoff: r.motivoHandoff };
 }
 

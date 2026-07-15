@@ -168,6 +168,16 @@ if (!colsLeads.includes('proxima_nota')) db.exec('ALTER TABLE leads ADD COLUMN p
 // Los pagos anteriores a esta columna eran todos leídos como Yape.
 const colsPagos = db.prepare('PRAGMA table_info(pagos)').all().map((c) => c.name);
 if (!colsPagos.includes('medio')) db.exec("ALTER TABLE pagos ADD COLUMN medio TEXT DEFAULT 'yape'");
+// Cupos (2026-07-15): un solo Yape puede pagar varios cupos (amigos / ambos turnos).
+if (!colsPagos.includes('cupos')) db.exec('ALTER TABLE pagos ADD COLUMN cupos INTEGER DEFAULT 1');
+
+// Limpieza (2026-07-15): la IA a veces devolvía el TEXTO "null" y quedaba
+// guardado como nombre/distrito real. Se limpia lo existente; updateLead ya
+// no deja entrar esos valores.
+db.exec(`
+  UPDATE leads SET nombre = NULL WHERE lower(trim(nombre)) IN ('null', 'undefined', 'none', '');
+  UPDATE leads SET distrito = NULL WHERE lower(trim(distrito)) IN ('null', 'undefined', 'none', '');
+`);
 
 const stmtGetLead = db.prepare('SELECT * FROM leads WHERE numero = ?');
 // OJO: los DEFAULT de las columnas creado_en/actualizado_en quedaron fijados en
@@ -204,10 +214,12 @@ function updateLead(numero, campos) {
   const sets = [];
   const valores = [];
   for (const campo of permitidos) {
-    if (campos[campo] !== undefined && campos[campo] !== null) {
-      sets.push(`${campo} = ?`);
-      valores.push(campos[campo]);
-    }
+    const v = campos[campo];
+    if (v === undefined || v === null) continue;
+    // La IA a veces devuelve el TEXTO "null"/"none" — no es un dato real.
+    if (typeof v === 'string' && ['null', 'undefined', 'none', ''].includes(v.trim().toLowerCase())) continue;
+    sets.push(`${campo} = ?`);
+    valores.push(v);
   }
   if (!sets.length) return;
   valores.push(numero);
@@ -246,10 +258,10 @@ function listLeads() {
 }
 
 // --- Pagos (Yape + IA) ---------------------------------------------------------
-function registrarPago({ numero, monto, titular, numero_operacion, estado, motivo, medio }) {
+function registrarPago({ numero, monto, titular, numero_operacion, estado, motivo, medio, cupos }) {
   db.prepare(
-    "INSERT INTO pagos (numero, monto, titular, numero_operacion, estado, motivo, medio, creado_en) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
-  ).run(numero, monto ?? null, titular || null, numero_operacion || null, estado || 'confirmado', motivo || null, medio || 'yape');
+    "INSERT INTO pagos (numero, monto, titular, numero_operacion, estado, motivo, medio, cupos, creado_en) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
+  ).run(numero, monto ?? null, titular || null, numero_operacion || null, estado || 'confirmado', motivo || null, medio || 'yape', cupos || 1);
 }
 
 /** Busca un pago YA CONFIRMADO con el mismo número de operación (anti-reenvío). */
@@ -269,6 +281,11 @@ function pagosPorRevisar() {
 /** Cuántas personas distintas tienen al menos un pago confirmado (para el embudo). */
 function pagadores() {
   return db.prepare("SELECT COUNT(DISTINCT numero) AS n FROM pagos WHERE estado = 'confirmado'").get().n;
+}
+
+/** Números (distintos) con al menos un pago confirmado (para el filtro "pagaron"). */
+function numerosPagadores() {
+  return db.prepare("SELECT DISTINCT numero FROM pagos WHERE estado = 'confirmado'").all().map((r) => r.numero);
 }
 
 /** Todos los pagos con los datos del contacto (para la vista Pagos del panel). */
@@ -400,6 +417,6 @@ module.exports = {
   getLead, getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
   setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead,
   checkpoint, dbPath: DB_PATH,
-  registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, listPagosTodos,
+  registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
 };

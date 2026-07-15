@@ -57,6 +57,8 @@ const iniciales = (nombre, numero) => {
 };
 
 const MS_DIA = 86400e3;
+// Normaliza texto libre para agrupar/filtrar: minúsculas y sin tildes.
+const normTexto = (t) => (t || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const fechaLima = (offsetDias = 0) => new Date(Date.now() - 5 * 3600e3 + offsetDias * MS_DIA).toISOString().slice(0, 10);
 const hoyLima = () => fechaLima(0);
 const horaCorta = (ts) => esc((ts || '').slice(5, 16)); // MM-DD HH:MM
@@ -214,7 +216,7 @@ function registrarPanel(app, db, conexion = null) {
     const numero = (req.query.numero || '').replace(/\D/g, '');
     if (numero) return res.send(paginaFicha(db, key, numero));
     if (req.query.vista === 'crm') return res.send(paginaCRM(db, key, req.query));
-    if (req.query.vista === 'pagos') return res.send(paginaPagos(db, key));
+    if (req.query.vista === 'pagos') return res.send(paginaPagos(db, key, req.query));
     if (req.query.vista === 'config') return res.send(paginaConfig(db, key));
     if (req.query.vista === 'conexion') return res.send(paginaConexion(key, conexion));
     res.send(paginaResumen(db, key, req.query));
@@ -549,15 +551,16 @@ function paginaResumen(db, key, query = {}) {
       <span class="zval">${d.n}${d.mes ? ` <small style="color:var(--faint);font-weight:400">+${d.mes} este mes</small>` : ''}</span></div>`;
   };
 
+  // Cada barra es un link: toca un día → CRM filtrado a los contactos de ese día.
   const barras = dias.map((x, i) => {
     const h = x.n ? Math.max(8, Math.round((x.n / maxN) * 100)) : 0;
     const hot = x.n >= maxN * 0.75 && x.n > 0;
     const esHoy = x.d === hoy;
     const nDia = Number(x.d.slice(8));
     const etiqueta = esHoy ? 'hoy' : (i === 0 || nDia === 1 ? `${nDia}${mesCorto(x.d)}` : String(nDia));
-    return `<div class="bar ${hot ? 'hot' : ''}" title="${x.d}: ${x.n} ${x.n === 1 ? 'contacto' : 'contactos'}">
+    return `<a class="bar ${hot ? 'hot' : ''}" href="/admin/leads?key=${key}&vista=crm&dia=${x.d}" title="${x.d}: ${x.n} ${x.n === 1 ? 'contacto' : 'contactos'} — toca para verlos">
       <span class="bn">${x.n || ''}</span><div class="track"><i style="height:${h}%"></i></div>
-      <span class="bd${esHoy ? ' bhoy' : ''}">${etiqueta}</span></div>`;
+      <span class="bd${esHoy ? ' bhoy' : ''}">${etiqueta}</span></a>`;
   }).join('');
 
   // Embudo: en qué paso del camino está cada contacto (primer mensaje → pago).
@@ -651,21 +654,53 @@ const MEDIOS = {
   otro: { nombre: 'Otro', color: '#64748b' },
 };
 
-function paginaPagos(db, key) {
-  const pagos = db.listPagosTodos();
+function paginaPagos(db, key, query = {}) {
+  const todosPagos = db.listPagosTodos();
+  const hoy = hoyLima();
+  const mes = hoy.slice(0, 7);
+  const soles = (n) => `S/ ${Number(n || 0) % 1 === 0 ? Number(n || 0) : Number(n || 0).toFixed(2)}`;
+  const fechaHora = (ts) => (ts ? `${Number(ts.slice(8, 10))} ${mesCorto(ts)} · ${ts.slice(11, 16)}` : '—');
+
+  // Filtros (combinables): estado, medio, período o día exacto.
+  const fEstado = ['conf', 'rev'].includes(query.estado) ? query.estado : '';
+  const fMedio = MEDIOS[query.medio] ? query.medio : '';
+  const fPeriodo = ['hoy', '7d', '30d'].includes(query.periodo) ? query.periodo : '';
+  const fDia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
+  let pagos = todosPagos;
+  if (fEstado) pagos = pagos.filter((p) => (fEstado === 'conf' ? p.estado === 'confirmado' : p.estado === 'revisar'));
+  if (fMedio) pagos = pagos.filter((p) => (p.medio || 'yape') === fMedio);
+  if (fDia) {
+    // Un día puntual se revisa contra la app de Yape: orden cronológico (como Yape).
+    pagos = pagos.filter((p) => (p.creado_en || '').slice(0, 10) === fDia)
+      .sort((a, b) => (a.creado_en || '').localeCompare(b.creado_en || '') || a.id - b.id);
+  } else if (fPeriodo) {
+    const desde = fPeriodo === 'hoy' ? hoy : fechaLima(fPeriodo === '7d' ? -6 : -29);
+    pagos = pagos.filter((p) => (p.creado_en || '').slice(0, 10) >= desde);
+  }
+  const hayFiltro = Boolean(fEstado || fMedio || fPeriodo || fDia);
+
+  const qs = (over) => {
+    const p = { estado: fEstado, medio: fMedio, periodo: fPeriodo, dia: fDia, ...over };
+    return Object.entries(p).filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('');
+  };
+  // Un chip activo se toca de nuevo para quitar ese filtro.
+  const chip = (campo, valor, label, cls = '') => {
+    const on = ({ estado: fEstado, medio: fMedio, periodo: fPeriodo, dia: fDia })[campo] === valor;
+    return `<a class="fchip ${cls}${on ? ' on' : ''}" href="/admin/leads?key=${key}&vista=pagos${qs({ [campo]: on ? '' : valor, ...(campo === 'periodo' ? { dia: '' } : {}) })}">${label}</a>`;
+  };
+
   const conf = pagos.filter((p) => p.estado === 'confirmado');
   const rev = pagos.filter((p) => p.estado === 'revisar');
-  const mes = hoyLima().slice(0, 7);
-  const soles = (n) => `S/ ${Number(n || 0) % 1 === 0 ? Number(n || 0) : Number(n || 0).toFixed(2)}`;
-  const totalConf = conf.reduce((a, p) => a + (p.monto || 0), 0);
-  const totalMes = conf.filter((p) => (p.creado_en || '').slice(0, 7) === mes).reduce((a, p) => a + (p.monto || 0), 0);
-  const fechaHora = (ts) => (ts ? `${Number(ts.slice(8, 10))} ${mesCorto(ts)} · ${ts.slice(11, 16)}` : '—');
+  const totalConf = todosPagos.filter((p) => p.estado === 'confirmado').reduce((a, p) => a + (p.monto || 0), 0);
+  const totalMes = todosPagos.filter((p) => p.estado === 'confirmado' && (p.creado_en || '').slice(0, 7) === mes).reduce((a, p) => a + (p.monto || 0), 0);
+  const totalFiltro = conf.reduce((a, p) => a + (p.monto || 0), 0);
 
   const fila = (p) => {
     const m = MEDIOS[p.medio] || MEDIOS.otro;
     const ok = p.estado === 'confirmado';
     const quien = p.nombre || p.titular || `+${p.numero}`;
     const detalles = [
+      p.cupos > 1 ? `${p.cupos} cupos` : '',
       p.numero_operacion ? `op. ${esc(p.numero_operacion)}` : 'sin nº de operación',
       fechaHora(p.creado_en),
       ok && p.pagos_contacto > 1 ? `pago #${p.pagos_contacto} del contacto` : '',
@@ -693,16 +728,40 @@ function paginaPagos(db, key) {
       <div class="grid2">
         <div class="stat green"><div class="sn">${soles(totalConf)}</div><div class="sl">Cobrado (confirmado)</div></div>
         <div class="stat navy"><div class="sn">${soles(totalMes)}</div><div class="sl">Este mes</div></div>
-        <div class="stat"><div class="sn">${conf.length}</div><div class="sl">Pagos confirmados</div></div>
-        <div class="stat ${rev.length ? 'amber' : ''}"><div class="sn">${rev.length}</div><div class="sl">Por revisar</div></div>
+        <div class="stat"><div class="sn">${todosPagos.filter((p) => p.estado === 'confirmado').length}</div><div class="sl">Pagos confirmados</div></div>
+        <div class="stat ${todosPagos.some((p) => p.estado === 'revisar') ? 'amber' : ''}"><div class="sn">${todosPagos.filter((p) => p.estado === 'revisar').length}</div><div class="sl">Por revisar</div></div>
       </div>
+
+      <div class="chips">
+        ${chip('estado', 'conf', '✅ Confirmados')}
+        ${chip('estado', 'rev', '⚠ Por revisar', 'amber')}
+        ${chip('periodo', 'hoy', 'Hoy')}
+        ${chip('periodo', '7d', '7 días')}
+        ${chip('periodo', '30d', '30 días')}
+        ${fDia ? `<a class="fchip on" href="/admin/leads?key=${key}&vista=pagos${qs({ dia: '' })}">📅 ${Number(fDia.slice(8))} ${mesCorto(fDia)} ✕</a>` : ''}
+      </div>
+      <div class="chips" style="padding-top:0">
+        ${chip('medio', 'yape', 'Yape')}
+        ${chip('medio', 'plin', 'Plin')}
+        ${chip('medio', 'bcp', 'BCP')}
+        ${chip('medio', 'interbank', 'Interbank')}
+        ${chip('medio', 'otro', 'Otro')}
+      </div>
+      <form class="search" method="get" action="/admin/leads" style="margin-top:4px">
+        <input type="hidden" name="key" value="${key}"><input type="hidden" name="vista" value="pagos">
+        ${fEstado ? `<input type="hidden" name="estado" value="${fEstado}">` : ''}
+        ${fMedio ? `<input type="hidden" name="medio" value="${fMedio}">` : ''}
+        <input type="date" name="dia" value="${fDia}" max="${hoy}">
+        <button>Ver día</button>
+      </form>
+      ${hayFiltro ? `<div class="shdr" style="padding-top:10px">Filtro activo <small>· ${pagos.length} pago${pagos.length === 1 ? '' : 's'} · ${soles(totalFiltro)} confirmados</small></div>` : ''}
 
       ${rev.length ? `
       <div class="shdr">Por revisar <small>· monto no coincide, comprobante repetido o ilegible — toca para ir a la ficha</small></div>
       <div class="llist">${rev.map(fila).join('')}</div>` : ''}
 
       <div class="shdr">Confirmados <small>· ${conf.length} pago${conf.length === 1 ? '' : 's'}</small></div>
-      ${conf.length ? `<div class="llist">${conf.map(fila).join('')}</div>` : '<div class="vacio">Todavía no hay pagos confirmados.<br>Cuando un jugador mande su captura de Yape, aparece acá.</div>'}
+      ${conf.length ? `<div class="llist">${conf.map(fila).join('')}</div>` : `<div class="vacio">${hayFiltro ? 'Sin pagos confirmados con este filtro.' : 'Todavía no hay pagos confirmados.<br>Cuando un jugador mande su captura de Yape, aparece acá.'}</div>`}
 
       <div class="foot">La IA lee cada comprobante (monto, remitente, nº de operación y app/banco).<br>Se actualiza solo cada 90 s.</div>
     </div>
@@ -721,19 +780,50 @@ function paginaCRM(db, key, query) {
   const q = (query.q || '').trim().toLowerCase();
   const zona = ZONAS[query.zona] ? query.zona : '';
   const filtro = query.filtro || '';
+  const estadoF = Object.keys(ESTADOS).includes(query.estado) || query.estado === 'pago' ? query.estado : '';
+  const dia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
+  const distritoF = normTexto(query.distrito || '');
   let leads = todos;
   if (q) leads = leads.filter((l) => [l.nombre, l.numero, l.distrito, l.etiquetas].join(' ').toLowerCase().includes(q));
   if (zona) leads = leads.filter((l) => l.zona === zona);
   if (filtro === 'handoff') leads = leads.filter((l) => l.handoff);
   if (filtro === 'responder') leads = leads.filter(sinResp);
   if (filtro === 'hoy') leads = leads.filter((l) => l.proxima_accion && l.proxima_accion <= hoy);
+  if (dia) leads = leads.filter((l) => (l.creado_en || '').slice(0, 10) === dia);
+  if (distritoF) leads = leads.filter((l) => normTexto(l.distrito) === distritoF);
+  if (estadoF === 'pago') {
+    const pagaron = new Set(db.numerosPagadores());
+    leads = leads.filter((l) => pagaron.has(l.numero));
+  } else if (estadoF) {
+    leads = leads.filter((l) => l.estado === estadoF);
+  }
+  const hayFiltro = Boolean(q || zona || filtro || estadoF || dia || distritoF);
+
+  // Distritos existentes (texto libre normalizado) para el selector.
+  const ddCrm = {};
+  for (const l of todos) {
+    const d = (l.distrito || '').trim();
+    if (!d) continue;
+    const k = normTexto(d);
+    if (!ddCrm[k]) ddCrm[k] = { label: d, n: 0 };
+    ddCrm[k].n++;
+  }
+  const distritosCrm = Object.entries(ddCrm).sort((a, b) => b[1].n - a[1].n);
 
   // Dos grupos: necesitan respuesta (handoff o sin responder) y el resto.
   const urgentes = leads.filter((l) => l.handoff || sinResp(l));
   const resto = leads.filter((l) => !(l.handoff || sinResp(l)));
 
-  const chip = (extra, label, on, cls = '') =>
-    `<a class="fchip ${cls}${on ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${extra}">${label}</a>`;
+  // Los chips COMBINAN filtros (no se pisan); tocar uno activo lo quita.
+  const qsCrm = (over) => {
+    const p = { q: query.q || '', zona, filtro, estado: estadoF, dia, distrito: distritoF, ...over };
+    return Object.entries(p).filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('');
+  };
+  const chip = (campo, valor, label, cls = '') => {
+    const actual = { zona, filtro, estado: estadoF }[campo];
+    const on = actual === valor;
+    return `<a class="fchip ${cls}${on ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ [campo]: on ? '' : valor })}">${label}</a>`;
+  };
 
   const fila = (l) => {
     const sr = sinResp(l);
@@ -763,7 +853,7 @@ function paginaCRM(db, key, query) {
     : '<p class="vacio">Sin pichangueros en este filtro todavía ⚽</p>';
 
   return baseHtml('Pichangueros — CRM', `
-    <div class="ltitle"><div><div class="eyebrow">${todos.length} contactos</div><h2>CRM</h2></div>
+    <div class="ltitle"><div><div class="eyebrow">${hayFiltro ? `${leads.length} de ${todos.length}` : todos.length} contactos</div><h2>CRM</h2></div>
       <div style="display:flex;gap:8px">
         <a class="csv" href="/admin/leads.csv?key=${key}">⬇ CSV</a>
         <a class="csv" href="/admin/leads.xlsx?key=${key}">📊 Excel</a>
@@ -776,14 +866,36 @@ function paginaCRM(db, key, query) {
         ${q ? '<button>Buscar</button>' : ''}
       </form>
       <div class="chips">
-        ${chip('', 'Todos', !zona && !filtro && !q)}
-        ${chip('&filtro=responder', '📥 Sin responder', filtro === 'responder', 'amber')}
-        ${chip('&filtro=handoff', '🔔 Clarck', filtro === 'handoff', 'red')}
-        ${chip('&filtro=hoy', '⏰ Para hoy', filtro === 'hoy', 'amber')}
-        ${chip('&zona=brena', 'Breña', zona === 'brena')}
-        ${chip('&zona=comas', 'Comas', zona === 'comas')}
-        ${chip('&zona=otra', 'Otras', zona === 'otra')}
+        <a class="fchip${!hayFiltro ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm">Todos</a>
+        ${chip('filtro', 'responder', '📥 Sin responder', 'amber')}
+        ${chip('filtro', 'handoff', '🔔 Clarck', 'red')}
+        ${chip('filtro', 'hoy', '⏰ Para hoy', 'amber')}
+        ${chip('zona', 'brena', 'Breña')}
+        ${chip('zona', 'comas', 'Comas')}
+        ${chip('zona', 'otra', 'Otras')}
       </div>
+      <div class="chips" style="padding-top:0">
+        ${chip('estado', 'nuevo', 'Nuevos')}
+        ${chip('estado', 'datos_completos', 'Con datos')}
+        ${chip('estado', 'invitado_grupo', 'En grupo')}
+        ${chip('estado', 'lista_espera', 'En espera')}
+        ${chip('estado', 'pago', '💰 Pagaron')}
+        ${dia ? `<a class="fchip on" href="/admin/leads?key=${key}&vista=crm${qsCrm({ dia: '' })}">📅 ${Number(dia.slice(8))} ${mesCorto(dia)} ✕</a>` : ''}
+        ${distritoF ? `<a class="fchip on" href="/admin/leads?key=${key}&vista=crm${qsCrm({ distrito: '' })}">📍 ${esc(ddCrm[distritoF]?.label || distritoF)} ✕</a>` : ''}
+      </div>
+      ${distritosCrm.length ? `
+      <form class="search" method="get" action="/admin/leads" style="margin-top:4px">
+        <input type="hidden" name="key" value="${key}"><input type="hidden" name="vista" value="crm">
+        ${zona ? `<input type="hidden" name="zona" value="${zona}">` : ''}
+        ${filtro ? `<input type="hidden" name="filtro" value="${filtro}">` : ''}
+        ${estadoF ? `<input type="hidden" name="estado" value="${estadoF}">` : ''}
+        <select name="distrito" onchange="this.form.submit()" style="flex:1;border:none;background:transparent;outline:none;font:inherit;font-size:14px;padding:10px 0;color:var(--ink)">
+          <option value="">📍 Filtrar por distrito…</option>
+          ${distritosCrm.map(([k, d]) => `<option value="${esc(k)}"${k === distritoF ? ' selected' : ''}>${esc(d.label)} (${d.n})</option>`).join('')}
+        </select>
+        <input type="date" name="dia" value="${dia}" max="${hoy}" style="flex:0 0 auto">
+        <button>Filtrar</button>
+      </form>` : ''}
       ${lista}
       <div class="foot">Se actualiza solo cada 90 s · toca un lead para abrir su ficha</div>
     </div>

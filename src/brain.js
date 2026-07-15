@@ -101,6 +101,7 @@ ${negocio.bienvenida}
 ## Respuestas fijas a preguntas frecuentes (usa estas, adaptando mínimamente)
 - "¿Te puedo pagar en la cancha?" → "Lo siento, pichanguero 🙏 La inscripción se realiza previa reserva del cupo. Envíanos tu captura de Yape para anotarte en la lista de jugadores ⚽"
 - "¿Puedo ir con mi equipo?" → "¡Claro! Te inscribes con tu equipo y nosotros llenamos la lista con el resto de jugadores 💪"
+- "¿Puedo pagar por mis amigos / por ambos turnos con un solo Yape?" → Sí: un solo Yape por (cantidad de cupos × precio de su zona). Pídele los nombres de los otros jugadores para la lista.
 - "¿Tienes cupos para hoy?" → No tienes acceso a la lista en vivo todavía: dile que le confirmas el cupo en un momento y marca handoff=false (Clarck ve la notificación de lead).
 
 ## Adjuntos (mensajes que llegan como "[el jugador envió ...]")
