@@ -271,9 +271,10 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .bars{display:flex;align-items:flex-end;gap:3px;height:62px;margin-top:10px}
   .bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%}
   .bar .bn{font-size:9px;font-weight:700;color:#a9c2e6;line-height:1;min-height:10px}
-  .bar .track{flex:1;width:100%;display:flex;align-items:flex-end}
-  .bar .track i{width:100%;background:linear-gradient(180deg,#5fe487,#34c759);border-radius:3px 3px 1px 1px;min-height:3px;display:block;opacity:.95}
-  .bar.hot .track i{background:linear-gradient(180deg,#cde96b,var(--lime))}
+  .bar .track{flex:1;width:100%;display:flex;flex-direction:column;justify-content:flex-end;gap:1px}
+  .bar .track i{width:100%;background:linear-gradient(180deg,#5fe487,#34c759);border-radius:2px;min-height:3px;display:block;opacity:.95}
+  .bar .track i.brec{background:linear-gradient(180deg,#8fb3e0,#5a7fb5);opacity:.8}
+  .bar.hot .track i.bnue{background:linear-gradient(180deg,#cde96b,var(--lime))}
   .bar.hot .bn{color:var(--lime)}
   .bar .bd{font-size:8px;color:#7e97b8;line-height:1;white-space:nowrap;margin-top:1px}
   .bar .bd.bhoy{color:var(--lime);font-weight:700}
@@ -323,6 +324,14 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .fchip.on{background:var(--navy2);color:#fff;border-color:var(--navy2)}
   .fchip.amber.on{background:var(--amber);border-color:var(--amber);color:#fff}
   .fchip.red.on{background:var(--red);border-color:var(--red);color:#fff}
+
+  /* barra de filtros (selects estilo slicer) */
+  .fbar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 2px}
+  .fbar select,.fbar input[type=date]{flex:1;min-width:105px;background:var(--card);border:1px solid var(--sep);
+    border-radius:12px;padding:9px 11px;font:inherit;font-size:13px;font-weight:600;color:var(--ink);outline:none;
+    -webkit-appearance:none;appearance:none}
+  .fbar select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b7c72' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 11px center;padding-right:26px}
 
   /* lead list */
   .llist{background:var(--card);border-radius:18px;overflow:hidden;box-shadow:0 1px 2px rgba(11,27,18,.04)}
@@ -504,11 +513,27 @@ function paginaResumen(db, key, query = {}) {
     const d = (l.creado_en || '').slice(0, 10);
     if (d) porDia[d] = (porDia[d] || 0) + 1;
   }
+  // Actividad por día: quiénes escribieron — separados en NUEVOS (su primer
+  // día) vs RECURRENTES (ya estaban registrados y volvieron a escribir).
+  const creadoDe = {};
+  for (const l of todos) creadoDe[l.numero] = (l.creado_en || '').slice(0, 10);
+  const actividad = {};
+  for (const r of db.actividadPorDia(fechaLima(-13))) {
+    const a = actividad[r.d] || (actividad[r.d] = { nuevos: 0, rec: 0 });
+    if (creadoDe[r.numero] === r.d) a.nuevos++; else a.rec++;
+  }
   const dias = [];
-  for (let i = 13; i >= 0; i--) { const d = fechaLima(-i); dias.push({ d, n: porDia[d] || 0 }); }
+  for (let i = 13; i >= 0; i--) {
+    const d = fechaLima(-i);
+    const a = actividad[d] || { nuevos: 0, rec: 0 };
+    // Respaldo: si el historial no cubre ese día, al menos los leads creados.
+    const nuevos = Math.max(a.nuevos, porDia[d] || 0);
+    dias.push({ d, nuevos, rec: a.rec, n: nuevos + a.rec });
+  }
   const maxN = Math.max(1, ...dias.map((x) => x.n));
-  const semana = dias.slice(-7).reduce((a, x) => a + x.n, 0);
-  const previa = dias.slice(0, 7).reduce((a, x) => a + x.n, 0);
+  // "Esta semana" cuenta solo NUEVOS (captación), no la actividad total.
+  const semana = dias.slice(-7).reduce((a, x) => a + x.nuevos, 0);
+  const previa = dias.slice(0, 7).reduce((a, x) => a + x.nuevos, 0);
   const delta = previa ? Math.round(((semana - previa) / previa) * 100) : (semana ? 100 : 0);
   const hoyN = porDia[hoy] || 0;
 
@@ -557,14 +582,17 @@ function paginaResumen(db, key, query = {}) {
   };
 
   // Cada barra es un link: toca un día → CRM filtrado a los contactos de ese día.
+  // Barra APILADA: verde = nuevos (escribieron por 1.ª vez), azul = recurrentes.
   const barras = dias.map((x, i) => {
-    const h = x.n ? Math.max(8, Math.round((x.n / maxN) * 100)) : 0;
-    const hot = x.n >= maxN * 0.75 && x.n > 0;
+    const hNue = x.nuevos ? Math.max(6, Math.round((x.nuevos / maxN) * 100)) : 0;
+    const hRec = x.rec ? Math.max(6, Math.round((x.rec / maxN) * 100)) : 0;
+    const hot = x.nuevos >= maxN * 0.5 && x.nuevos > 0;
     const esHoy = x.d === hoy;
     const nDia = Number(x.d.slice(8));
     const etiqueta = esHoy ? 'hoy' : (i === 0 || nDia === 1 ? `${nDia}${mesCorto(x.d)}` : String(nDia));
-    return `<a class="bar ${hot ? 'hot' : ''}" href="/admin/leads?key=${key}&vista=crm&dia=${x.d}" title="${x.d}: ${x.n} ${x.n === 1 ? 'contacto' : 'contactos'} — toca para verlos">
-      <span class="bn">${x.n || ''}</span><div class="track"><i style="height:${h}%"></i></div>
+    return `<a class="bar ${hot ? 'hot' : ''}" href="/admin/leads?key=${key}&vista=crm&dia=${x.d}" title="${x.d}: ${x.nuevos} nuevos + ${x.rec} recurrentes — toca para ver los nuevos">
+      <span class="bn">${x.n || ''}</span>
+      <div class="track">${x.rec ? `<i class="brec" style="height:${hRec}%"></i>` : ''}${x.nuevos ? `<i class="bnue" style="height:${hNue}%"></i>` : ''}</div>
       <span class="bd${esHoy ? ' bhoy' : ''}">${etiqueta}</span></a>`;
   }).join('');
 
@@ -602,7 +630,7 @@ function paginaResumen(db, key, query = {}) {
           <span class="mdelta">▲ +${semana} esta semana</span></div>
         <div class="mnum">${todos.length}</div>
         <div class="bars">${barras}</div>
-        <div class="mfoot">Cada barra = personas que escribieron al número por <b>primera vez</b> ese día (solo chats directos; los grupos no cuentan).</div>
+        <div class="mfoot"><span style="color:#5fe487">■ Nuevos</span> (escriben por 1.ª vez) · <span style="color:#8fb3e0">■ Recurrentes</span> (ya registrados, volvieron a escribir) — solo chats directos, los grupos no cuentan. Toca una barra para ver los nuevos de ese día.</div>
       </div>
 
       ${bannerSeguro}
@@ -662,7 +690,6 @@ const MEDIOS = {
 function paginaPagos(db, key, query = {}) {
   const todosPagos = db.listPagosTodos();
   const hoy = hoyLima();
-  const mes = hoy.slice(0, 7);
   const soles = (n) => `S/ ${Number(n || 0) % 1 === 0 ? Number(n || 0) : Number(n || 0).toFixed(2)}`;
   const fechaHora = (ts) => (ts ? `${Number(ts.slice(8, 10))} ${mesCorto(ts)} · ${ts.slice(11, 16)}` : '—');
 
@@ -693,11 +720,6 @@ function paginaPagos(db, key, query = {}) {
   const qs = (over) => {
     const p = { estado: fEstado, medio: fMedio, periodo: fPeriodo, dia: fDia, ...over };
     return Object.entries(p).filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('');
-  };
-  // Un chip activo se toca de nuevo para quitar ese filtro.
-  const chip = (campo, valor, label, cls = '') => {
-    const on = ({ estado: fEstado, medio: fMedio, periodo: fPeriodo, dia: fDia })[campo] === valor;
-    return `<a class="fchip ${cls}${on ? ' on' : ''}" href="/admin/leads?key=${key}&vista=pagos${qs({ [campo]: on ? '' : valor, ...(campo === 'periodo' ? { dia: '' } : {}) })}">${label}</a>`;
   };
 
   const conf = pagos.filter((p) => p.estado === 'confirmado');
@@ -745,28 +767,26 @@ function paginaPagos(db, key, query = {}) {
         <a class="stat ${revAlcance.length ? 'amber' : ''}" href="/admin/leads?key=${key}&vista=pagos${qs({ estado: fEstado === 'rev' ? '' : 'rev' })}"><div class="sn">${revAlcance.length}</div><div class="sl">Por revisar</div></a>
       </div>
 
-      <div class="chips">
-        ${chip('estado', 'conf', '✅ Confirmados')}
-        ${chip('estado', 'rev', '⚠ Por revisar', 'amber')}
-        ${chip('periodo', 'hoy', 'Hoy')}
-        ${chip('periodo', '7d', '7 días')}
-        ${chip('periodo', '30d', '30 días')}
-        ${fDia ? `<a class="fchip on" href="/admin/leads?key=${key}&vista=pagos${qs({ dia: '' })}">📅 ${Number(fDia.slice(8))} ${mesCorto(fDia)} ✕</a>` : ''}
-      </div>
-      <div class="chips" style="padding-top:0">
-        ${chip('medio', 'yape', 'Yape')}
-        ${chip('medio', 'plin', 'Plin')}
-        ${chip('medio', 'bcp', 'BCP')}
-        ${chip('medio', 'interbank', 'Interbank')}
-        ${chip('medio', 'otro', 'Otro')}
-      </div>
-      <form class="search" method="get" action="/admin/leads" style="margin-top:4px">
+      <form class="fbar" method="get" action="/admin/leads">
         <input type="hidden" name="key" value="${key}"><input type="hidden" name="vista" value="pagos">
-        ${fEstado ? `<input type="hidden" name="estado" value="${fEstado}">` : ''}
-        ${fMedio ? `<input type="hidden" name="medio" value="${fMedio}">` : ''}
-        <input type="date" name="dia" value="${fDia}" max="${hoy}">
-        <button>Ver día</button>
+        <select name="estado" onchange="this.form.submit()">
+          <option value="">Estado: todos</option>
+          <option value="conf"${fEstado === 'conf' ? ' selected' : ''}>✅ Confirmados</option>
+          <option value="rev"${fEstado === 'rev' ? ' selected' : ''}>⚠ Por revisar</option>
+        </select>
+        <select name="medio" onchange="this.form.submit()">
+          <option value="">Medio: todos</option>
+          ${Object.entries(MEDIOS).map(([k, m]) => `<option value="${k}"${fMedio === k ? ' selected' : ''}>${m.nombre}</option>`).join('')}
+        </select>
+        <select name="periodo" onchange="this.form.submit()">
+          <option value="">Período: todo</option>
+          <option value="hoy"${fPeriodo === 'hoy' ? ' selected' : ''}>Hoy</option>
+          <option value="7d"${fPeriodo === '7d' ? ' selected' : ''}>Últimos 7 días</option>
+          <option value="30d"${fPeriodo === '30d' ? ' selected' : ''}>Últimos 30 días</option>
+        </select>
+        <input type="date" name="dia" value="${fDia}" max="${hoy}" onchange="this.form.submit()">
       </form>
+      ${hayFiltro ? `<div style="padding:6px 2px 0"><a class="fchip" href="/admin/leads?key=${key}&vista=pagos">✕ Limpiar filtros</a></div>` : ''}
       ${rev.length ? `
       <div class="shdr">Por revisar <small>· monto no coincide, comprobante repetido o ilegible — toca para ir a la ficha</small></div>
       <div class="llist">${rev.map(fila).join('')}</div>` : ''}

@@ -320,6 +320,14 @@ function getNotas(numero) {
   return db.prepare('SELECT texto, creado_en FROM notas WHERE numero = ? ORDER BY id DESC').all(numero);
 }
 
+/** Contactos que escribieron cada día (numero+día distintos) desde una fecha.
+ *  Para el gráfico del Resumen: separa nuevos vs recurrentes por día. */
+function actividadPorDia(desde) {
+  return db.prepare(
+    "SELECT DISTINCT substr(creado_en, 1, 10) AS d, numero FROM mensajes WHERE rol = 'user' AND substr(creado_en, 1, 10) >= ?"
+  ).all(desde);
+}
+
 /** Mapa numero → rol del ÚLTIMO mensaje (para detectar chats sin responder). */
 function ultimosRoles() {
   const rows = db.prepare(
@@ -445,7 +453,7 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'multicupo_migrado_2026_
 
 module.exports = {
   getLead, getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
-  setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead,
+  setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead, actividadPorDia,
   checkpoint, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
