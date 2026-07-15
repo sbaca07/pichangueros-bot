@@ -256,6 +256,11 @@ function pagosPorRevisar() {
   return db.prepare("SELECT COUNT(*) AS n FROM pagos WHERE estado = 'revisar'").get().n;
 }
 
+/** Cuántas personas distintas tienen al menos un pago confirmado (para el embudo). */
+function pagadores() {
+  return db.prepare("SELECT COUNT(DISTINCT numero) AS n FROM pagos WHERE estado = 'confirmado'").get().n;
+}
+
 // --- CRM ----------------------------------------------------------------------
 function setEstado(numero, estado) {
   db.prepare("UPDATE leads SET estado = ?, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?").run(estado, numero);
@@ -375,6 +380,6 @@ module.exports = {
   getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
   setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead,
   checkpoint, dbPath: DB_PATH,
-  registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar,
+  registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
 };

@@ -272,7 +272,9 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .bar .track i{width:100%;background:linear-gradient(180deg,#5fe487,#34c759);border-radius:3px 3px 1px 1px;min-height:3px;display:block;opacity:.95}
   .bar.hot .track i{background:linear-gradient(180deg,#cde96b,var(--lime))}
   .bar.hot .bn{color:var(--lime)}
-  .bars-x{display:flex;justify-content:space-between;font-size:9.5px;color:#7e97b8;margin-top:5px}
+  .bar .bd{font-size:8px;color:#7e97b8;line-height:1;white-space:nowrap;margin-top:1px}
+  .bar .bd.bhoy{color:var(--lime);font-weight:700}
+  .mfoot{font-size:9.5px;color:#7e97b8;margin-top:8px;line-height:1.35}
 
   /* banner */
   .banner{display:flex;gap:12px;align-items:center;background:#fff7e8;border:1px solid #ffe2ad;border-radius:18px;padding:13px 15px;margin-top:14px}
@@ -542,12 +544,28 @@ function paginaResumen(db, key, query = {}) {
       <span class="zval">${d.n}${d.mes ? ` <small style="color:var(--faint);font-weight:400">+${d.mes} este mes</small>` : ''}</span></div>`;
   };
 
-  const barras = dias.map((x) => {
+  const barras = dias.map((x, i) => {
     const h = x.n ? Math.max(8, Math.round((x.n / maxN) * 100)) : 0;
     const hot = x.n >= maxN * 0.75 && x.n > 0;
+    const esHoy = x.d === hoy;
+    const nDia = Number(x.d.slice(8));
+    const etiqueta = esHoy ? 'hoy' : (i === 0 || nDia === 1 ? `${nDia}${mesCorto(x.d)}` : String(nDia));
     return `<div class="bar ${hot ? 'hot' : ''}" title="${x.d}: ${x.n} ${x.n === 1 ? 'contacto' : 'contactos'}">
-      <span class="bn">${x.n || ''}</span><div class="track"><i style="height:${h}%"></i></div></div>`;
+      <span class="bn">${x.n || ''}</span><div class="track"><i style="height:${h}%"></i></div>
+      <span class="bd${esHoy ? ' bhoy' : ''}">${etiqueta}</span></div>`;
   }).join('');
+
+  // Embudo: en qué paso del camino está cada contacto (primer mensaje → pago).
+  const conDatos = todos.filter((l) => l.estado && l.estado !== 'nuevo').length;
+  const invitados = todos.filter((l) => l.estado === 'invitado_grupo').length;
+  const enEspera = todos.filter((l) => l.estado === 'lista_espera').length;
+  const nPagadores = db.pagadores ? db.pagadores() : 0;
+  const pct = (n) => (todos.length ? Math.round((n / todos.length) * 100) : 0);
+  const frow = (nombre, n, color, detalle) =>
+    `<div class="zrow"><span class="zdot" style="background:${color}"></span>
+      <span class="zname">${nombre}${detalle ? ` <small style="color:var(--faint);font-weight:400">${detalle}</small>` : ''}</span>
+      <span class="ztrack"><i style="width:${Math.max(3, pct(n))}%;background:${color}"></i></span>
+      <span class="zval">${n} <small style="color:var(--faint);font-weight:400">${pct(n)}%</small></span></div>`;
 
   const bannerSeguro = `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=responder" style="text-decoration:none">
     <div class="bic">🔒</div>
@@ -566,7 +584,7 @@ function paginaResumen(db, key, query = {}) {
           <span class="mdelta">▲ +${semana} esta semana</span></div>
         <div class="mnum">${todos.length}</div>
         <div class="bars">${barras}</div>
-        <div class="bars-x"><span>${dias[0].d.slice(8)} ${mesCorto(dias[0].d)}</span><span>hoy</span></div>
+        <div class="mfoot">Cada barra = personas que escribieron al número por <b>primera vez</b> ese día (solo chats directos; los grupos no cuentan).</div>
       </div>
 
       ${bannerSeguro}
@@ -577,6 +595,16 @@ function paginaResumen(db, key, query = {}) {
         <a class="stat amber" href="/admin/leads?key=${key}&vista=crm&filtro=responder"><span class="chip wait">pendiente</span><div class="sn">${colaResp}</div><div class="sl">Sin responder</div></a>
         <a class="stat ${enHandoff ? 'red' : ''}" href="/admin/leads?key=${key}&vista=crm&filtro=handoff"><div class="sn">${enHandoff}</div><div class="sl">Para Clarck</div></a>
       </div>
+
+      <div class="shdr">Pipeline · del primer mensaje al pago</div>
+      <div class="zlist">
+        ${frow('Escribieron al número', todos.length, '#0a84ff')}
+        ${frow('Dejaron sus datos', conDatos, '#5e5ce6', 'nombre · edad · distrito')}
+        ${frow('Invitados al grupo', invitados, '#34c759', 'Breña / Comas')}
+        ${frow('Lista de espera', enEspera, '#ff9f0a', 'otras zonas')}
+        ${frow('Pagaron por Yape', nPagadores, '#0fb954')}
+      </div>
+      <div class="foot" style="padding:8px 2px 0">"Escribieron" cuenta a <b>todos</b> los que chatean al número (también conocidos y jugadores antiguos), no solo interesados nuevos.</div>
 
       <div class="shdr">Por zona</div>
       <div class="zlist">
