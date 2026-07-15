@@ -61,6 +61,15 @@ const MS_DIA = 86400e3;
 const normTexto = (t) => (t || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const fechaLima = (offsetDias = 0) => new Date(Date.now() - 5 * 3600e3 + offsetDias * MS_DIA).toISOString().slice(0, 10);
 const hoyLima = () => fechaLima(0);
+// Timestamp Lima de hace N horas (mismo formato 'YYYY-MM-DD HH:MM:SS' de la BD).
+const limaHace = (horas) => new Date(Date.now() - 5 * 3600e3 - horas * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
+// "Sin responder" REAL: el último mensaje es del contacto Y es reciente (48 h).
+// Sin el corte, todo el backlog del modo seguro (bot callado a propósito)
+// aparecería eternamente como pendiente.
+const sinResponder = (roles, l) => {
+  const u = roles[l.numero];
+  return Boolean(u && u.rol === 'user' && !l.handoff && u.en >= limaHace(48));
+};
 const horaCorta = (ts) => esc((ts || '').slice(5, 16)); // MM-DD HH:MM
 
 function registrarPanel(app, db, conexion = null) {
@@ -504,7 +513,7 @@ function badges(l, sinResponder) {
 function paginaResumen(db, key, query = {}) {
   const todos = db.listLeads();
   const roles = db.ultimosRoles();
-  const sinResp = (l) => roles[l.numero] === 'user' && !l.handoff;
+  const sinResp = (l) => sinResponder(roles, l);
   const hoy = hoyLima();
 
   // Altas por día (últimos 14, terminando hoy Lima).
@@ -602,11 +611,12 @@ function paginaResumen(db, key, query = {}) {
   const enEspera = todos.filter((l) => l.estado === 'lista_espera').length;
   const nPagadores = db.pagadores ? db.pagadores() : 0;
   const pct = (n) => (todos.length ? Math.round((n / todos.length) * 100) : 0);
-  const frow = (nombre, n, color, detalle) =>
-    `<div class="zrow"><span class="zdot" style="background:${color}"></span>
+  // Cada escalón del embudo lleva al CRM con ESA gente filtrada.
+  const frow = (nombre, n, color, detalle, filtroUrl) =>
+    `<a class="zrow" href="/admin/leads?key=${key}&vista=crm${filtroUrl || ''}"><span class="zdot" style="background:${color}"></span>
       <span class="zname">${nombre}${detalle ? ` <small style="color:var(--faint);font-weight:400">${detalle}</small>` : ''}</span>
       <span class="ztrack"><i style="width:${Math.max(3, pct(n))}%;background:${color}"></i></span>
-      <span class="zval">${n} <small style="color:var(--faint);font-weight:400">${pct(n)}%</small></span></div>`;
+      <span class="zval">${n} <small style="color:var(--faint);font-weight:400">${pct(n)}%</small></span></a>`;
 
   // El banner refleja el modo real del bot (misma lectura de env que index.js).
   const modoSeguro = (process.env.SAFE_MODE || 'true') !== 'false';
@@ -636,19 +646,19 @@ function paginaResumen(db, key, query = {}) {
       ${bannerSeguro}
 
       <div class="grid2">
-        <a class="stat green" href="/admin/leads?key=${key}&vista=crm">${delta ? `<span class="chip up">▲ ${delta}%</span>` : ''}<div class="sn">${semana}</div><div class="sl">Esta semana</div></a>
+        <a class="stat green" href="/admin/leads?key=${key}&vista=crm">${delta ? `<span class="chip ${delta > 0 ? 'up' : 'wait'}">${delta > 0 ? '▲' : '▼'} ${Math.abs(delta)}%</span>` : ''}<div class="sn">${semana}</div><div class="sl">Esta semana</div></a>
         <div class="stat navy"><div class="sn">${hoyN}</div><div class="sl">Nuevos hoy</div></div>
-        <a class="stat amber" href="/admin/leads?key=${key}&vista=crm&filtro=responder"><span class="chip wait">pendiente</span><div class="sn">${colaResp}</div><div class="sl">Sin responder</div></a>
+        <a class="stat amber" href="/admin/leads?key=${key}&vista=crm&filtro=responder"><span class="chip wait">pendiente</span><div class="sn">${colaResp}</div><div class="sl">Sin responder (48 h)</div></a>
         <a class="stat ${enHandoff ? 'red' : ''}" href="/admin/leads?key=${key}&vista=crm&filtro=handoff"><div class="sn">${enHandoff}</div><div class="sl">Para Clarck</div></a>
       </div>
 
-      <div class="shdr">Pipeline · del primer mensaje al pago</div>
+      <div class="shdr">Pipeline · del primer mensaje al pago <small>· toca para ver quiénes</small></div>
       <div class="zlist">
-        ${frow('Escribieron al número', todos.length, '#0a84ff')}
-        ${frow('Dejaron sus datos', conDatos, '#5e5ce6', 'nombre · edad · distrito')}
-        ${frow('Invitados al grupo', invitados, '#34c759', 'Breña / Comas')}
-        ${frow('Lista de espera', enEspera, '#ff9f0a', 'otras zonas')}
-        ${frow('Pagaron por Yape', nPagadores, '#0fb954')}
+        ${frow('Escribieron al número', todos.length, '#0a84ff', '', '')}
+        ${frow('Dejaron sus datos', conDatos, '#5e5ce6', 'nombre · edad · distrito', '&estado=con_datos')}
+        ${frow('Invitados al grupo', invitados, '#34c759', 'Breña / Comas', '&estado=invitado_grupo')}
+        ${frow('Lista de espera', enEspera, '#ff9f0a', 'otras zonas', '&estado=lista_espera')}
+        ${frow('Pagaron por Yape', nPagadores, '#0fb954', '', '&estado=pago')}
       </div>
       <div class="foot" style="padding:8px 2px 0">"Escribieron" cuenta a <b>todos</b> los que chatean al número (también conocidos y jugadores antiguos), no solo interesados nuevos.</div>
 
@@ -805,13 +815,13 @@ function paginaPagos(db, key, query = {}) {
 function paginaCRM(db, key, query) {
   const todos = db.listLeads();
   const roles = db.ultimosRoles();
-  const sinResp = (l) => roles[l.numero] === 'user' && !l.handoff;
+  const sinResp = (l) => sinResponder(roles, l);
   const hoy = hoyLima();
 
   const q = (query.q || '').trim().toLowerCase();
   const zona = ZONAS[query.zona] ? query.zona : '';
   const filtro = query.filtro || '';
-  const estadoF = Object.keys(ESTADOS).includes(query.estado) || query.estado === 'pago' ? query.estado : '';
+  const estadoF = Object.keys(ESTADOS).includes(query.estado) || ['pago', 'con_datos'].includes(query.estado) ? query.estado : '';
   const dia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
   const distritoF = normTexto(query.distrito || '');
   let leads = todos;
@@ -825,6 +835,8 @@ function paginaCRM(db, key, query) {
   if (estadoF === 'pago') {
     const pagaron = new Set(db.numerosPagadores());
     leads = leads.filter((l) => pagaron.has(l.numero));
+  } else if (estadoF === 'con_datos') {
+    leads = leads.filter((l) => l.estado && l.estado !== 'nuevo');
   } else if (estadoF) {
     leads = leads.filter((l) => l.estado === estadoF);
   }
@@ -943,7 +955,7 @@ function paginaFicha(db, key, numero) {
   const pagosLead = db.listPagos(numero);
   const roles = db.ultimosRoles();
   const keyRaw = decodeURIComponent(key);
-  const sinResp = roles[numero] === 'user' && !lead.handoff;
+  const sinResp = sinResponder(roles, lead);
   const z = ZONAS[lead.zona];
 
   const botonesEtapa = Object.entries(ESTADOS).map(([v, label]) => `

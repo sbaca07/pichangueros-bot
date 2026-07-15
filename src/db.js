@@ -328,13 +328,13 @@ function actividadPorDia(desde) {
   ).all(desde);
 }
 
-/** Mapa numero → rol del ÚLTIMO mensaje (para detectar chats sin responder). */
+/** Mapa numero → {rol, en} del ÚLTIMO mensaje (para detectar chats sin responder). */
 function ultimosRoles() {
   const rows = db.prepare(
-    'SELECT m.numero, m.rol FROM mensajes m WHERE m.id IN (SELECT MAX(id) FROM mensajes GROUP BY numero)'
+    'SELECT m.numero, m.rol, m.creado_en FROM mensajes m WHERE m.id IN (SELECT MAX(id) FROM mensajes GROUP BY numero)'
   ).all();
   const mapa = {};
-  for (const r of rows) mapa[r.numero] = r.rol;
+  for (const r of rows) mapa[r.numero] = { rol: r.rol, en: r.creado_en };
   return mapa;
 }
 
