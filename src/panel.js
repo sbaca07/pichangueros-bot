@@ -567,10 +567,15 @@ function paginaResumen(db, key, query = {}) {
       <span class="ztrack"><i style="width:${Math.max(3, pct(n))}%;background:${color}"></i></span>
       <span class="zval">${n} <small style="color:var(--faint);font-weight:400">${pct(n)}%</small></span></div>`;
 
-  const bannerSeguro = `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=responder" style="text-decoration:none">
+  // El banner refleja el modo real del bot (misma lectura de env que index.js).
+  const modoSeguro = (process.env.SAFE_MODE || 'true') !== 'false';
+  const bannerSeguro = modoSeguro
+    ? `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=responder" style="text-decoration:none">
     <div class="bic">🔒</div>
     <div class="btxt"><b>Modo seguro activo.</b> El bot registra a todos pero todavía no responde.
-      <b>${colaResp} ${colaResp === 1 ? 'persona' : 'personas'}</b> esperando respuesta — se activa con un cambio.</div></a>`;
+      <b>${colaResp} ${colaResp === 1 ? 'persona' : 'personas'}</b> esperando respuesta — se activa con un cambio.</div></a>`
+    : `<div class="banner ok px"><div class="bic">🤖</div>
+    <div class="btxt"><b>Bot activo.</b> Responde a todos los que escriban al número.</div></div>`;
 
   return baseHtml('Pichangueros — Resumen', `
     <div class="ltitle">
