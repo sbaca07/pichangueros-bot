@@ -164,6 +164,11 @@ if (!colsLeads.includes('etiquetas')) db.exec('ALTER TABLE leads ADD COLUMN etiq
 if (!colsLeads.includes('proxima_accion')) db.exec('ALTER TABLE leads ADD COLUMN proxima_accion TEXT'); // fecha YYYY-MM-DD
 if (!colsLeads.includes('proxima_nota')) db.exec('ALTER TABLE leads ADD COLUMN proxima_nota TEXT');
 
+// Migración vista Pagos (2026-07-15): medio de pago (yape/plin/bcp/interbank/otro).
+// Los pagos anteriores a esta columna eran todos leídos como Yape.
+const colsPagos = db.prepare('PRAGMA table_info(pagos)').all().map((c) => c.name);
+if (!colsPagos.includes('medio')) db.exec("ALTER TABLE pagos ADD COLUMN medio TEXT DEFAULT 'yape'");
+
 const stmtGetLead = db.prepare('SELECT * FROM leads WHERE numero = ?');
 // OJO: los DEFAULT de las columnas creado_en/actualizado_en quedaron fijados en
 // UTC en las tablas que ya existían en producción (CREATE TABLE IF NOT EXISTS
@@ -241,10 +246,10 @@ function listLeads() {
 }
 
 // --- Pagos (Yape + IA) ---------------------------------------------------------
-function registrarPago({ numero, monto, titular, numero_operacion, estado, motivo }) {
+function registrarPago({ numero, monto, titular, numero_operacion, estado, motivo, medio }) {
   db.prepare(
-    "INSERT INTO pagos (numero, monto, titular, numero_operacion, estado, motivo, creado_en) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
-  ).run(numero, monto ?? null, titular || null, numero_operacion || null, estado || 'confirmado', motivo || null);
+    "INSERT INTO pagos (numero, monto, titular, numero_operacion, estado, motivo, medio, creado_en) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
+  ).run(numero, monto ?? null, titular || null, numero_operacion || null, estado || 'confirmado', motivo || null, medio || 'yape');
 }
 
 /** Busca un pago YA CONFIRMADO con el mismo número de operación (anti-reenvío). */
@@ -264,6 +269,16 @@ function pagosPorRevisar() {
 /** Cuántas personas distintas tienen al menos un pago confirmado (para el embudo). */
 function pagadores() {
   return db.prepare("SELECT COUNT(DISTINCT numero) AS n FROM pagos WHERE estado = 'confirmado'").get().n;
+}
+
+/** Todos los pagos con los datos del contacto (para la vista Pagos del panel). */
+function listPagosTodos() {
+  return db.prepare(`
+    SELECT p.*, l.nombre, l.zona,
+      (SELECT COUNT(*) FROM pagos p2 WHERE p2.numero = p.numero AND p2.estado = 'confirmado') AS pagos_contacto
+    FROM pagos p LEFT JOIN leads l ON l.numero = p.numero
+    ORDER BY p.id DESC
+  `).all();
 }
 
 // --- CRM ----------------------------------------------------------------------
@@ -385,6 +400,6 @@ module.exports = {
   getLead, getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
   setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead,
   checkpoint, dbPath: DB_PATH,
-  registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores,
+  registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
 };

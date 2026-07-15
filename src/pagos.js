@@ -33,12 +33,17 @@ const RESPONSE_SCHEMA = {
     additionalProperties: false,
     properties: {
       es_voucher_yape: { type: 'boolean', description: 'true si la imagen es un comprobante de pago de Yape (u otra app de pagos peruana similar).' },
+      medio: {
+        type: 'string',
+        enum: ['yape', 'plin', 'bcp', 'interbank', 'otro'],
+        description: 'De qué app o banco es el comprobante (por logo/colores/diseño). Si no es un voucher o no se distingue: otro.',
+      },
       monto: { type: ['number', 'null'], description: 'Monto pagado en soles, ej. 15.00' },
       nombre_remitente: { type: ['string', 'null'], description: 'Nombre de quien envió el pago, tal como aparece en el voucher.' },
       numero_operacion: { type: ['string', 'null'], description: 'Número o código de operación/transacción del voucher.' },
       confianza: { type: 'string', enum: ['alta', 'media', 'baja'], description: 'Qué tan seguro estás de la lectura (borrosa, cortada, etc. → baja).' },
     },
-    required: ['es_voucher_yape', 'monto', 'nombre_remitente', 'numero_operacion', 'confianza'],
+    required: ['es_voucher_yape', 'medio', 'monto', 'nombre_remitente', 'numero_operacion', 'confianza'],
   },
 };
 
@@ -126,7 +131,7 @@ async function procesarVoucher(numero, zona, imageBuffer) {
   if (!lectura || !lectura.es_voucher_yape) return null;
 
   const r = evaluarVoucher(numero, zona, lectura);
-  db.registrarPago({ numero, monto: r.monto, titular: r.titular, numero_operacion: r.numeroOperacion, estado: r.estado, motivo: r.motivo });
+  db.registrarPago({ numero, monto: r.monto, titular: r.titular, numero_operacion: r.numeroOperacion, estado: r.estado, motivo: r.motivo, medio: lectura.medio || 'yape' });
   return { respuesta: r.respuesta, handoff: r.handoff, motivoHandoff: r.motivoHandoff };
 }
 

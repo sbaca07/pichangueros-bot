@@ -214,6 +214,7 @@ function registrarPanel(app, db, conexion = null) {
     const numero = (req.query.numero || '').replace(/\D/g, '');
     if (numero) return res.send(paginaFicha(db, key, numero));
     if (req.query.vista === 'crm') return res.send(paginaCRM(db, key, req.query));
+    if (req.query.vista === 'pagos') return res.send(paginaPagos(db, key));
     if (req.query.vista === 'config') return res.send(paginaConfig(db, key));
     if (req.query.vista === 'conexion') return res.send(paginaConexion(key, conexion));
     res.send(paginaResumen(db, key, req.query));
@@ -339,6 +340,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .b-new{background:var(--inset);color:var(--muted)}
   .b-zona{color:#fff}
   .chev{color:#c7d0cb;flex:0 0 auto}
+  .pico{width:40px;height:40px;border-radius:12px;flex:0 0 auto;display:grid;place-items:center;font-weight:800;font-size:12px;color:#fff;letter-spacing:.04em}
   .dotnew{position:absolute;left:5px;top:50%;transform:translateY(-50%);width:7px;height:7px;border-radius:50%;background:var(--amber)}
   .vacio{color:var(--muted);text-align:center;padding:48px 16px;font-size:15px}
 
@@ -444,11 +446,13 @@ const SVG = {
   iCrm: '<svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="3.4" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.6-3.2 3-5 5.5-5s4.9 1.8 5.5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16.5 7.5c1.7 0 3 1.3 3 3s-1.3 3-3 3M18 19c-.2-1.6-.8-3-2-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   iConfig: '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13.5a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V20a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.04-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.04H4a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.56-1.04 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H10a1.7 1.7 0 0 0 1.04-1.56V4a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V10a1.7 1.7 0 0 0 1.56 1.04H20a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.56 1.04Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
   iConexion: '<svg viewBox="0 0 24 24" fill="none"><path d="M9 15l6-6M10.5 6.5l.9-.9a4 4 0 0 1 5.66 5.66l-.9.9M13.5 17.5l-.9.9a4 4 0 0 1-5.66-5.66l.9-.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  iPagos: '<svg viewBox="0 0 24 24" fill="none"><rect x="2.5" y="6" width="19" height="12.5" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12.2" r="2.8" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.2h.01M18 15.2h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
 };
 
 const tabbar = (key, activo) => `<nav class="tabbar">
   <a class="tab ${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen}Resumen</a>
   <a class="tab ${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm}CRM</a>
+  <a class="tab ${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos}Pagos</a>
   <a class="tab ${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig}Config</a>
   <a class="tab ${activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=conexion">${SVG.iConexion}Conexión</a>
 </nav>`;
@@ -458,6 +462,7 @@ const sidebar = (key, activo) => `<aside class="sidebar">
   <nav class="snav">
     <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Resumen</a>
     <a class="${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm} CRM</a>
+    <a class="${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos} Pagos</a>
     <a class="${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig} Config</a>
     <a class="${activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=conexion">${SVG.iConexion} Conexión</a>
   </nav>
@@ -634,6 +639,75 @@ function paginaResumen(db, key, query = {}) {
 
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const mesCorto = (yyyymmdd) => MESES[Number((yyyymmdd || '').slice(5, 7)) - 1] || '';
+
+// ==============================================================================
+//  Vista · PAGOS (finanzas: todos los cobros, medio, operación, estado)
+// ==============================================================================
+const MEDIOS = {
+  yape: { nombre: 'Yape', color: '#7b2f8e' },
+  plin: { nombre: 'Plin', color: '#0aa5a8' },
+  bcp: { nombre: 'BCP', color: '#003b7a' },
+  interbank: { nombre: 'Interbank', color: '#12a14b' },
+  otro: { nombre: 'Otro', color: '#64748b' },
+};
+
+function paginaPagos(db, key) {
+  const pagos = db.listPagosTodos();
+  const conf = pagos.filter((p) => p.estado === 'confirmado');
+  const rev = pagos.filter((p) => p.estado === 'revisar');
+  const mes = hoyLima().slice(0, 7);
+  const soles = (n) => `S/ ${Number(n || 0) % 1 === 0 ? Number(n || 0) : Number(n || 0).toFixed(2)}`;
+  const totalConf = conf.reduce((a, p) => a + (p.monto || 0), 0);
+  const totalMes = conf.filter((p) => (p.creado_en || '').slice(0, 7) === mes).reduce((a, p) => a + (p.monto || 0), 0);
+  const fechaHora = (ts) => (ts ? `${Number(ts.slice(8, 10))} ${mesCorto(ts)} · ${ts.slice(11, 16)}` : '—');
+
+  const fila = (p) => {
+    const m = MEDIOS[p.medio] || MEDIOS.otro;
+    const ok = p.estado === 'confirmado';
+    const quien = p.nombre || p.titular || `+${p.numero}`;
+    const detalles = [
+      p.numero_operacion ? `op. ${esc(p.numero_operacion)}` : 'sin nº de operación',
+      fechaHora(p.creado_en),
+      ok && p.pagos_contacto > 1 ? `pago #${p.pagos_contacto} del contacto` : '',
+    ].filter(Boolean).join(' · ');
+    return `<a class="lrow" href="/admin/leads?key=${key}&numero=${p.numero}">
+      <div class="pico" style="background:${m.color}">${esc(m.nombre.slice(0, 2).toUpperCase())}</div>
+      <div class="lbody">
+        <div class="lname">${soles(p.monto)} · ${esc(quien)}</div>
+        <div class="lsub">${detalles}</div>
+        ${!ok && p.motivo ? `<div class="lsub" style="color:var(--amber-d)">⚠ ${esc(p.motivo)}</div>` : ''}
+      </div>
+      <div class="lmeta">
+        <span class="badge ${ok ? 'b-done' : 'b-wait'}">${ok ? 'confirmado' : 'por revisar'}</span>
+        <span class="ltime">${esc(m.nombre)}</span>
+      </div>
+    </a>`;
+  };
+
+  return baseHtml('Pichangueros — Pagos', `
+    <div class="ltitle">
+      <div><div class="eyebrow">Pichangueros</div><h2>Pagos</h2></div>
+      <span class="live"><i></i> En vivo</span>
+    </div>
+    <div class="px">
+      <div class="grid2">
+        <div class="stat green"><div class="sn">${soles(totalConf)}</div><div class="sl">Cobrado (confirmado)</div></div>
+        <div class="stat navy"><div class="sn">${soles(totalMes)}</div><div class="sl">Este mes</div></div>
+        <div class="stat"><div class="sn">${conf.length}</div><div class="sl">Pagos confirmados</div></div>
+        <div class="stat ${rev.length ? 'amber' : ''}"><div class="sn">${rev.length}</div><div class="sl">Por revisar</div></div>
+      </div>
+
+      ${rev.length ? `
+      <div class="shdr">Por revisar <small>· monto no coincide, comprobante repetido o ilegible — toca para ir a la ficha</small></div>
+      <div class="llist">${rev.map(fila).join('')}</div>` : ''}
+
+      <div class="shdr">Confirmados <small>· ${conf.length} pago${conf.length === 1 ? '' : 's'}</small></div>
+      ${conf.length ? `<div class="llist">${conf.map(fila).join('')}</div>` : '<div class="vacio">Todavía no hay pagos confirmados.<br>Cuando un jugador mande su captura de Yape, aparece acá.</div>'}
+
+      <div class="foot">La IA lee cada comprobante (monto, remitente, nº de operación y app/banco).<br>Se actualiza solo cada 90 s.</div>
+    </div>
+  `, { refresh: true, activo: 'pagos', key });
+}
 
 // ==============================================================================
 //  Vista 2 · CRM (lista de leads)
