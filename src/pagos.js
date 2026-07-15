@@ -95,11 +95,18 @@ function evaluarVoucher(numero, zona, lectura) {
     };
   }
 
-  if (db.buscarPagoConfirmado(numeroOperacion)) {
+  // Reenvío: no es "posible", es un hecho — se registra CONTRA QUÉ pago choca
+  // (quién, cuándo, cuánto) para que Clarck lo vea con evidencia.
+  const previo = db.buscarPagoConfirmado(numeroOperacion);
+  if (previo) {
+    const cuando = (previo.creado_en || '').slice(0, 16);
     return {
-      estado: 'revisar', motivo: 'Número de operación repetido (posible reenvío)', monto, titular, numeroOperacion,
-      respuesta: 'Este comprobante ya lo teníamos registrado 🤔 Si es un error, Clarck te escribe para revisarlo.',
-      handoff: true, motivoHandoff: 'Voucher con número de operación repetido',
+      estado: 'revisar',
+      motivo: `Nº de operación ${numeroOperacion} YA confirmado antes: S/${previo.monto} de +${previo.numero} el ${cuando}`,
+      monto, titular, numeroOperacion,
+      respuesta: 'Ese comprobante ya lo tenemos registrado (mismo número de operación) 🧐 Si crees que es un error, Clarck lo revisa contigo en un momento.',
+      handoff: true,
+      motivoHandoff: `Voucher repetido: op. ${numeroOperacion} ya confirmado (S/${previo.monto} de wa.me/${previo.numero} el ${cuando})`,
     };
   }
 

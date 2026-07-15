@@ -740,10 +740,23 @@ function paginaPagos(db, key, query = {}) {
   const totalAlcance = confAlcance.reduce((a, p) => a + (p.monto || 0), 0);
   const cuposAlcance = confAlcance.reduce((a, p) => a + (p.cupos || 1), 0);
 
+  // Para los reenvíos: mapa nº de operación → el pago confirmado original,
+  // para mostrar la EVIDENCIA (quién/cuándo/cuánto) en vez de un "posible".
+  const confirmadoPorOp = {};
+  for (const p of todosPagos) {
+    if (p.estado === 'confirmado' && p.numero_operacion && !confirmadoPorOp[p.numero_operacion]) {
+      confirmadoPorOp[p.numero_operacion] = p;
+    }
+  }
+
   const fila = (p) => {
     const m = MEDIOS[p.medio] || MEDIOS.otro;
     const ok = p.estado === 'confirmado';
     const quien = p.nombre || p.titular || `+${p.numero}`;
+    const original = !ok && p.numero_operacion ? confirmadoPorOp[p.numero_operacion] : null;
+    const evidencia = original && original.id !== p.id
+      ? `↩ mismo nº de operación que el pago CONFIRMADO de ${esc(original.nombre || original.titular || `+${original.numero}`)} · ${fechaHora(original.creado_en)} · S/${original.monto}`
+      : '';
     const detalles = [
       p.cupos > 1 ? `${p.cupos} cupos` : '',
       p.numero_operacion ? `op. ${esc(p.numero_operacion)}` : 'sin nº de operación',
@@ -756,6 +769,7 @@ function paginaPagos(db, key, query = {}) {
         <div class="lname">${soles(p.monto)} · ${esc(quien)}</div>
         <div class="lsub">${detalles}</div>
         ${!ok && p.motivo ? `<div class="lsub" style="color:var(--amber-d)">⚠ ${esc(p.motivo)}</div>` : ''}
+        ${evidencia ? `<div class="lsub" style="color:var(--amber-d);white-space:normal">${evidencia}</div>` : ''}
       </div>
       <div class="lmeta">
         <span class="badge ${ok ? 'b-done' : 'b-wait'}">${ok ? 'confirmado' : 'por revisar'}</span>
@@ -953,6 +967,13 @@ function paginaFicha(db, key, numero) {
   const msgs = db.getHistory(numero, 200);
   const notas = db.getNotas(numero);
   const pagosLead = db.listPagos(numero);
+  // Evidencia de reenvíos: contra qué pago confirmado choca el nº de operación.
+  const opsRevisar = pagosLead.filter((p) => p.estado === 'revisar' && p.numero_operacion);
+  const originalDe = {};
+  for (const p of opsRevisar) {
+    const o = db.buscarPagoConfirmado(p.numero_operacion);
+    if (o && o.id !== p.id) originalDe[p.id] = o;
+  }
   const roles = db.ultimosRoles();
   const keyRaw = decodeURIComponent(key);
   const sinResp = sinResponder(roles, lead);
@@ -1040,6 +1061,7 @@ function paginaFicha(db, key, numero) {
                 <span class="k">${p.monto != null ? `S/ ${esc(p.monto)}` : 'Monto ilegible'}${p.titular ? ` · ${esc(p.titular)}` : ''}<br>
                   <small style="color:var(--faint)">${esc((p.creado_en || '').slice(0, 16))}${p.numero_operacion ? ` · op. ${esc(p.numero_operacion)}` : ''}</small>
                   ${p.estado === 'revisar' && p.motivo ? `<br><small style="color:var(--red)">⚠ ${esc(p.motivo)}</small>` : ''}
+                  ${originalDe[p.id] ? `<br><small style="color:var(--red)">↩ mismo nº de operación que el pago CONFIRMADO de <a href="/admin/leads?key=${key}&numero=${esc(originalDe[p.id].numero)}" style="text-decoration:underline">+${esc(originalDe[p.id].numero)}</a> · ${esc((originalDe[p.id].creado_en || '').slice(0, 16))} · S/${esc(originalDe[p.id].monto)}</small>` : ''}
                 </span>
                 <span class="v" style="color:${p.estado === 'confirmado' ? 'var(--green-d)' : 'var(--red)'}">${p.estado === 'confirmado' ? '✅ Confirmado' : '⚠ Revisar'}</span>
               </div>`).join('')}
