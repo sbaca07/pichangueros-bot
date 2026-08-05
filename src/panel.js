@@ -21,6 +21,7 @@
  *   POST /admin/lead/nota              → agrega una nota al historial
  */
 const sheetsync = require('./sheetsync');
+const backup = require('./backup');
 const { buildLeadsWorkbook } = require('./excel');
 
 const esc = (v) =>
@@ -166,6 +167,13 @@ function registrarPanel(app, db, conexion = null) {
     if (!autorizado(req, res)) return;
     const r = await sheetsync.syncToSheet(db);
     res.redirect(`/admin/leads?key=${encodeURIComponent(req.query.key)}&sync=${r.ok ? r.n : 'err'}`);
+  });
+
+  // Mandar el respaldo completo por correo ahora mismo (no espera las 24 h).
+  app.get('/admin/backup-email', async (req, res) => {
+    if (!autorizado(req, res)) return;
+    const r = await backup.enviarBackup(db, { motivo: 'manual desde el panel' });
+    res.redirect(`/admin/leads?key=${encodeURIComponent(req.query.key)}&mail=${r.ok ? 'ok' : 'err'}`);
   });
 
   // --- Configuración del negocio (sedes, precios, textos) — sin tocar código ------
@@ -491,6 +499,7 @@ const sidebar = (key, activo) => `<aside class="sidebar">
     <a class="scsv" href="/admin/leads.csv?key=${key}">⬇ Exportar CSV</a>
     <a class="scsv" href="/admin/leads.xlsx?key=${key}">📊 Exportar Excel</a>
     <a class="scsv" href="/admin/backup-db?key=${key}">💾 Descargar backup BD</a>
+    ${backup.activo() ? `<a class="scsv" href="/admin/backup-email?key=${key}">✉ Enviar backup por correo</a>` : ''}
   </div>
 </aside>`;
 

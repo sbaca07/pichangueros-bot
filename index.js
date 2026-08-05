@@ -44,6 +44,7 @@ const db = require('./src/db');
 const brain = require('./src/brain');
 const pagos = require('./src/pagos');
 const sheet = require('./src/sheetsync');
+const backup = require('./src/backup');
 const meta = require('./src/meta');
 
 const PORT = process.env.PORT || 10000;
@@ -562,8 +563,12 @@ const conexion = {
 // Panel de control (src/panel.js): /admin/leads?key=ADMIN_KEY (+ CSV export)
 require('./src/panel').registrarPanel(app, db, conexion);
 
-// Espejo a Google Sheet (backup + visibilidad): al arrancar + cada 6 h.
+// Espejo a Google Sheet (visibilidad para Clarck): al arrancar + cada 6 h.
+// OJO: solo copia la tabla `leads` — NO es un respaldo completo.
 sheet.programarSync(db);
+
+// Respaldo REAL de la BD (leads + mensajes + pagos) por correo, cada 24 h.
+backup.programarBackup(db);
 
 app.get('/qr', (_req, res) => {
   if (connectionState === 'ready') {

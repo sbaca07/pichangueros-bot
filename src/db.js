@@ -352,6 +352,26 @@ function checkpoint() {
   db.exec('PRAGMA wal_checkpoint(FULL);');
 }
 
+/**
+ * Escribe una copia ÍNTEGRA de la BD en `destino` (que no debe existir).
+ *
+ * VACUUM INTO produce un .db consistente aunque el bot esté escribiendo:
+ * copiar el archivo a mano puede salir cortado porque parte de la data está en
+ * el WAL. Lo usa el respaldo por correo (src/backup.js).
+ */
+function snapshot(destino) {
+  // El destino lo arma el que llama con mkdtemp, pero escapamos igual: si
+  // alguna vez la ruta llega desde afuera, una comilla rompería el SQL.
+  db.exec(`VACUUM INTO '${String(destino).replace(/'/g, "''")}'`);
+  return destino;
+}
+
+/** Totales de pagos confirmados — para el resumen del correo de respaldo. */
+function resumenPagos() {
+  const r = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(monto), 0) AS s FROM pagos WHERE estado = 'confirmado'").get();
+  return { confirmados: r.n, monto: r.s };
+}
+
 // --- Configuración del negocio (editable en /admin/leads?vista=config) --------
 const CAMPOS_CONFIG = [
   'marca', 'yape_numero', 'yape_titular', 'precio_brena', 'precio_comas',
@@ -454,7 +474,7 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'multicupo_migrado_2026_
 module.exports = {
   getLead, getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
   setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead, actividadPorDia,
-  checkpoint, dbPath: DB_PATH,
+  checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
 };
