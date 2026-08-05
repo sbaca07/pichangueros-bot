@@ -501,7 +501,10 @@ if (TRANSPORTE === 'meta') {
 
 // --- Servidor HTTP (health + página de QR) -----------------------------------
 const app = express();
-app.use(express.json()); // el webhook de Meta llega como JSON
+// El webhook de Meta llega como JSON. Guardamos el cuerpo CRUDO porque la firma
+// X-Hub-Signature-256 se calcula sobre los bytes exactos que mandó Meta: si se
+// re-serializa el objeto ya parseado, el HMAC no coincide.
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 if (TRANSPORTE === 'meta' && meta.activo()) {
   meta.registrarWebhook(app, {

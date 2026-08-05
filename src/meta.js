@@ -23,12 +23,44 @@
  *     respuesta manual, igual que hacía con Baileys.
  */
 
+const crypto = require('crypto');
+
 const TOKEN = process.env.META_TOKEN || '';
 const PHONE_ID = process.env.META_PHONE_NUMBER_ID || '';
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || '';
+const APP_SECRET = process.env.META_APP_SECRET || '';
 const GRAPH = `https://graph.facebook.com/${process.env.META_GRAPH_VERSION || 'v23.0'}`;
 
 const activo = () => Boolean(TOKEN && PHONE_ID && VERIFY_TOKEN);
+
+/**
+ * Valida la firma X-Hub-Signature-256 del webhook.
+ *
+ * El endpoint es público: sin esto, cualquiera que sepa la URL puede inventar
+ * mensajes, hacer que el bot responda a números arbitrarios y quemar créditos
+ * de OpenAI. Meta firma el cuerpo crudo con el App Secret de la app dueña de la
+ * suscripción (con Webhook Override, la del Tech Provider — pedírselo).
+ *
+ * Si META_APP_SECRET no está seteado, se deja pasar con warning en vez de
+ * romper el canal: preferimos un bot que funcione sin verificar a uno mudo.
+ */
+let avisoFirmaDado = false;
+function firmaValida(req) {
+  if (!APP_SECRET) {
+    if (!avisoFirmaDado) {
+      avisoFirmaDado = true;
+      console.warn('[meta] ⚠ META_APP_SECRET sin setear: el webhook NO valida firma (endpoint abierto).');
+    }
+    return true;
+  }
+  const recibida = req.get('x-hub-signature-256') || '';
+  if (!recibida.startsWith('sha256=') || !req.rawBody) return false;
+  const esperada = 'sha256=' + crypto.createHmac('sha256', APP_SECRET).update(req.rawBody).digest('hex');
+  const a = Buffer.from(recibida);
+  const b = Buffer.from(esperada);
+  // timingSafeEqual exige mismo largo — comparar largos primero evita que tire.
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 // --- Salida -------------------------------------------------------------------
 
@@ -116,6 +148,10 @@ function registrarWebhook(app, { onMensaje, onEcho }) {
   });
 
   app.post('/webhook/meta', (req, res) => {
+    if (!firmaValida(req)) {
+      console.error('[meta] Webhook RECHAZADO: firma X-Hub-Signature-256 inválida.');
+      return res.sendStatus(403);
+    }
     res.sendStatus(200); // responder YA — Meta reintenta si demoras
     try {
       for (const entry of req.body?.entry || []) {
@@ -145,4 +181,4 @@ function registrarWebhook(app, { onMensaje, onEcho }) {
   console.log('[meta] Webhook oficial registrado en /webhook/meta (transporte Cloud API).');
 }
 
-module.exports = { activo, registrarWebhook, enviarTexto, sockAdapter, aMensajeBaileys };
+module.exports = { activo, registrarWebhook, enviarTexto, sockAdapter, aMensajeBaileys, firmaValida };
