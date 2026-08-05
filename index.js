@@ -46,12 +46,20 @@ const pagos = require('./src/pagos');
 const sheet = require('./src/sheetsync');
 const backup = require('./src/backup');
 const meta = require('./src/meta');
+const ycloud = require('./src/ycloud');
 
 const PORT = process.env.PORT || 10000;
 // Transporte de mensajes: 'baileys' (dispositivo vinculado, ruta no oficial) o
 // 'meta' (Cloud API oficial en coexistencia — decisión 2026-07-15 tras los
 // bloqueos; ver investigacion/plan-canal-oficial.md). Mismo cerebro/CRM/panel.
 const TRANSPORTE = (process.env.TRANSPORTE || 'baileys').toLowerCase();
+// Los dos transportes oficiales exponen la misma interfaz (activo /
+// registrarWebhook / sockAdapter), así que el resto del archivo no necesita
+// saber cuál está puesto: pregunta por `oficial`.
+const oficial = TRANSPORTE === 'meta' ? meta : TRANSPORTE === 'ycloud' ? ycloud : null;
+/** Número del negocio cuando corre por canal oficial (ahí no hay "sesión" que lo diga). */
+const numeroOficial = () =>
+  (process.env[TRANSPORTE === 'ycloud' ? 'YCLOUD_NUMERO' : 'META_NUMERO'] || '').replace(/\D/g, '') || null;
 const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || '.wwebjs_auth';
 const SESSION_DIR = path.join(AUTH_PATH, 'baileys');
 const SAFE_MODE = (process.env.SAFE_MODE || 'true') !== 'false';
@@ -488,13 +496,13 @@ async function startBot() {
   });
 }
 
-if (TRANSPORTE === 'meta') {
-  if (meta.activo()) {
+if (oficial) {
+  if (oficial.activo()) {
     connectionState = 'ready'; // el canal oficial no tiene "sesión": si hay credenciales, está listo
-    console.log('[meta] Transporte OFICIAL activo (Cloud API, coexistencia) — Baileys apagado.');
+    console.log(`[${TRANSPORTE}] Transporte OFICIAL activo (Cloud API, coexistencia) — Baileys apagado.`);
   } else {
     connectionState = 'disconnected';
-    console.error('[meta] TRANSPORTE=meta pero faltan META_TOKEN / META_PHONE_NUMBER_ID / META_VERIFY_TOKEN.');
+    console.error(`[${TRANSPORTE}] TRANSPORTE=${TRANSPORTE} pero faltan las credenciales del proveedor.`);
   }
 } else {
   startBot();
@@ -507,22 +515,25 @@ const app = express();
 // re-serializa el objeto ya parseado, el HMAC no coincide.
 app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
-if (TRANSPORTE === 'meta' && meta.activo()) {
-  meta.registrarWebhook(app, {
+if (oficial && oficial.activo()) {
+  oficial.registrarWebhook(app, {
     // Los mensajes entrantes pasan por la MISMA cola por contacto que Baileys.
     onMensaje: (sockLike, msg) => encolarPorNumero(numeroDe(msg), () => manejarMensaje(sockLike, msg)),
     // Echoes de coexistencia = respuestas a mano de Clarck desde su app.
     onEcho: (msg) => registrarRespuestaManual(msg),
+    // Salud de la cuenta (calidad del número, revisiones de Meta): con el
+    // historial de sanciones, esto es la alerta más temprana que tenemos.
+    onAlerta: (aviso) => notificarControl(oficial.sockAdapter, `[Pichangueros] ${aviso}`),
   });
 }
 
 app.get('/', (_req, res) => {
   res.json({
     service: 'pichangueros-bot',
-    engine: TRANSPORTE === 'meta' ? 'meta-cloud-api' : 'baileys',
+    engine: TRANSPORTE === 'meta' ? 'meta-cloud-api' : TRANSPORTE === 'ycloud' ? 'ycloud-cloud-api' : 'baileys',
     state: connectionState,
     // número de WhatsApp enlazado (null si aún no conecta); en meta viene de env
-    linkedNumber: TRANSPORTE === 'meta' ? (process.env.META_NUMERO || '').replace(/\D/g, '') || null : linkedNumber,
+    linkedNumber: oficial ? numeroOficial() : linkedNumber,
     safeMode: SAFE_MODE,
     brain: brain.cerebroActivo(),
     leads: db.stats(),
@@ -533,10 +544,10 @@ app.get('/', (_req, res) => {
 // leer estado/número/QR y poder desconectar (logout → limpia sesión → nuevo QR).
 const conexion = {
   estado: () => connectionState,
-  numero: () => (TRANSPORTE === 'meta' ? (process.env.META_NUMERO || '').replace(/\D/g, '') || null : linkedNumber),
-  qr: () => (TRANSPORTE === 'meta' ? null : lastQrDataUrl),
+  numero: () => (oficial ? numeroOficial() : linkedNumber),
+  qr: () => (oficial ? null : lastQrDataUrl),
   async desconectar() {
-    if (TRANSPORTE === 'meta') return false; // el canal oficial no se "desconecta" desde acá
+    if (oficial) return false; // el canal oficial no se "desconecta" desde acá
     if (!currentSock) return false;
     // logout() dispara connection.close con loggedOut=true → el handler de arriba
     // borra la sesión y reconecta, generando un QR nuevo para (re)enlazar.
@@ -546,11 +557,9 @@ const conexion = {
   },
   // Envía un texto suelto (lo usa el panel: mensaje de prueba / aviso manual).
   enviar: async (numero, texto) => {
-    if (connectionState !== 'ready' || (TRANSPORTE !== 'meta' && !currentSock)) return { ok: false, error: 'bot no conectado' };
+    if (connectionState !== 'ready' || (!oficial && !currentSock)) return { ok: false, error: 'bot no conectado' };
     try {
-      const sent = TRANSPORTE === 'meta'
-        ? await enviarTexto(meta.sockAdapter, `${numero}@s.whatsapp.net`, texto)
-        : await enviarTexto(currentSock, `${numero}@s.whatsapp.net`, texto);
+      const sent = await enviarTexto(oficial ? oficial.sockAdapter : currentSock, `${numero}@s.whatsapp.net`, texto);
       console.log(`[send] OK → ${numero} id=${sent?.key?.id || '?'} (panel)`);
       return { ok: true, id: sent?.key?.id || null };
     } catch (e) {
