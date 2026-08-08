@@ -189,14 +189,35 @@ const ALERTAS = {
  * `onEcho(msg)` registra las respuestas manuales de Clarck (coexistencia);
  * `onAlerta(aviso)` avisa al número de control de la salud de la cuenta.
  */
-function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
-  // Verificación inicial (Meta manda un GET con el verify token).
+/**
+ * Registra SOLO el handshake de verificación (el GET con hub.challenge).
+ *
+ * Va separado de la ingesta a propósito. Para dar de alta el webhook en el panel
+ * del Tech Provider, Meta pega un GET y espera el challenge — pero ese paso es
+ * anterior a tener `META_TOKEN` y `META_PHONE_NUMBER_ID`, que salen justamente
+ * de la conexión que todavía no existe. Sin esta separación el orden era
+ * imposible: la ruta no existía hasta tener credenciales, y no había
+ * credenciales hasta configurar la ruta.
+ *
+ * Verificar no requiere credenciales: solo comparar el verify token. Y como el
+ * POST queda sin registrar, no se puede ingerir ni un mensaje.
+ */
+function registrarVerificacion(app) {
+  if (!usable(VERIFY_TOKEN)) {
+    console.warn('[meta] META_VERIFY_TOKEN sin setear: no se registra el handshake del webhook.');
+    return false;
+  }
   app.get('/webhook/meta', (req, res) => {
     if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === VERIFY_TOKEN) {
       return res.send(req.query['hub.challenge']);
     }
     res.sendStatus(403);
   });
+  return true;
+}
+
+function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
+  registrarVerificacion(app);
 
   app.post('/webhook/meta', (req, res) => {
     if (!firmaValida(req)) {
@@ -241,4 +262,4 @@ function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
   console.log('[meta] Webhook oficial registrado en /webhook/meta (transporte Cloud API).');
 }
 
-module.exports = { activo, motivoInactivo, registrarWebhook, enviarTexto, sockAdapter, aMensajeBaileys, firmaValida };
+module.exports = { activo, motivoInactivo, registrarVerificacion, registrarWebhook, enviarTexto, sockAdapter, aMensajeBaileys, firmaValida };

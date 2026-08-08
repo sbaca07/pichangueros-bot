@@ -520,6 +520,15 @@ const app = express();
 // re-serializa el objeto ya parseado, el HMAC no coincide.
 app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
+// Sin credenciales todavía: se expone SOLO el handshake de verificación, para
+// poder dar de alta el webhook en el panel del proveedor antes de tener el
+// token. La ingesta (POST) no se registra, así que no entra nada.
+if (oficial && !oficial.activo() && typeof oficial.registrarVerificacion === 'function') {
+  if (oficial.registrarVerificacion(app)) {
+    console.log(`[${TRANSPORTE}] Solo handshake de verificación activo (GET /webhook/${TRANSPORTE}). La ingesta llega con las credenciales.`);
+  }
+}
+
 if (oficial && oficial.activo()) {
   oficial.registrarWebhook(app, {
     // Los mensajes entrantes pasan por la MISMA cola por contacto que Baileys.

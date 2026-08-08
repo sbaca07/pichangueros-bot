@@ -156,6 +156,49 @@ async function main() {
     check('payload sin entry responde 200', vacio.status === 200);
   }
 
+  console.log('\n== Handshake sin credenciales (alta del webhook antes del token) ==');
+  {
+    // Para dar de alta el webhook en Dualhook, Meta pega un GET con el
+    // challenge — pero eso pasa ANTES de tener token/phone_number_id. Se expone
+    // solo el GET; el POST no se registra, asi que no se puede ingerir nada.
+    const previo = { ...process.env };
+    process.env.META_TOKEN = '';
+    process.env.META_PHONE_NUMBER_ID = '';
+    process.env.META_VERIFY_TOKEN = 'solo-verificacion';
+    delete require.cache[require.resolve('./src/meta')];
+    const soloVerif = require('./src/meta');
+    process.env = previo;
+    delete require.cache[require.resolve('./src/meta')];
+
+    check('sin credenciales, activo() sigue en false', soloVerif.activo() === false);
+
+    const app2 = express();
+    const reg = soloVerif.registrarVerificacion(app2);
+    check('registrarVerificacion() devuelve true con verify token', reg === true);
+    const srv2 = app2.listen(0);
+    const b2 = `http://127.0.0.1:${srv2.address().port}`;
+
+    const ok2 = await fetch(`${b2}/webhook/meta?hub.mode=subscribe&hub.verify_token=solo-verificacion&hub.challenge=reto`);
+    check('el handshake responde el challenge sin credenciales', (await ok2.text()) === 'reto');
+
+    const mal2 = await fetch(`${b2}/webhook/meta?hub.mode=subscribe&hub.verify_token=otro&hub.challenge=x`);
+    check('verify token incorrecto → 403', mal2.status === 403, `status=${mal2.status}`);
+
+    const post2 = await fetch(`${b2}/webhook/meta`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    check('la INGESTA sigue cerrada → 404', post2.status === 404, `status=${post2.status}`);
+    srv2.close();
+
+    // Sin verify token no se registra nada: no exponemos una ruta inútil.
+    const previo2 = { ...process.env };
+    process.env.META_VERIFY_TOKEN = '';
+    delete require.cache[require.resolve('./src/meta')];
+    const sinNada = require('./src/meta');
+    process.env = previo2;
+    delete require.cache[require.resolve('./src/meta')];
+    const app3 = express();
+    check('sin verify token no se registra el handshake', sinNada.registrarVerificacion(app3) === false);
+  }
+
   console.log('\n== activo(): placeholders NO cuentan como credenciales ==');
   {
     // Regresión del incidente 2026-08: Render tenía
