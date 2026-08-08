@@ -502,7 +502,12 @@ if (oficial) {
     console.log(`[${TRANSPORTE}] Transporte OFICIAL activo (Cloud API, coexistencia) — Baileys apagado.`);
   } else {
     connectionState = 'disconnected';
-    console.error(`[${TRANSPORTE}] TRANSPORTE=${TRANSPORTE} pero faltan las credenciales del proveedor.`);
+    const motivo = typeof oficial.motivoInactivo === 'function' ? oficial.motivoInactivo() : '';
+    console.error(
+      `[${TRANSPORTE}] TRANSPORTE=${TRANSPORTE} pero las credenciales del proveedor no sirven`
+      + `${motivo ? `: ${motivo}` : '.'}`
+      + ' — el bot NO recibe mensajes y Baileys queda apagado.'
+    );
   }
 } else {
   startBot();

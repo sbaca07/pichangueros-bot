@@ -31,7 +31,36 @@ const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || '';
 const APP_SECRET = process.env.META_APP_SECRET || '';
 const GRAPH = `https://graph.facebook.com/${process.env.META_GRAPH_VERSION || 'v23.0'}`;
 
-const activo = () => Boolean(TOKEN && PHONE_ID && VERIFY_TOKEN);
+/**
+ * ¿Hay credenciales USABLES? No alcanza con que las variables existan.
+ *
+ * Este servicio estuvo un mes reportando `state:"ready"` y mudo porque Render
+ * tenía `META_PHONE_NUMBER_ID=PENDIENTE-reemplazar-con-phone-number-id`: un
+ * string no vacío, que el `Boolean(...)` original daba por bueno. Con eso
+ * index.js apagaba Baileys, registraba el webhook (sin App Secret, o sea
+ * abierto) y anunciaba que estaba listo, sobre un canal que no existía.
+ *
+ * Por eso ahora se valida la FORMA, no la presencia: el phone_number_id de Meta
+ * es numérico, y cualquier valor con pinta de recordatorio se rechaza.
+ */
+// \b a propósito: un token real puede contener estas letras como subcadena
+// (`EAAxxxToken` traía "xxx"). Solo se rechaza la palabra suelta, que es lo que
+// escribe un humano dejándose un recordatorio.
+const PLACEHOLDER = /\b(pendiente|reemplazar|placeholder|cambiar|todo|xxxx+|tu[-_ ]?(token|id))\b/i;
+const usable = (v) => Boolean(v) && !PLACEHOLDER.test(v);
+
+const activo = () => usable(TOKEN) && usable(VERIFY_TOKEN) && /^\d{6,}$/.test(PHONE_ID || '');
+
+/** Explica por qué el transporte no está activo, para que el log sea accionable. */
+function motivoInactivo() {
+  const faltan = [];
+  if (!usable(TOKEN)) faltan.push(TOKEN ? 'META_TOKEN parece un placeholder' : 'META_TOKEN vacía');
+  if (!/^\d{6,}$/.test(PHONE_ID || '')) {
+    faltan.push(PHONE_ID ? 'META_PHONE_NUMBER_ID no es numérico (¿placeholder?)' : 'META_PHONE_NUMBER_ID vacía');
+  }
+  if (!usable(VERIFY_TOKEN)) faltan.push(VERIFY_TOKEN ? 'META_VERIFY_TOKEN parece un placeholder' : 'META_VERIFY_TOKEN vacía');
+  return faltan.join(' · ');
+}
 
 /**
  * Valida la firma X-Hub-Signature-256 del webhook.
@@ -135,10 +164,32 @@ function aMensajeBaileys(m, fromMe = false) {
 }
 
 /**
- * Registra las rutas del webhook. `onMensaje(sock, msg)` es manejarMensaje;
- * `onEcho(msg)` registra las respuestas manuales de Clarck (coexistencia).
+ * Eventos de salud de la cuenta. Meta NO los manda dentro de `messages`: cada
+ * uno llega como un `field` propio del change. Con el historial de sanciones del
+ * número, que Meta le baje la calidad o la ponga en revisión es la señal más
+ * temprana que vamos a tener — por eso se avisa al número de control, no solo al
+ * log.
+ *
+ * ⚠️ Hay que suscribir estos campos en el panel del Tech Provider además de
+ * `messages` y `message_echoes`, o el webhook no los recibe nunca.
  */
-function registrarWebhook(app, { onMensaje, onEcho }) {
+const ALERTAS = {
+  phone_number_quality_update: (v) =>
+    `⚠️ Meta cambió la CALIDAD del número: ${v?.event || '?'}`
+    + `${v?.current_limit ? ` (límite: ${v.current_limit})` : ''}`,
+  account_update: (v) =>
+    `⚠️ Meta actualizó la cuenta: ${v?.event || '?'}`
+    + `${v?.ban_info?.waba_ban_state ? ` — ban_state: ${v.ban_info.waba_ban_state}` : ''}`,
+  account_review_update: (v) =>
+    `⚠️ Meta REVISÓ la cuenta de WhatsApp Business. Decisión: ${v?.decision || '?'}`,
+};
+
+/**
+ * Registra las rutas del webhook. `onMensaje(sock, msg)` es manejarMensaje;
+ * `onEcho(msg)` registra las respuestas manuales de Clarck (coexistencia);
+ * `onAlerta(aviso)` avisa al número de control de la salud de la cuenta.
+ */
+function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
   // Verificación inicial (Meta manda un GET con el verify token).
   app.get('/webhook/meta', (req, res) => {
     if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === VERIFY_TOKEN) {
@@ -157,6 +208,15 @@ function registrarWebhook(app, { onMensaje, onEcho }) {
       for (const entry of req.body?.entry || []) {
         for (const change of entry.changes || []) {
           const v = change.value || {};
+
+          // Salud de la cuenta: viene como un `field` propio, nunca junto a los
+          // mensajes. Se atiende primero y se corta — no trae messages/echoes.
+          if (ALERTAS[change.field]) {
+            const aviso = ALERTAS[change.field](v);
+            console.error(`[meta] ${aviso}`);
+            if (onAlerta) { try { onAlerta(aviso); } catch (e) { console.error('[meta] Error avisando:', e.message); } }
+            continue;
+          }
 
           // Mensajes entrantes de clientes.
           for (const m of v.messages || []) {
@@ -181,4 +241,4 @@ function registrarWebhook(app, { onMensaje, onEcho }) {
   console.log('[meta] Webhook oficial registrado en /webhook/meta (transporte Cloud API).');
 }
 
-module.exports = { activo, registrarWebhook, enviarTexto, sockAdapter, aMensajeBaileys, firmaValida };
+module.exports = { activo, motivoInactivo, registrarWebhook, enviarTexto, sockAdapter, aMensajeBaileys, firmaValida };

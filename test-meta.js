@@ -30,12 +30,14 @@ function check(nombre, condicion, detalle = '') {
 
 const recibidos = [];
 const echoes = [];
+const alertas = [];
 
 const app = express();
 app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 meta.registrarWebhook(app, {
   onMensaje: (sock, msg) => { recibidos.push({ sock, msg }); },
   onEcho: (msg) => { echoes.push(msg); },
+  onAlerta: (aviso) => { alertas.push(aviso); },
 });
 
 const server = app.listen(0);
@@ -53,8 +55,8 @@ async function postWebhook(payload, { firma = true, firmaMala = false } = {}) {
 }
 
 /** Payload con la forma real del webhook de Meta. */
-function sobre(valor) {
-  return { object: 'whatsapp_business_account', entry: [{ id: 'WABA', changes: [{ field: 'messages', value: valor }] }] };
+function sobre(valor, field = 'messages') {
+  return { object: 'whatsapp_business_account', entry: [{ id: 'WABA', changes: [{ field, value: valor }] }] };
 }
 
 // --- Doble del fetch a la Graph API --------------------------------------------
@@ -152,6 +154,75 @@ async function main() {
 
     const vacio = await postWebhook({ object: 'whatsapp_business_account' });
     check('payload sin entry responde 200', vacio.status === 200);
+  }
+
+  console.log('\n== activo(): placeholders NO cuentan como credenciales ==');
+  {
+    // Regresión del incidente 2026-08: Render tenía
+    // META_PHONE_NUMBER_ID=PENDIENTE-reemplazar-con-phone-number-id y el
+    // Boolean() original lo daba por válido → el bot apagó Baileys, abrió el
+    // webhook sin App Secret y reportó ready durante un mes, mudo.
+    // meta.js lee el env al cargarse, así que se recarga el módulo por caso.
+    const recargar = (envs) => {
+      const previo = { ...process.env };
+      Object.assign(process.env, envs);
+      delete require.cache[require.resolve('./src/meta')];
+      const mod = require('./src/meta');
+      process.env = previo;
+      delete require.cache[require.resolve('./src/meta')];
+      return mod;
+    };
+    const buenas = { META_TOKEN: 'EAAG7ZBxyz0011TokenDeVerdad', META_PHONE_NUMBER_ID: '123456789012345', META_VERIFY_TOKEN: 'verificame' };
+
+    check('credenciales reales → activo', recargar(buenas).activo() === true);
+    // Un token real puede traer "xxx"/"todo" como subcadena: no debe rechazarse.
+    check('token con "xxx" adentro NO se confunde con placeholder', recargar({ ...buenas, META_TOKEN: 'EAAxxxTokenReal' }).activo() === true);
+
+    const ph = recargar({ ...buenas, META_PHONE_NUMBER_ID: 'PENDIENTE-reemplazar-con-phone-number-id' });
+    check('el placeholder EXACTO de producción → NO activo', ph.activo() === false);
+    check('y el motivo nombra la variable', /META_PHONE_NUMBER_ID/.test(ph.motivoInactivo()), ph.motivoInactivo());
+
+    check('phone_number_id no numérico → NO activo', recargar({ ...buenas, META_PHONE_NUMBER_ID: 'abc123' }).activo() === false);
+    check('token con "reemplazar" → NO activo', recargar({ ...buenas, META_TOKEN: 'reemplazar-con-el-token' }).activo() === false);
+    check('verify token "TODO" → NO activo', recargar({ ...buenas, META_VERIFY_TOKEN: 'TODO' }).activo() === false);
+
+    const vacio = recargar({ ...buenas, META_TOKEN: '' });
+    check('token vacío → NO activo', vacio.activo() === false);
+    check('el motivo distingue vacía de placeholder', /META_TOKEN vacía/.test(vacio.motivoInactivo()), vacio.motivoInactivo());
+
+    check('motivo vacío cuando todo está bien', recargar(buenas).motivoInactivo() === '', recargar(buenas).motivoInactivo());
+  }
+
+  console.log('\n== Alertas de salud de la cuenta ==');
+  {
+    alertas.length = 0;
+    recibidos.length = 0;
+
+    await postWebhook(sobre({ display_phone_number: '51915395067', event: 'FLAGGED', current_limit: 'TIER_1K' }, 'phone_number_quality_update'));
+    await new Promise((r) => setTimeout(r, 20));
+    check('calidad del número dispara aviso', alertas.length === 1, `alertas=${alertas.length}`);
+    check('el aviso dice el evento y el límite', /FLAGGED/.test(alertas[0] || '') && /TIER_1K/.test(alertas[0] || ''), alertas[0]);
+
+    await postWebhook(sobre({ phone_number: '51915395067', event: 'ACCOUNT_RESTRICTION', ban_info: { waba_ban_state: 'SCHEDULE_FOR_DISABLE' } }, 'account_update'));
+    await new Promise((r) => setTimeout(r, 20));
+    check('restricción de la cuenta dispara aviso', alertas.length === 2, `alertas=${alertas.length}`);
+    check('el aviso incluye el ban_state', /SCHEDULE_FOR_DISABLE/.test(alertas[1] || ''), alertas[1]);
+
+    await postWebhook(sobre({ decision: 'REJECTED' }, 'account_review_update'));
+    await new Promise((r) => setTimeout(r, 20));
+    check('revisión de la cuenta dispara aviso', alertas.length === 3 && /REJECTED/.test(alertas[2] || ''), alertas[2]);
+
+    check('ninguna alerta despertó al cerebro', recibidos.length === 0, `recibidos=${recibidos.length}`);
+
+    const sinFirma = await postWebhook(sobre({ event: 'DISABLED_UPDATE' }, 'account_update'), { firma: false });
+    check('una alerta sin firma se rechaza igual que un mensaje', sinFirma.status === 403, `status=${sinFirma.status}`);
+    await new Promise((r) => setTimeout(r, 20));
+    check('la alerta sin firma no llegó', alertas.length === 3, `alertas=${alertas.length}`);
+
+    const desconocido = await postWebhook(sobre({ cosa: 1 }, 'template_status_update'));
+    check('un field que no manejamos responde 200 sin romper', desconocido.status === 200, `status=${desconocido.status}`);
+    await new Promise((r) => setTimeout(r, 20));
+    check('un field desconocido no genera aviso', alertas.length === 3, `alertas=${alertas.length}`);
   }
 
   console.log('\n== Envío por la Graph API ==');
