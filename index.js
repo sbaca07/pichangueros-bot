@@ -535,9 +535,15 @@ if (oficial && oficial.activo()) {
     onMensaje: (sockLike, msg) => encolarPorNumero(numeroDe(msg), () => manejarMensaje(sockLike, msg)),
     // Echoes de coexistencia = respuestas a mano de Clarck desde su app.
     onEcho: (msg) => registrarRespuestaManual(msg),
-    // Salud de la cuenta (calidad del número, revisiones de Meta): con el
-    // historial de sanciones, esto es la alerta más temprana que tenemos.
-    onAlerta: (aviso) => notificarControl(oficial.sockAdapter, `[Pichangueros] ${aviso}`),
+    // Salud de la cuenta: con el historial de sanciones, es la alerta más
+    // temprana que tenemos. Sale por LOS DOS canales a propósito — el WhatsApp
+    // es best-effort (Cloud API lo rechaza con 131047 fuera de la ventana de
+    // 24 h, y si la cuenta quedó deshabilitada falla siempre), el correo es el
+    // que de verdad llega.
+    onAlerta: (aviso) => {
+      notificarControl(oficial.sockAdapter, `[Pichangueros] ${aviso}`);
+      backup.avisar('Salud de la cuenta de WhatsApp', aviso);
+    },
   });
 }
 
@@ -548,6 +554,14 @@ app.get('/', (_req, res) => {
     state: connectionState,
     // número de WhatsApp enlazado (null si aún no conecta); en meta viene de env
     linkedNumber: oficial ? numeroOficial() : linkedNumber,
+    // Por QUÉ no está listo, no solo que no lo está. El incidente de agosto duró
+    // un mes porque este endpoint decía "ready" y el motivo real solo existía en
+    // los logs de Render, que nadie mira.
+    motivo: oficial && !oficial.activo() && typeof oficial.motivoInactivo === 'function'
+      ? oficial.motivoInactivo() : undefined,
+    // Un webhook sin App Secret acepta cualquier POST. Que se vea acá evita que
+    // vuelva a pasar inadvertido.
+    firmaValidada: oficial && typeof oficial.firmaActiva === 'function' ? oficial.firmaActiva() : undefined,
     safeMode: SAFE_MODE,
     brain: brain.cerebroActivo(),
     leads: db.stats(),

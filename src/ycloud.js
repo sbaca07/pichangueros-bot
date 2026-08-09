@@ -136,14 +136,17 @@ function aMensajeBaileys(m, fromMe = false) {
  * Meta le baje la calidad o la ponga en revisión es la señal más temprana que
  * vamos a tener — por eso se avisa al número de control, no solo al log.
  */
-const ALERTAS = {
+// Object.create(null) igual que en meta.js: `evento.type` viene del payload, y
+// con un objeto literal `ALERTAS['toString']` heredaría de Object.prototype y
+// daría truthy — un POST con type:"constructor" mandaba un objeto como aviso.
+const ALERTAS = Object.assign(Object.create(null), {
   'whatsapp.phone_number.quality_updated': (v) =>
     `⚠️ Meta cambió la CALIDAD del número: ${v?.qualityRating || v?.quality_rating || '?'}`,
   'whatsapp.business_account.reviewed': (v) =>
     `⚠️ Meta REVISÓ la cuenta de WhatsApp Business. Estado: ${v?.banState || v?.status || '?'}`,
   'whatsapp.phone_number.deleted': () => '🚨 El número fue ELIMINADO de la cuenta de WhatsApp Business.',
   'whatsapp.business_account.deleted': () => '🚨 La cuenta de WhatsApp Business fue ELIMINADA.',
-};
+});
 
 /** Saca el objeto de datos del sobre, sin depender de una sola llave. */
 function cuerpoDelEvento(e) {
@@ -190,7 +193,7 @@ function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
         return;
       }
 
-      if (ALERTAS[tipo]) {
+      if (typeof ALERTAS[tipo] === 'function') {
         const aviso = ALERTAS[tipo](datos || {});
         console.error(`[ycloud] ${aviso}`);
         if (onAlerta) { try { onAlerta(aviso); } catch (e) { console.error('[ycloud] Error avisando:', e.message); } }

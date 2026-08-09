@@ -123,4 +123,40 @@ function programarBackup(db, horas = Number(process.env.BACKUP_HORAS || 24)) {
   console.log(`[backup] Respaldo por correo activo → ${EMAIL_TO} (cada ${horas} h).`);
 }
 
-module.exports = { enviarBackup, programarBackup, activo, armarSnapshot };
+/**
+ * Aviso urgente por correo. Es el único canal CONFIABLE para las alertas de
+ * salud de la cuenta.
+ *
+ * Mandarlas por WhatsApp saliente no sirve: Cloud API rechaza el texto libre
+ * fuera de la ventana de 24 h (error 131047), y el número de control casi nunca
+ * escribió al bot en ese lapso. Peor todavía en el caso que más importa —la
+ * cuenta deshabilitada o la coexistencia desconectada— donde el canal que
+ * avisaría es exactamente el que se cayó.
+ *
+ * Nunca tira: si el correo no está configurado, deja el aviso en el log.
+ */
+async function avisar(asunto, cuerpo = '') {
+  if (!activo()) {
+    console.error(`[aviso] SIN CANAL DE CORREO — el aviso queda solo en el log: ${asunto}`);
+    return { ok: false, motivo: 'no configurado' };
+  }
+  try {
+    const transporte = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+    });
+    await transporte.sendMail({
+      from: `Pichangueros Bot <${EMAIL_USER}>`,
+      to: EMAIL_TO,
+      subject: `[Pichangueros] ${asunto}`,
+      text: `${cuerpo || asunto}\n\nEnviado por el bot de Pichangueros (${hoyLima()}).\n`,
+    });
+    console.log(`[aviso] Enviado por correo a ${EMAIL_TO}: ${asunto}`);
+    return { ok: true };
+  } catch (e) {
+    console.error('[aviso] No se pudo mandar el correo:', e.message);
+    return { ok: false, motivo: e.message };
+  }
+}
+
+module.exports = { enviarBackup, programarBackup, activo, armarSnapshot, avisar };

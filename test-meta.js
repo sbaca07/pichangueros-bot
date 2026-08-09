@@ -268,6 +268,71 @@ async function main() {
     check('un field desconocido no genera aviso', alertas.length === 3, `alertas=${alertas.length}`);
   }
 
+  console.log('\n== Campos hostiles: no heredar de Object.prototype ==');
+  {
+    // `change.field` viene del payload. Con ALERTAS como objeto literal,
+    // ALERTAS['toString'] heredaba de Object.prototype y daba truthy: un POST con
+    // field:"toString" mandaba "[object Object]" al número de control, y
+    // field:"__proto__" tiraba TypeError que abortaba el loop entero.
+    for (const hostil of ['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__']) {
+      alertas.length = 0;
+      const r = await postWebhook(sobre({ cosa: 1 }, hostil));
+      check(`field:"${hostil}" → 200 sin avisar`, r.status === 200 && alertas.length === 0, `status=${r.status} alertas=${alertas.length}`);
+    }
+
+    // El caso que se comía mensajes: un change hostil ANTES de uno legítimo.
+    recibidos.length = 0;
+    alertas.length = 0;
+    await postWebhook({
+      object: 'whatsapp_business_account',
+      entry: [{ id: 'W', changes: [
+        { field: '__proto__', value: {} },
+        { field: 'messages', value: { messages: [{ id: 'no-perder', from: '51943791755', type: 'text', text: { body: 'hola quiero jugar' } }] } },
+      ] }],
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    check('un field hostil NO se come el mensaje legítimo que viene después', recibidos.length === 1, `recibidos=${recibidos.length}`);
+  }
+
+  console.log('\n== account_alerts y eventos que dejan el bot mudo ==');
+  {
+    alertas.length = 0;
+    await postWebhook(sobre({ alert_info: { alert_severity: 'WARNING', alert_status: 'ACTIVE', alert_type: 'INCREASED_CAPABILITIES_ELIGIBILITY_DEFERRED', alert_description: 'Limits cannot be increased' } }, 'account_alerts'));
+    await new Promise((r) => setTimeout(r, 20));
+    check('account_alerts dispara aviso', alertas.length === 1, `alertas=${alertas.length}`);
+    check('el aviso trae severidad y tipo', /WARNING/.test(alertas[0] || '') && /DEFERRED/.test(alertas[0] || ''), alertas[0]);
+
+    // PARTNER_REMOVED es EL evento que avisa que la coexistencia se cayó.
+    alertas.length = 0;
+    await postWebhook(sobre({ event: 'PARTNER_REMOVED', disconnection_info: { reason: 'inactivity' } }, 'account_update'));
+    await new Promise((r) => setTimeout(r, 20));
+    check('PARTNER_REMOVED se marca como corte grave', /🚨/.test(alertas[0] || '') && /DESCONECTÓ/.test(alertas[0] || ''), alertas[0]);
+
+    // quality_update ya no reporta calidad: no inventar que bajó.
+    alertas.length = 0;
+    await postWebhook(sobre({ event: 'THROUGHPUT_UPGRADE', max_daily_conversations_per_business: 'TIER_1K' }, 'phone_number_quality_update'));
+    await new Promise((r) => setTimeout(r, 20));
+    check('quality_update NO dice "bajó la calidad"', !/CALIDAD/.test(alertas[0] || ''), alertas[0]);
+    check('usa max_daily_conversations_per_business', /TIER_1K/.test(alertas[0] || ''), alertas[0]);
+  }
+
+  console.log('\n== Idempotencia: Meta reintenta ==');
+  {
+    recibidos.length = 0;
+    const dup = sobre({ messages: [{ id: 'wamid.REPETIDO', from: '51943791755', type: 'text', text: { body: 'una sola vez' } }] });
+    await postWebhook(dup);
+    await postWebhook(dup);
+    await new Promise((r) => setTimeout(r, 30));
+    check('el mismo id entregado dos veces se procesa una sola', recibidos.length === 1, `recibidos=${recibidos.length}`);
+  }
+
+  console.log('\n== Handshake: content-type ==');
+  {
+    const r = await fetch(`${base()}/webhook/meta?hub.mode=subscribe&hub.verify_token=verificame&hub.challenge=%3Cscript%3E1%3C/script%3E`);
+    check('el challenge se devuelve como text/plain', /text\/plain/.test(r.headers.get('content-type') || ''), r.headers.get('content-type'));
+    check('y sin alterar el contenido', (await r.text()) === '<script>1</script>');
+  }
+
   console.log('\n== Envío por la Graph API ==');
   {
     llamadasGraph = [];

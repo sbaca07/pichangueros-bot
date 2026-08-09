@@ -25,10 +25,14 @@
 
 const crypto = require('crypto');
 
-const TOKEN = process.env.META_TOKEN || '';
-const PHONE_ID = process.env.META_PHONE_NUMBER_ID || '';
-const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || '';
-const APP_SECRET = process.env.META_APP_SECRET || '';
+// .trim() en todas: pegar un valor correcto desde el panel de Meta arrastrando
+// un espacio o un newline es trivial, y sin recortar el phone_number_id no pasa
+// /^\d{6,}$/ → el bot queda mudo con un log que dice "no es numérico" sobre un
+// valor que en el dashboard se ve perfecto. Un mes de diagnóstico por un espacio.
+const TOKEN = (process.env.META_TOKEN || '').trim();
+const PHONE_ID = (process.env.META_PHONE_NUMBER_ID || '').trim();
+const VERIFY_TOKEN = (process.env.META_VERIFY_TOKEN || '').trim();
+const APP_SECRET = (process.env.META_APP_SECRET || '').trim();
 const GRAPH = `https://graph.facebook.com/${process.env.META_GRAPH_VERSION || 'v23.0'}`;
 
 /**
@@ -73,6 +77,10 @@ function motivoInactivo() {
  * Si META_APP_SECRET no está seteado, se deja pasar con warning en vez de
  * romper el canal: preferimos un bot que funcione sin verificar a uno mudo.
  */
+/** ¿El webhook está validando firma? Se expone en `GET /` para que un endpoint
+ *  abierto sea visible sin leer los logs de Render. */
+const firmaActiva = () => Boolean(APP_SECRET);
+
 let avisoFirmaDado = false;
 function firmaValida(req) {
   if (!APP_SECRET) {
@@ -173,16 +181,47 @@ function aMensajeBaileys(m, fromMe = false) {
  * ⚠️ Hay que suscribir estos campos en el panel del Tech Provider además de
  * `messages` y `message_echoes`, o el webhook no los recibe nunca.
  */
-const ALERTAS = {
-  phone_number_quality_update: (v) =>
-    `⚠️ Meta cambió la CALIDAD del número: ${v?.event || '?'}`
-    + `${v?.current_limit ? ` (límite: ${v.current_limit})` : ''}`,
-  account_update: (v) =>
-    `⚠️ Meta actualizó la cuenta: ${v?.event || '?'}`
-    + `${v?.ban_info?.waba_ban_state ? ` — ban_state: ${v.ban_info.waba_ban_state}` : ''}`,
+/** Eventos de `account_update` que dejan el bot MUDO. Se gritan, no se aplanan. */
+const CORTES = {
+  PARTNER_REMOVED: 'el partner fue removido — LA COEXISTENCIA SE DESCONECTÓ',
+  ACCOUNT_OFFBOARDED: 'la cuenta fue dada de baja',
+  ACCOUNT_DELETED: 'la cuenta fue ELIMINADA',
+  DISABLED_UPDATE: 'la cuenta fue DESHABILITADA',
+  ACCOUNT_RESTRICTION: 'la cuenta quedó RESTRINGIDA',
+  ACCOUNT_VIOLATION: 'Meta marcó una VIOLACIÓN de políticas',
+};
+
+// Object.create(null): `change.field` viene del payload, o sea de afuera. Con un
+// objeto literal, `ALERTAS['toString']` hereda de Object.prototype y da truthy —
+// un POST con field:"toString" mandaba "[object Object]" al número de control, y
+// field:"__proto__" tiraba un TypeError que abortaba el loop entero y se comía
+// los mensajes legítimos del mismo POST (con el 200 ya enviado, Meta no reintenta).
+const ALERTAS = Object.assign(Object.create(null), {
+  // Ojo: este campo YA NO reporta calidad. Sus eventos documentados son
+  // ONBOARDING y THROUGHPUT_UPGRADE, y `current_limit` se eliminó en feb-2026 en
+  // favor de `max_daily_conversations_per_business`. Se informa lo que llega en
+  // vez de inventar "bajó la calidad".
+  phone_number_quality_update: (v) => {
+    const limite = v?.max_daily_conversations_per_business ?? v?.current_limit;
+    return `ℹ️ Meta actualizó el número: ${v?.event || '?'}`
+      + (limite ? ` · límite diario: ${limite}` : '');
+  },
+  account_update: (v) => {
+    const corte = CORTES[v?.event];
+    return `${corte ? '🚨' : 'ℹ️'} Cuenta: ${corte || v?.event || '?'}`
+      + (v?.ban_info?.waba_ban_state ? ` · ban_state: ${v.ban_info.waba_ban_state}` : '')
+      + (v?.disconnection_info ? ` · ${JSON.stringify(v.disconnection_info).slice(0, 200)}` : '');
+  },
   account_review_update: (v) =>
     `⚠️ Meta REVISÓ la cuenta de WhatsApp Business. Decisión: ${v?.decision || '?'}`,
-};
+  // El campo que hoy entrega cambios de límite y advertencias de capacidad — el
+  // que de verdad hace de alerta temprana desde que quality_update dejó de serlo.
+  account_alerts: (v) => {
+    const a = v?.alert_info || {};
+    return `⚠️ Alerta de Meta (${a.alert_severity || '?'}/${a.alert_status || '?'}): `
+      + `${a.alert_type || '?'} — ${a.alert_description || 'sin descripción'}`;
+  },
+});
 
 /**
  * Registra las rutas del webhook. `onMensaje(sock, msg)` es manejarMensaje;
@@ -209,11 +248,31 @@ function registrarVerificacion(app) {
   }
   app.get('/webhook/meta', (req, res) => {
     if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === VERIFY_TOKEN) {
-      return res.send(req.query['hub.challenge']);
+      // text/plain + String(): el challenge es input del que llama y se refleja
+      // tal cual. Como text/html sería un XSS reflejado (menor, hace falta el
+      // verify token) y Meta espera texto plano igual.
+      return res.type('text/plain').send(String(req.query['hub.challenge'] ?? ''));
     }
     res.sendStatus(403);
   });
   return true;
+}
+
+/**
+ * Meta reintenta la entrega de un webhook si no ve el 200 a tiempo, y puede
+ * mandar el mismo mensaje más de una vez. Sin deduplicar, un reintento hace que
+ * el bot le conteste dos veces al mismo cliente. Se recuerdan los últimos ids;
+ * el Set conserva orden de inserción, así que descartar el primero saca el más
+ * viejo.
+ */
+const VISTOS_MAX = 2000;
+const vistos = new Set();
+function yaVisto(id) {
+  if (!id) return false;
+  if (vistos.has(id)) return true;
+  vistos.add(id);
+  if (vistos.size > VISTOS_MAX) vistos.delete(vistos.values().next().value);
+  return false;
 }
 
 function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
@@ -232,7 +291,8 @@ function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
 
           // Salud de la cuenta: viene como un `field` propio, nunca junto a los
           // mensajes. Se atiende primero y se corta — no trae messages/echoes.
-          if (ALERTAS[change.field]) {
+          // typeof además de Object.create(null): `change.field` es input externo.
+          if (typeof ALERTAS[change.field] === 'function') {
             const aviso = ALERTAS[change.field](v);
             console.error(`[meta] ${aviso}`);
             if (onAlerta) { try { onAlerta(aviso); } catch (e) { console.error('[meta] Error avisando:', e.message); } }
@@ -241,12 +301,14 @@ function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
 
           // Mensajes entrantes de clientes.
           for (const m of v.messages || []) {
+            if (yaVisto(m.id)) { console.log(`[meta] Mensaje repetido ${m.id} — ignorado (reintento de Meta).`); continue; }
             const msg = aMensajeBaileys(m, false);
             if (msg) Promise.resolve(onMensaje(sockAdapter, msg)).catch((e) => console.error('[meta] Error manejando mensaje:', e.message));
           }
 
           // Echoes: lo que el negocio (Clarck desde su app) envió a mano.
           for (const m of v.message_echoes || []) {
+            if (yaVisto(m.id)) continue;
             const msg = aMensajeBaileys(m, true);
             if (msg) { try { onEcho(msg); } catch (e) { console.error('[meta] Error registrando echo:', e.message); } }
           }
@@ -262,4 +324,4 @@ function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
   console.log('[meta] Webhook oficial registrado en /webhook/meta (transporte Cloud API).');
 }
 
-module.exports = { activo, motivoInactivo, registrarVerificacion, registrarWebhook, enviarTexto, sockAdapter, aMensajeBaileys, firmaValida };
+module.exports = { activo, motivoInactivo, firmaActiva, registrarVerificacion, registrarWebhook, enviarTexto, sockAdapter, aMensajeBaileys, firmaValida };
