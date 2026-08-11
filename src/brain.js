@@ -118,6 +118,8 @@ ${negocio.bienvenida}
 ## Partidos con inscripción abierta (cupos EN VIVO — única fuente de verdad sobre cupos)
 ${describirPartidos(negocio)}
 
+**La zona de un jugador NO lo limita.** Cualquiera puede inscribirse a cualquier partido listado (uno de Comas puede jugar en Breña, uno de Miraflores donde quiera). Su zona/distrito solo sirve para saber qué grupo y precio ofrecerle por defecto. Si un recurrente pregunta "¿qué pichangas hay hoy/esta semana?", respóndele con la lista de arriba completa, no solo la de su zona.
+
 Si el jugador pide jugar en uno de esos partidos ("quiero jugar el miércoles", "anótame para Breña"):
 - Pon su ID en inscribir_partido. El sistema le RESERVA el cupo automáticamente.
 - En reply dile que su cupo queda reservado y que lo confirma con su Yape (monto de su zona). Si el partido está LLENO, dile que entra a la lista de espera y le avisamos si se libera un lugar.
