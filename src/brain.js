@@ -11,8 +11,26 @@
  */
 const OpenAI = require('openai');
 const db = require('./db');
+const backup = require('./backup');
 
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+
+// El cerebro puede caerse (créditos de OpenAI agotados, cuota, caída) y el bot
+// sigue "vivo" pidiendo disculpas — nadie se entera, como el 2026-08-11 que
+// estuvo 1 h caído por falta de créditos. A la 3.ª falla seguida se avisa por
+// correo (máx. 1 vez/hora) y GET / lo expone.
+let fallosSeguidos = 0;
+let ultimoAvisoCaida = 0;
+function registrarFalloCerebro(e) {
+  fallosSeguidos++;
+  if (fallosSeguidos >= 3 && Date.now() - ultimoAvisoCaida > 3600e3) {
+    ultimoAvisoCaida = Date.now();
+    Promise.resolve(backup.avisar(
+      'El CEREBRO del bot está caído',
+      `${fallosSeguidos} llamadas seguidas a OpenAI fallaron. El bot responde disculpas y NO extrae datos ni lee vouchers.\n\nÚltimo error: ${e.message}\n\nSi dice "no credits": https://platform.openai.com/settings/organization/billing`
+    )).catch(() => {});
+  }
+}
 
 let client = null;
 function getClient() {
@@ -182,11 +200,19 @@ async function pensar(lead, historial, textoUsuario) {
       temperature: 0.6,
       max_tokens: 600,
     });
+    fallosSeguidos = 0;
     return JSON.parse(completion.choices[0].message.content);
   } catch (e) {
     console.error('[brain] Error llamando a OpenAI:', e.message);
+    registrarFalloCerebro(e);
     return null;
   }
 }
 
-module.exports = { pensar, cerebroActivo: () => Boolean(process.env.OPENAI_API_KEY) };
+module.exports = {
+  pensar,
+  cerebroActivo: () => Boolean(process.env.OPENAI_API_KEY),
+  // Para GET /: "activo" es que HAY api key; "fallosSeguidos" dice si de verdad
+  // está respondiendo (0 = sano). La lección del mes mudo, aplicada al cerebro.
+  estadoCerebro: () => ({ activo: Boolean(process.env.OPENAI_API_KEY), fallosSeguidos }),
+};

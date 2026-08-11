@@ -547,7 +547,9 @@ const app = express();
 // El webhook de Meta llega como JSON. Guardamos el cuerpo CRUDO porque la firma
 // X-Hub-Signature-256 se calcula sobre los bytes exactos que mandó Meta: si se
 // re-serializa el objeto ya parseado, el HMAC no coincide.
-app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
+// limit 2mb: algunos webhooks de Meta (history sync, lotes de statuses) superan
+// el default de 100kb de Express y se descartaban con PayloadTooLargeError.
+app.use(express.json({ limit: '2mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 // Sin credenciales todavía: se expone SOLO el handshake de verificación, para
 // poder dar de alta el webhook en el panel del proveedor antes de tener el
@@ -596,6 +598,9 @@ app.get('/', (_req, res) => {
     webhookSeguridad: oficial && typeof oficial.seguridadWebhook === 'function' ? oficial.seguridadWebhook() : undefined,
     safeMode: SAFE_MODE,
     brain: brain.cerebroActivo(),
+    // 0 = sano. >0 = la IA está fallando (créditos/cuota/caída) y el bot solo
+    // pide disculpas — visible acá para no repetir la ceguera del mes mudo.
+    brainFallosSeguidos: typeof brain.estadoCerebro === 'function' ? brain.estadoCerebro().fallosSeguidos : undefined,
     leads: db.stats(),
   });
 });
