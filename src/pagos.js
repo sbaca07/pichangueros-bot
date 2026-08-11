@@ -113,7 +113,15 @@ function evaluarVoucher(numero, zona, lectura) {
   // El monto puede ser un MÚLTIPLO del precio: la gente paga por sus amigos
   // ("me anota con 2 más" → 3 × precio) o por ambos turnos (2 × precio).
   // Se acepta de 1 a 10 cupos exactos; cualquier otro monto queda "revisar".
-  const precioEsperado = zona ? db.getNegocio().zonas[zona]?.precio : null;
+  //
+  // El precio a validar es EL DEL PARTIDO RESERVADO cuando existe (puede tener
+  // precio custom, o ser de otra zona — jugador multi-distrito). Solo si no hay
+  // reserva se usa el precio de la zona del contacto.
+  const reservaP = db.partidoReservadoDe(numero);
+  const negocioP = db.getNegocio();
+  const precioEsperado = reservaP
+    ? (reservaP.precio ?? negocioP.zonas[reservaP.zona]?.precio ?? null)
+    : (zona ? negocioP.zonas[zona]?.precio : null);
   let cupos = 1;
   if (precioEsperado != null && precioEsperado > 0 && monto != null) {
     const n = Math.round(monto / precioEsperado);

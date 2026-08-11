@@ -247,8 +247,21 @@ function registrarPanel(app, db, conexion = null) {
   app.post('/admin/inscripcion/estado', (req, res) => {
     if (!autorizado(req, res)) return;
     const id = Number(req.body.id);
-    if (req.body.estado === 'baja') db.darDeBaja(id);
-    else db.setEstadoInscripcion(id, req.body.estado);
+    if (req.body.estado === 'baja') {
+      const promovido = db.darDeBaja(id);
+      // El que sube de la espera NO se entera solo: el bot no puede iniciarle
+      // conversación (131047 fuera de la ventana de 24 h). Se le avisa al
+      // número de control para que Clarck le escriba y le pida el Yape.
+      const control = (process.env.NOTIFY_NUMBER || '').replace(/\D/g, '');
+      if (promovido && control && conexion && conexion.enviar) {
+        const p = db.getPartido(promovido.partido_id);
+        const lead = promovido.numero ? db.getLead(promovido.numero) : null;
+        const quien = promovido.nombre || (lead && lead.nombre) || (promovido.numero ? `+${promovido.numero}` : 'alguien');
+        Promise.resolve(conexion.enviar(control,
+          `⬆ ${quien} subió de la lista de espera al partido del ${p ? p.fecha : '?'}${p && p.hora ? ` ${p.hora}` : ''}. Avísale y pídele su Yape${promovido.numero ? `: wa.me/${promovido.numero}` : ''}.`
+        )).catch((e) => console.error('[partido] Aviso de promoción falló:', e.message));
+      }
+    } else db.setEstadoInscripcion(id, req.body.estado);
     volverAPartidos(req, res, Number(req.body.partido_id));
   });
 

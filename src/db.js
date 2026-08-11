@@ -650,6 +650,17 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null) {
   return { partido, inscripciones: hechas };
 }
 
+/** Partido (abierto y próximo) donde el contacto tiene una reserva sin pagar.
+ *  Lo usa la validación de vouchers: el precio del PARTIDO manda sobre el de
+ *  la zona del contacto (partidos con precio custom, jugador multi-distrito). */
+function partidoReservadoDe(numero) {
+  return db.prepare(`
+    SELECT p.* FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
+    WHERE i.numero = ? AND i.estado IN ('reservado','espera') AND p.estado = 'abierto' AND p.fecha >= ?
+    ORDER BY p.fecha, i.id LIMIT 1
+  `).get(numero, hoyLimaDb()) || null;
+}
+
 /** Pagos confirmados sin partido asignado (para que Clarck los asigne a mano). */
 function pagosSinPartido() {
   return db.prepare(`
@@ -702,5 +713,5 @@ module.exports = {
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
   crearPartido, getPartido, setEstadoPartido, listPartidos, partidosAbiertos, inscripcionesDe,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
-  pagosSinPartido, textoLista, asistenciasDe,
+  pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe,
 };

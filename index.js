@@ -352,7 +352,9 @@ async function manejarMensaje(sock, msg) {
   // El jugador pidió cupo en un partido abierto: se reserva de verdad (el
   // cerebro solo decide, la BD manda). Si entre que la IA leyó los cupos y
   // ahora el partido se llenó, la reserva cae a lista de espera y se le avisa.
-  if (decision.inscribir_partido) {
+  // ⚠️ Nunca en modo silencio: un contacto silenciado no recibe la respuesta,
+  // y una reserva que el jugador no sabe que existe es un cupo fantasma.
+  if (decision.inscribir_partido && !modoSilencio) {
     const { inscripcion, resultado } = db.inscribir(decision.inscribir_partido, numero, { nombre: actualizado.nombre });
     if (resultado === 'espera' && decision.reply && !/lista de espera/i.test(decision.reply)) {
       decision.reply += '\n\n⚠️ Ojo: el cupo se acaba de llenar, así que te dejé en la lista de espera — si se libera un lugar te avisamos al toque 🙏';

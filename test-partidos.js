@@ -88,5 +88,25 @@ check('cambiar estado del partido funciona', db.getPartido(p1).estado === 'jugad
 check('un partido jugado ya no acepta inscripciones', db.inscribir(p1, '51900000099').resultado === null);
 check('asistenciasDe trae el historial del jugador', db.asistenciasDe('51900000002').length === 1);
 
+console.log('== El precio del PARTIDO manda sobre el de la zona ==');
+const pagos = require('./src/pagos');
+const p3 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(3), cupo: 10, precio: 20 });
+db.getOrCreateLead('51900000020');
+db.updateLead('51900000020', { zona: 'brena' });
+db.inscribir(p3, '51900000020');
+check('partidoReservadoDe encuentra la reserva activa', db.partidoReservadoDe('51900000020')?.id === p3);
+const lecturaBase = { es_voucher_yape: true, medio: 'yape', monto: 20, nombre_remitente: 'Test', numero_operacion: 'OP-P3', confianza: 'alta' };
+check('S/20 del partido custom pasa aunque su zona cueste distinto',
+  pagos.evaluarVoucher('51900000020', 'brena', lecturaBase).estado === 'confirmado');
+check('el precio de su zona ya NO calza — la reserva de S/20 manda',
+  pagos.evaluarVoucher('51900000020', 'brena', { ...lecturaBase, monto: 15, numero_operacion: 'OP-P3B' }).estado === 'revisar');
+check('sin reserva se sigue validando contra la zona del contacto', (() => {
+  db.getOrCreateLead('51900000021');
+  db.setEstadoPartido(p3, 'cerrado'); // sin partidos que capturen la reserva
+  const precioBrena = db.getNegocio().zonas.brena.precio;
+  const r = pagos.evaluarVoucher('51900000021', 'brena', { ...lecturaBase, monto: precioBrena, numero_operacion: 'OP-Z1' });
+  return r.estado === 'confirmado';
+})());
+
 console.log(fallos ? `\n❌ ${ok} OK, ${fallos} FALLOS` : `\n✅ ${ok} checks OK, 0 fallos`);
 process.exit(fallos ? 1 : 0);
