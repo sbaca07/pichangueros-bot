@@ -151,7 +151,9 @@ function evaluarVoucher(numero, zona, lectura) {
  *          null si la imagen no es un voucher reconocible (deja que el cerebro conversacional normal responda).
  */
 async function procesarVoucher(numero, zona, imageBuffer) {
-  const lectura = await leerVoucher(imageBuffer);
+  // Vía module.exports (no la referencia interna) para que los tests puedan
+  // inyectar lecturas simuladas sin llamar a OpenAI.
+  const lectura = await module.exports.leerVoucher(imageBuffer);
   if (!lectura || !lectura.es_voucher_yape) return null;
 
   const r = evaluarVoucher(numero, zona, lectura);
