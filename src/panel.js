@@ -2,7 +2,7 @@
  * Panel CRM (Semana 3 · rediseño iOS 2026-06-29) — "del marcador a la cancha".
  *
  * Tres vistas, estética iOS (claro, Inter + Barlow Condensed, acento verde
- * #34C759 = verde de sistema y de cancha):
+ * #A3C614 = verde de sistema y de cancha):
  *   Resumen → dashboard de data (marcador-estadio, métricas, crecimiento, zonas)
  *   CRM     → lista de leads con la cola "sin responder" al frente
  *   Ficha   → perfil + pipeline + etiquetas + seguimiento + notas + chat
@@ -28,8 +28,8 @@ const esc = (v) =>
   String(v ?? '—').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const ZONAS = {
-  brena: { nombre: 'Breña', color: '#34c759' },
-  comas: { nombre: 'Comas', color: '#007aff' },
+  brena: { nombre: 'Breña', color: '#A3C614' },
+  comas: { nombre: 'Comas', color: '#16385F' },
   otra: { nombre: 'Otra zona', color: '#64748b' },
 };
 
@@ -45,7 +45,7 @@ const ESTADOS = {
 
 // Colores de avatar (monograma) — se elige de forma estable por número.
 const AVATARES = [
-  'linear-gradient(135deg,#34c759,#27a64a)', 'linear-gradient(135deg,#5ac8fa,#007aff)',
+  'linear-gradient(135deg,#A3C614,#7FA30F)', 'linear-gradient(135deg,#5ac8fa,#16385F)',
   'linear-gradient(135deg,#ff9f0a,#ff7a00)', 'linear-gradient(135deg,#bf5af2,#8944ab)',
   'linear-gradient(135deg,#ff453a,#cc2f26)', 'linear-gradient(135deg,#64748b,#475569)',
   'linear-gradient(135deg,#30b0c7,#0a7e8c)', 'linear-gradient(135deg,#ffcc00,#e0a000)',
@@ -324,13 +324,16 @@ function baseHtml(titulo, cuerpo, { refresh = false, activo = '', key = '', tabb
 <title>${esc(titulo)}</title>
 ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ? refresh : 90}">` : ''}
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders:ital,wght@0,700;0,800;1,700;1,800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
+  /* Sistema de diseño Pichangueros (2026-08-11): navy + lima del logo, trazo
+     "sticker" de la mascota (borde grueso + sombra dura), números de marcador
+     en Big Shoulders itálica. Reemplaza a la estética iOS genérica. */
   :root{
-    --bg:#eef1ef; --card:#fff; --ink:#0b1b12; --muted:#6b7c72; --faint:#9aa7a0;
-    --sep:#e7eae8; --inset:#f4f6f5;
-    --green:#34c759; --green-d:#27a64a; --navy:#142847; --navy2:#1c3661;
-    --amber:#ff9500; --amber-d:#c26f00; --red:#ff3b30; --blue:#007aff; --lime:#8fc12c;
+    --bg:#F2F4EC; --card:#fff; --ink:#1C2B3A; --muted:#5D6B7A; --faint:#8C99A6;
+    --sep:#E2E5DC; --inset:#F4F6EF; --trazo:#2E3A45;
+    --green:#A3C614; --green-d:#55770B; --navy:#16385F; --navy2:#1E4470;
+    --amber:#E8930C; --amber-d:#9A5B00; --red:#D14538; --blue:#16385F; --lime:#A3C614;
   }
   *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
   body{font-family:'Inter',-apple-system,'Segoe UI',sans-serif;color:var(--ink);background:var(--bg);
@@ -343,28 +346,28 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   /* large title */
   .ltitle{padding:6px 18px 10px;display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
   .ltitle .eyebrow{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--green-d);margin-bottom:2px}
-  .ltitle h2{font-size:30px;font-weight:800;letter-spacing:-.02em;line-height:1}
+  .ltitle h2{font-family:'Big Shoulders',sans-serif;font-style:italic;text-transform:uppercase;font-size:34px;font-weight:800;letter-spacing:.01em;line-height:1;color:var(--navy)}
   .live{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--green-d);
-    background:rgba(52,199,89,.12);padding:5px 11px;border-radius:999px;white-space:nowrap}
+    background:rgba(163,198,20,.12);padding:5px 11px;border-radius:999px;white-space:nowrap}
   .live i{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
-  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,199,89,.5)}70%{box-shadow:0 0 0 7px rgba(52,199,89,0)}100%{box-shadow:0 0 0 0 rgba(52,199,89,0)}}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(163,198,20,.5)}70%{box-shadow:0 0 0 7px rgba(163,198,20,0)}100%{box-shadow:0 0 0 0 rgba(163,198,20,0)}}
   .csv{font-size:13px;color:var(--muted);border:1px solid var(--sep);background:var(--card);padding:6px 12px;border-radius:999px;white-space:nowrap}
 
   /* scoreboard hero */
-  .marcador{background:linear-gradient(160deg,#1c3661,#102744);border-radius:24px;padding:18px 20px 16px;
-    color:#fff;position:relative;overflow:hidden;box-shadow:0 14px 30px -16px rgba(16,39,68,.7);margin:2px 0 0}
+  .marcador{background:linear-gradient(160deg,#1E4470,#0E2542);border:2.5px solid var(--trazo);border-radius:18px;padding:18px 20px 16px;
+    color:#fff;position:relative;overflow:hidden;box-shadow:4px 4px 0 rgba(46,58,69,.25);margin:2px 0 0}
   .marcador::before{content:"";position:absolute;inset:0;
     background:repeating-linear-gradient(90deg,transparent 0 30px,rgba(255,255,255,.025) 30px 60px)}
   .marcador>*{position:relative}
   .mtop{display:flex;justify-content:space-between;align-items:center}
   .mlabel{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#9fb6d6}
-  .mdelta{font-size:12px;font-weight:700;color:#5fe487;background:rgba(52,199,89,.14);padding:4px 10px;border-radius:999px}
-  .mnum{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:62px;line-height:.92;color:#fff;margin-top:2px}
+  .mdelta{font-size:12px;font-weight:700;color:#C6E34E;background:rgba(163,198,20,.14);padding:4px 10px;border-radius:999px}
+  .mnum{font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:62px;line-height:.92;color:#fff;margin-top:2px;font-variant-numeric:tabular-nums}
   .bars{display:flex;align-items:flex-end;gap:3px;height:62px;margin-top:10px}
   .bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%}
   .bar .bn{font-size:9px;font-weight:700;color:#a9c2e6;line-height:1;min-height:10px}
   .bar .track{flex:1;width:100%;display:flex;flex-direction:column;justify-content:flex-end;gap:1px}
-  .bar .track i{width:100%;background:linear-gradient(180deg,#5fe487,#34c759);border-radius:2px;min-height:3px;display:block;opacity:.95}
+  .bar .track i{width:100%;background:linear-gradient(180deg,#C6E34E,#A3C614);border-radius:2px;min-height:3px;display:block;opacity:.95}
   .bar .track i.brec{background:linear-gradient(180deg,#8fb3e0,#5a7fb5);opacity:.8}
   .bar.hot .track i.bnue{background:linear-gradient(180deg,#cde96b,var(--lime))}
   .bar.hot .bn{color:var(--lime)}
@@ -373,7 +376,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .mfoot{font-size:9.5px;color:#7e97b8;margin-top:8px;line-height:1.35}
 
   /* banner */
-  .banner{display:flex;gap:12px;align-items:center;background:#fff7e8;border:1px solid #ffe2ad;border-radius:18px;padding:13px 15px;margin-top:14px}
+  .banner{display:flex;gap:12px;align-items:center;background:#fff7e8;border:2px solid var(--trazo);border-radius:16px;padding:13px 15px;margin-top:14px;box-shadow:3px 3px 0 rgba(46,58,69,.12)}
   .banner.ok{background:#eafaf0;border-color:#b7ebca}
   .bic{flex:0 0 auto;width:34px;height:34px;border-radius:10px;background:var(--amber);display:grid;place-items:center;font-size:18px}
   .banner.ok .bic{background:var(--green)}
@@ -383,20 +386,21 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
 
   /* stat grid */
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-top:14px}
-  .stat{background:var(--card);border-radius:18px;padding:14px 15px;box-shadow:0 1px 2px rgba(11,27,18,.04);display:block}
-  .stat .sn{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:34px;line-height:1}
+  .stat{background:var(--card);border:2px solid var(--trazo);border-radius:16px;padding:14px 15px;box-shadow:3px 3px 0 rgba(46,58,69,.14);display:block}
+  .stat .sn{font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:34px;line-height:1;font-variant-numeric:tabular-nums}
   .stat .sl{font-size:12px;color:var(--muted);font-weight:500;margin-top:3px}
   .stat.amber .sn{color:var(--amber)} .stat.green .sn{color:var(--green-d)} .stat.navy .sn{color:var(--navy2)} .stat.red .sn{color:var(--red)}
   .stat .chip{float:right;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px}
-  .chip.up{background:rgba(52,199,89,.14);color:var(--green-d)}
+  .chip.up{background:rgba(163,198,20,.14);color:var(--green-d)}
   .chip.wait{background:rgba(255,149,0,.14);color:var(--amber-d)}
 
   /* section header */
-  .shdr{font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);padding:18px 6px 8px}
-  .shdr small{text-transform:none;letter-spacing:0;font-weight:500}
+  .shdr{font-family:'Big Shoulders',sans-serif;font-style:italic;font-size:15px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--navy);padding:18px 6px 8px;display:flex;align-items:center;gap:8px}
+  .shdr::after{content:'';flex:1;height:3px;background:var(--lime);border-radius:2px;transform:skewX(-20deg);opacity:.75}
+  .shdr small{font-family:'Inter',sans-serif;font-style:normal;text-transform:none;letter-spacing:0;font-weight:500;font-size:11.5px;color:var(--faint)}
 
   /* zona rows */
-  .zlist{background:var(--card);border-radius:18px;overflow:hidden}
+  .zlist{background:var(--card);border:2px solid var(--trazo);border-radius:16px;overflow:hidden;box-shadow:3px 3px 0 rgba(46,58,69,.14)}
   .zrow{display:flex;align-items:center;gap:12px;padding:12px 15px;border-bottom:1px solid var(--sep)}
   .zrow:last-child{border-bottom:none}
   .zdot{width:11px;height:11px;border-radius:3px;flex:0 0 auto}
@@ -410,7 +414,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .search svg{flex:0 0 auto;color:var(--faint)}
   .search input{flex:1;border:none;background:transparent;outline:none;font:inherit;font-size:15px;padding:10px 0;color:var(--ink)}
   .search input::placeholder{color:var(--faint)}
-  .search button{border:none;background:var(--green);color:#fff;font:inherit;font-weight:600;font-size:13px;padding:7px 14px;border-radius:9px;margin:5px 0}
+  .search button{border:2px solid var(--trazo);background:var(--lime);color:var(--navy);font:inherit;font-weight:800;font-size:13px;padding:6px 14px;border-radius:9px;margin:5px 0;cursor:pointer}
   .chips{display:flex;gap:7px;padding:8px 2px 4px;flex-wrap:wrap}
   .fchip{font-size:12.5px;font-weight:600;color:var(--muted);background:var(--card);border:1px solid var(--sep);padding:7px 13px;border-radius:999px;white-space:nowrap}
   .fchip.on{background:var(--navy2);color:#fff;border-color:var(--navy2)}
@@ -426,7 +430,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
     background-repeat:no-repeat;background-position:right 11px center;padding-right:26px}
 
   /* lead list */
-  .llist{background:var(--card);border-radius:18px;overflow:hidden;box-shadow:0 1px 2px rgba(11,27,18,.04)}
+  .llist{background:var(--card);border:2px solid var(--trazo);border-radius:16px;overflow:hidden;box-shadow:3px 3px 0 rgba(46,58,69,.14)}
   .lrow{display:flex;align-items:center;gap:13px;padding:12px 14px;border-bottom:1px solid var(--sep);position:relative}
   .lrow:last-child{border-bottom:none}
   .lrow:active{background:var(--inset)}
@@ -439,7 +443,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .badge{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;white-space:nowrap}
   .b-wait{background:rgba(255,149,0,.15);color:var(--amber-d)}
   .b-hand{background:rgba(255,59,48,.13);color:#cc2f26}
-  .b-done{background:rgba(52,199,89,.15);color:var(--green-d)}
+  .b-done{background:rgba(163,198,20,.15);color:var(--green-d)}
   .b-new{background:var(--inset);color:var(--muted)}
   .b-zona{color:#fff}
   .chev{color:#c7d0cb;flex:0 0 auto}
@@ -450,7 +454,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   /* ficha */
   .navbar{display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px}
   .navback{display:inline-flex;align-items:center;gap:2px;color:var(--green-d);font-size:16px;font-weight:500}
-  .wabtn{display:inline-flex;align-items:center;gap:6px;background:var(--green);color:#fff;font-size:13px;font-weight:600;padding:8px 14px;border-radius:999px;box-shadow:0 4px 12px -4px rgba(52,199,89,.6)}
+  .wabtn{display:inline-flex;align-items:center;gap:6px;background:var(--green);color:#fff;font-size:13px;font-weight:600;padding:8px 14px;border-radius:999px;box-shadow:0 4px 12px -4px rgba(163,198,20,.6)}
   .fhead{display:flex;flex-direction:column;align-items:center;text-align:center;padding:4px 0 12px}
   .fava{width:74px;height:74px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:26px;color:#fff;margin-bottom:10px}
   .fhead h2{font-size:21px;font-weight:700;letter-spacing:-.01em}
@@ -458,7 +462,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .fpills{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap;justify-content:center}
   .pz{font-size:11.5px;font-weight:700;padding:5px 12px;border-radius:999px;color:#fff}
 
-  .group{background:var(--card);border-radius:18px;overflow:hidden;box-shadow:0 1px 2px rgba(11,27,18,.04)}
+  .group{background:var(--card);border:2px solid var(--trazo);border-radius:16px;overflow:hidden;box-shadow:3px 3px 0 rgba(46,58,69,.14)}
   .grow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 15px;border-bottom:1px solid var(--sep);font-size:14.5px}
   .grow:last-child{border-bottom:none}
   .grow .k{color:var(--muted)} .grow .v{font-weight:600;text-align:right}
@@ -468,7 +472,8 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   form.inline{display:flex;gap:8px;flex-wrap:wrap;padding:12px 14px}
   form.inline input{flex:1;min-width:130px;background:var(--inset);border:1px solid var(--sep);border-radius:11px;padding:10px 13px;color:var(--ink);font:inherit;font-size:14px;outline:none}
   form.inline textarea{flex-basis:100%;background:var(--inset);border:1px solid var(--sep);border-radius:11px;padding:10px 13px;color:var(--ink);font:inherit;font-size:14px;outline:none;resize:vertical;min-height:64px}
-  form.inline button{background:var(--green);color:#fff;border:none;border-radius:11px;padding:10px 16px;font:inherit;font-weight:600}
+  form.inline button{background:var(--lime);color:var(--navy);border:2px solid var(--trazo);border-radius:11px;padding:9px 16px;font:inherit;font-weight:800;box-shadow:2px 2px 0 rgba(46,58,69,.25);cursor:pointer}
+  form.inline button:active{transform:translate(1px,1px);box-shadow:1px 1px 0 rgba(46,58,69,.25)}
   form.inline label{flex-basis:100%;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:-4px}
   .config-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 14px;border-bottom:1px solid var(--sep)}
   .config-row:last-child{border-bottom:none}
@@ -480,7 +485,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .chat{padding:8px 4px 2px;display:flex;flex-direction:column;gap:6px}
   .bub{max-width:80%;padding:8px 12px;border-radius:18px;font-size:14px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
   .bub.in{align-self:flex-start;background:#e9ebec;color:#0b1b12;border-bottom-left-radius:5px}
-  .bub.out{align-self:flex-end;background:var(--green);color:#fff;border-bottom-right-radius:5px}
+  .bub.out{align-self:flex-end;background:var(--navy);color:#fff;border-bottom-right-radius:5px}
   .bub time{display:block;font-size:10px;margin-top:3px;opacity:.55;text-align:right}
   .noreply{align-self:center;display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;color:var(--amber-d);background:rgba(255,149,0,.12);border:1px dashed #ffce8a;padding:5px 12px;border-radius:999px;margin:6px 0}
 
@@ -489,21 +494,22 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
 
   /* tab bar */
   .tabbar{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;
-    height:calc(64px + env(safe-area-inset-bottom));background:rgba(255,255,255,.88);backdrop-filter:blur(20px);
-    border-top:1px solid var(--sep);display:flex;padding:8px 0 env(safe-area-inset-bottom);z-index:50}
-  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--faint);font-size:10.5px;font-weight:600}
+    height:calc(64px + env(safe-area-inset-bottom));background:var(--navy);
+    border-top:3px solid var(--trazo);display:flex;padding:8px 0 env(safe-area-inset-bottom);z-index:50}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;color:#8FA3BC;
+    font-family:'Big Shoulders',sans-serif;font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
   .tab svg{width:25px;height:25px}
-  .tab.on{color:var(--green-d)}
+  .tab.on{color:var(--lime)}
 
   /* sidebar (solo escritorio) */
   .shell{min-height:100vh}
   .sidebar{display:none}
-  .sidebar .brand{display:flex;align-items:center;gap:11px;font-weight:800;font-size:19px;color:var(--navy);letter-spacing:-.01em;margin-bottom:26px}
-  .sidebar .brand .iso{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,var(--green),var(--green-d));display:grid;place-items:center;font-size:19px;box-shadow:0 6px 14px -6px rgba(52,199,89,.7)}
+  .sidebar .brand{display:flex;align-items:center;gap:11px;font-family:'Big Shoulders',sans-serif;font-style:italic;text-transform:uppercase;font-weight:800;font-size:22px;color:var(--navy);letter-spacing:.02em;margin-bottom:26px}
+  .sidebar .brand .iso{width:36px;height:36px;border-radius:11px;border:2px solid var(--trazo);background:var(--lime);display:grid;place-items:center;font-size:19px;box-shadow:2px 2px 0 rgba(46,58,69,.2)}
   .snav{display:flex;flex-direction:column;gap:4px}
   .snav a{display:flex;align-items:center;gap:12px;padding:11px 13px;border-radius:12px;font-weight:600;font-size:15px;color:var(--muted)}
   .snav a svg{width:22px;height:22px}
-  .snav a.on{background:rgba(52,199,89,.12);color:var(--green-d)}
+  .snav a.on{background:rgba(163,198,20,.12);color:var(--green-d)}
   .snav a:hover{background:var(--inset)}
   .sbottom{margin-top:auto;display:flex;flex-direction:column;gap:2px}
   .scsv{display:inline-flex;align-items:center;gap:7px;font-size:13.5px;color:var(--muted);padding:11px 13px;border-radius:12px}
@@ -554,10 +560,10 @@ const SVG = {
 };
 
 const tabbar = (key, activo) => `<nav class="tabbar">
-  <a class="tab ${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen}Resumen</a>
-  <a class="tab ${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm}CRM</a>
-  <a class="tab ${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos}Pagos</a>
+  <a class="tab ${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen}Hoy</a>
   <a class="tab ${activo === 'partidos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=partidos">${SVG.iPartidos}Partidos</a>
+  <a class="tab ${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm}Jugadores</a>
+  <a class="tab ${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos}La plata</a>
   <a class="tab ${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig}Config</a>
   <a class="tab ${activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=conexion">${SVG.iConexion}Conexión</a>
 </nav>`;
@@ -565,10 +571,10 @@ const tabbar = (key, activo) => `<nav class="tabbar">
 const sidebar = (key, activo) => `<aside class="sidebar">
   <div class="brand"><span class="iso">⚽</span> Pichangueros</div>
   <nav class="snav">
-    <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Resumen</a>
-    <a class="${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm} CRM</a>
-    <a class="${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos} Pagos</a>
+    <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Hoy</a>
     <a class="${activo === 'partidos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=partidos">${SVG.iPartidos} Partidos</a>
+    <a class="${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm} Jugadores</a>
+    <a class="${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos} La plata</a>
     <a class="${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig} Config</a>
     <a class="${activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=conexion">${SVG.iConexion} Conexión</a>
   </nav>
@@ -670,7 +676,7 @@ function paginaResumen(db, key, query = {}) {
   const maxD = Math.max(1, ...distritos.map((d) => d.n));
   const drow = (d) => {
     const listo = d.n >= UMBRAL_PILOTO;
-    const color = listo ? '#34c759' : '#64748b';
+    const color = listo ? '#A3C614' : '#64748b';
     return `<a class="zrow" href="/admin/leads?key=${key}&vista=crm&distrito=${encodeURIComponent(d.k)}"><span class="zdot" style="background:${color}"></span>
       <span class="zname">${esc(d.nombre)}${listo ? ' 🔥' : ''}</span>
       <span class="ztrack"><i style="width:${Math.max(3, Math.round((d.n / maxD) * 100))}%;background:${color}"></i></span>
@@ -715,37 +721,54 @@ function paginaResumen(db, key, query = {}) {
     : `<div class="banner ok px"><div class="bic">🤖</div>
     <div class="btxt"><b>Bot activo.</b> Responde a todos los que escriban al número.</div></div>`;
 
-  return baseHtml('Pichangueros — Resumen', `
+  // Acción primero: la pichanga más próxima como marcador, antes que cualquier
+  // métrica. Si no hay partido abierto, invita a abrir uno.
+  const abiertos = db.partidosAbiertos();
+  const prox = abiertos[0] || null;
+  const heroPartido = prox
+    ? `<a class="marcador" style="display:block;margin-bottom:14px" href="/admin/leads?key=${key}&vista=partidos&partido=${prox.id}">
+        <div class="mtop"><span class="mlabel">⚽ Próxima pichanga · ${ZONAS[prox.zona]?.nombre || esc(prox.zona)}</span>
+          <span class="mdelta">${prox.restante > 0 ? `${prox.restante} cupos libres` : '⏳ LLENO — hay espera'}</span></div>
+        <div class="mnum">${prox.ocupados}<span style="font-size:32px;color:#8FA3BC">/${prox.cupo}</span></div>
+        <div class="mfoot" style="font-size:12px;color:#C4D1DF">${esc(prox.fecha)}${prox.hora ? ` · ${esc(prox.hora)}` : ''}${prox.sede ? ` · ${esc(prox.sede)}` : ''} — toca para ver la lista y copiarla al grupo</div>
+      </a>`
+    : `<a class="banner px" href="/admin/leads?key=${key}&vista=partidos" style="margin:0 0 14px;text-decoration:none"><div class="bic">⚽</div>
+        <div class="btxt"><b>No hay partidos con inscripción abierta.</b> Abre uno y el bot empieza a llenar la lista solo.</div></a>`;
+
+  return baseHtml('Pichangueros — Hoy', `
     <div class="ltitle">
-      <div><div class="eyebrow">Pichangueros</div><h2>Resumen</h2></div>
+      <div><div class="eyebrow">Pichangueros · Tu equipo está aquí</div><h2>Hoy</h2></div>
       <span class="live"><i></i> En vivo</span>
     </div>
     <div class="px">
       ${query.sync ? `<div class="banner ${query.sync === 'err' ? '' : 'ok'}" style="margin:0 0 12px"><div class="bic">☁</div><div class="btxt">${query.sync === 'err' ? 'No se pudo respaldar al Sheet — revisá SHEET_WEBHOOK_URL/SHEET_SECRET.' : `<b>Respaldado al Google Sheet</b> · ${esc(query.sync)} leads.`}</div></div>` : ''}
-      <div class="marcador">
-        <div class="mtop"><span class="mlabel">Contactos captados</span>
-          <span class="mdelta">▲ +${semana} esta semana</span></div>
-        <div class="mnum">${todos.length}</div>
-        <div class="bars">${barras}</div>
-        <div class="mfoot"><span style="color:#5fe487">■ Nuevos</span> (escriben por 1.ª vez) · <span style="color:#8fb3e0">■ Recurrentes</span> (ya registrados, volvieron a escribir) — solo chats directos, los grupos no cuentan. Toca una barra para ver a todos los de ese día, separados en nuevos y recurrentes.</div>
-      </div>
-
+      ${heroPartido}
       ${bannerSeguro}
 
-      <div class="grid2">
+      <div class="shdr">Pendientes <small>· toca para actuar</small></div>
+      <div class="grid2" style="margin-top:2px">
         <a class="stat green" href="/admin/leads?key=${key}&vista=crm">${delta ? `<span class="chip ${delta > 0 ? 'up' : 'wait'}">${delta > 0 ? '▲' : '▼'} ${Math.abs(delta)}%</span>` : ''}<div class="sn">${semana}</div><div class="sl">Esta semana</div></a>
         <div class="stat navy"><div class="sn">${hoyN}</div><div class="sl">Nuevos hoy</div></div>
         <a class="stat amber" href="/admin/leads?key=${key}&vista=crm&filtro=responder"><span class="chip wait">pendiente</span><div class="sn">${colaResp}</div><div class="sl">Sin responder (48 h)</div></a>
         <a class="stat ${enHandoff ? 'red' : ''}" href="/admin/leads?key=${key}&vista=crm&filtro=handoff"><div class="sn">${enHandoff}</div><div class="sl">Para Clarck</div></a>
       </div>
 
+      <div class="shdr">La comunidad <small>· ${todos.length} contactos</small></div>
+      <div class="marcador">
+        <div class="mtop"><span class="mlabel">Contactos captados</span>
+          <span class="mdelta">▲ +${semana} esta semana</span></div>
+        <div class="mnum">${todos.length}</div>
+        <div class="bars">${barras}</div>
+        <div class="mfoot"><span style="color:#C6E34E">■ Nuevos</span> (escriben por 1.ª vez) · <span style="color:#8fb3e0">■ Recurrentes</span> (ya registrados, volvieron a escribir) — solo chats directos, los grupos no cuentan. Toca una barra para ver a todos los de ese día, separados en nuevos y recurrentes.</div>
+      </div>
+
       <div class="shdr">Pipeline · del primer mensaje al pago <small>· toca para ver quiénes</small></div>
       <div class="zlist">
         ${frow('Escribieron al número', todos.length, '#0a84ff', '', '')}
         ${frow('Dejaron sus datos', conDatos, '#5e5ce6', 'nombre · edad · distrito', '&estado=con_datos')}
-        ${frow('Invitados al grupo', invitados, '#34c759', 'Breña / Comas', '&estado=invitado_grupo')}
+        ${frow('Invitados al grupo', invitados, '#A3C614', 'Breña / Comas', '&estado=invitado_grupo')}
         ${frow('Lista de espera', enEspera, '#ff9f0a', 'otras zonas', '&estado=lista_espera')}
-        ${frow('Pagaron por Yape', nPagadores, '#0fb954', '', '&estado=pago')}
+        ${frow('Pagaron por Yape', nPagadores, '#55770B', '', '&estado=pago')}
       </div>
       <div class="foot" style="padding:8px 2px 0">"Escribieron" cuenta a <b>todos</b> los que chatean al número (también conocidos y jugadores antiguos), no solo interesados nuevos.</div>
 
@@ -1300,7 +1323,7 @@ function paginaPartidos(db, key, query = {}) {
     const pasado = p.fecha < hoy;
     return `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}" style="display:flex;align-items:center;gap:12px;padding:13px 14px;border-bottom:1px solid var(--sep)">
       <div style="min-width:52px;text-align:center">
-        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:22px;line-height:1">${esc(p.fecha.slice(8, 10))}</div>
+        <div style="font-family:'Big Shoulders',sans-serif;font-weight:800;font-size:22px;line-height:1">${esc(p.fecha.slice(8, 10))}</div>
         <div style="font-size:11px;color:var(--faint)">${esc(p.fecha.slice(5, 7))}/${esc(p.fecha.slice(2, 4))}</div>
       </div>
       <div style="flex:1;min-width:0">
@@ -1377,7 +1400,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId) {
         <div style="font-size:12px;color:var(--faint)">${esc(ESTADOS_INSC[i.estado] || i.estado)}${i.pago_id ? ` · pago #${i.pago_id}` : ''}</div>
       </div>
       ${i.estado !== 'baja' ? `
-        ${i.estado !== 'pagado' ? accion(i, 'pagado', '💰 Pagó', 'background:rgba(52,199,89,.14);color:var(--green-d)') : ''}
+        ${i.estado !== 'pagado' ? accion(i, 'pagado', '💰 Pagó', 'background:rgba(163,198,20,.14);color:var(--green-d)') : ''}
         ${i.estado === 'espera' ? accion(i, 'reservado', '⬆ Subir', 'background:var(--inset);color:var(--muted)') : ''}
         ${p.estado === 'jugado' || p.fecha <= hoyLima() ? `${btnAsist(i, 'si', '✔ Vino', i.asistencia === 'si')}${btnAsist(i, 'no', '✘ Faltó', i.asistencia === 'no')}` : ''}
         ${accion(i, 'baja', '🗑 Baja', 'background:rgba(255,59,48,.12);color:var(--red)')}` : ''}
@@ -1402,8 +1425,8 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId) {
       <p style="color:var(--muted);font-size:13.5px;margin:-6px 0 14px">${esc(p.sede || 'Sede por definir')} · S/ ${esc(p.precio ?? neg.zonas[p.zona]?.precio ?? '?')} · <b style="color:${ocupados >= p.cupo ? 'var(--amber-d)' : 'var(--green-d)'}">${ocupados}/${p.cupo} cupos</b></p>
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
-        ${p.estado === 'abierto' ? cambioEstado('cerrado', '🔒 Cerrar inscripción', 'background:var(--inset);color:var(--muted)') : cambioEstado('abierto', '🔓 Reabrir', 'background:rgba(52,199,89,.14);color:var(--green-d)')}
-        ${p.estado !== 'jugado' ? cambioEstado('jugado', '✅ Marcar jugado', 'background:rgba(52,199,89,.14);color:var(--green-d)') : ''}
+        ${p.estado === 'abierto' ? cambioEstado('cerrado', '🔒 Cerrar inscripción', 'background:var(--inset);color:var(--muted)') : cambioEstado('abierto', '🔓 Reabrir', 'background:rgba(163,198,20,.14);color:var(--green-d)')}
+        ${p.estado !== 'jugado' ? cambioEstado('jugado', '✅ Marcar jugado', 'background:rgba(163,198,20,.14);color:var(--green-d)') : ''}
         ${p.estado !== 'cancelado' ? cambioEstado('cancelado', '✖ Cancelar', 'background:rgba(255,59,48,.12);color:var(--red)') : ''}
       </div>
 
@@ -1425,7 +1448,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId) {
           <form method="post" action="/admin/pago/asignar" style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--sep)">
             <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="pago_id" value="${pg.id}"><input type="hidden" name="partido_id" value="${partidoId}">
             <div style="flex:1;font-size:13.5px"><b>${esc(pg.nombre || `+${pg.numero}`)}</b> · S/ ${esc(pg.monto)} ${pg.cupos > 1 ? `(${pg.cupos} cupos)` : ''} · ${horaCorta(pg.creado_en)}</div>
-            <button style="border:none;border-radius:9px;padding:7px 12px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;background:rgba(52,199,89,.14);color:var(--green-d)">Asignar acá</button>
+            <button style="border:none;border-radius:9px;padding:7px 12px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;background:rgba(163,198,20,.14);color:var(--green-d)">Asignar acá</button>
           </form>`).join('')}
       </div>` : ''}
 
@@ -1460,7 +1483,7 @@ function paginaConexion(key, conexion) {
          <div style="font-size:40px;line-height:1">✅</div>
          <div style="font-size:19px;font-weight:800;margin-top:8px">Conectado a WhatsApp</div>
          <div style="font-size:15px;color:var(--muted);margin-top:4px">Número enlazado</div>
-         <div style="font-size:26px;font-weight:800;font-family:'Barlow Condensed',sans-serif;letter-spacing:.02em;margin-top:2px">
+         <div style="font-size:26px;font-weight:800;font-family:'Big Shoulders',sans-serif;letter-spacing:.02em;margin-top:2px">
            ${numero ? `+${esc(numero)}` : 'no disponible'}</div>
        </div>
        <div class="shdr">Cambiar de número / desconectar</div>
