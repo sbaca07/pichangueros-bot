@@ -89,7 +89,8 @@ const postForm = (ruta, obj) => new Promise((resolve, reject) => {
 
 let msgSeq = 0;
 const payloadMeta = (de, contenido, { id = null, echo = false } = {}) => ({
-  entry: [{ changes: [{ field: echo ? 'smb_message_echoes' : 'messages', value: {
+  object: 'whatsapp_business_account',
+  entry: [{ id: 'WABA-SIM', changes: [{ field: echo ? 'smb_message_echoes' : 'messages', value: {
     [echo ? 'message_echoes' : 'messages']: [{
       id: id || `wamid.sim-${++msgSeq}`,
       ...(echo ? { to: de } : { from: de }),

@@ -582,6 +582,9 @@ app.get('/', (_req, res) => {
     // Un webhook sin App Secret acepta cualquier POST. Que se vea acá evita que
     // vuelva a pasar inadvertido.
     firmaValidada: oficial && typeof oficial.firmaActiva === 'function' ? oficial.firmaActiva() : undefined,
+    // Las 3 capas del modelo Dualhook: firma HMAC (no disponible), ruta con
+    // token secreto y validación de WABA/phone_number_id del payload.
+    webhookSeguridad: oficial && typeof oficial.seguridadWebhook === 'function' ? oficial.seguridadWebhook() : undefined,
     safeMode: SAFE_MODE,
     brain: brain.cerebroActivo(),
     leads: db.stats(),

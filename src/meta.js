@@ -35,6 +35,15 @@ const TOKEN = (process.env.META_TOKEN || '').trim();
 const PHONE_ID = (process.env.META_PHONE_NUMBER_ID || '').trim();
 const VERIFY_TOKEN = (process.env.META_VERIFY_TOKEN || '').trim();
 const APP_SECRET = (process.env.META_APP_SECRET || '').trim();
+// Modelo de seguridad SIN App Secret (respuesta de Dualhook, ticket 2026-08-11):
+// su secret es compartido entre clientes y no se entrega. Lo soportado es
+// (1) una ruta de webhook con token de alta entropía — un secreto en la URL —
+// y (2) validar la IDENTIDAD del payload: object correcto, entry.id = nuestra
+// WABA y metadata.phone_number_id = nuestro número. Un POST forjado tendría
+// que adivinar la ruta Y conocer ambos IDs.
+const WABA_ID = (process.env.META_WABA_ID || '').trim();
+const PATH_TOKEN = (process.env.META_WEBHOOK_PATH_TOKEN || '').trim();
+const RUTA_WEBHOOK = PATH_TOKEN ? `/webhook/meta/${PATH_TOKEN}` : '/webhook/meta';
 // Base de la API saliente. Con Dualhook los envíos NO van a graph.facebook.com:
 // van a su proxy (META_API_BASE=https://api.dualhook.com) con una key dh_live_…
 // como META_TOKEN — las credenciales reales de Meta nunca salen de Dualhook.
@@ -87,6 +96,13 @@ function motivoInactivo() {
 /** ¿El webhook está validando firma? Se expone en `GET /` para que un endpoint
  *  abierto sea visible sin leer los logs de Render. */
 const firmaActiva = () => Boolean(APP_SECRET);
+
+/** Estado de las 3 capas de seguridad del webhook, para `GET /`. */
+const seguridadWebhook = () => ({
+  firma: Boolean(APP_SECRET),          // HMAC de Meta (no disponible vía Dualhook)
+  rutaSecreta: Boolean(PATH_TOKEN),    // token de alta entropía en la URL
+  validaIds: Boolean(WABA_ID),         // entry.id (WABA) + phone_number_id del payload
+});
 
 let avisoFirmaDado = false;
 function firmaValida(req) {
@@ -253,7 +269,7 @@ function registrarVerificacion(app) {
     console.warn('[meta] META_VERIFY_TOKEN sin setear: no se registra el handshake del webhook.');
     return false;
   }
-  app.get('/webhook/meta', (req, res) => {
+  app.get(RUTA_WEBHOOK, (req, res) => {
     if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === VERIFY_TOKEN) {
       // text/plain + String(): el challenge es input del que llama y se refleja
       // tal cual. Como text/html sería un XSS reflejado (menor, hace falta el
@@ -285,16 +301,35 @@ function yaVisto(id) {
 function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
   registrarVerificacion(app);
 
-  app.post('/webhook/meta', (req, res) => {
+  app.post(RUTA_WEBHOOK, (req, res) => {
     if (!firmaValida(req)) {
       console.error('[meta] Webhook RECHAZADO: firma X-Hub-Signature-256 inválida.');
+      return res.sendStatus(403);
+    }
+    // Validación por identidad (lo que Dualhook soporta sin App Secret): el
+    // payload tiene que hablar de una cuenta de WhatsApp Business…
+    if (req.body?.object !== 'whatsapp_business_account') {
+      console.error(`[meta] Webhook RECHAZADO: object "${String(req.body?.object).slice(0, 40)}" no es whatsapp_business_account.`);
       return res.sendStatus(403);
     }
     res.sendStatus(200); // responder YA — Meta reintenta si demoras
     try {
       for (const entry of req.body?.entry || []) {
+        // …y de NUESTRA cuenta: entry.id es el WABA id en todos los eventos.
+        if (WABA_ID && String(entry.id) !== WABA_ID) {
+          console.error(`[meta] Entry DESCARTADO: WABA "${String(entry.id).slice(0, 30)}" no es la nuestra.`);
+          continue;
+        }
         for (const change of entry.changes || []) {
           const v = change.value || {};
+          // Los eventos de mensajes traen metadata.phone_number_id — si viene
+          // y no es el nuestro, se descarta (los de salud son WABA-level y no
+          // lo traen: ya pasaron el filtro del entry).
+          const pnid = v.metadata && v.metadata.phone_number_id;
+          if (PHONE_ID && pnid && String(pnid).trim() !== PHONE_ID) {
+            console.error(`[meta] Change DESCARTADO: phone_number_id "${String(pnid).slice(0, 30)}" no es el nuestro.`);
+            continue;
+          }
 
           // Salud de la cuenta: viene como un `field` propio, nunca junto a los
           // mensajes. Se atiende primero y se corta — no trae messages/echoes.
@@ -328,7 +363,8 @@ function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
     } catch (e) { console.error('[meta] Error procesando webhook:', e.message); }
   });
 
-  console.log('[meta] Webhook oficial registrado en /webhook/meta (transporte Cloud API).');
+  const seg = seguridadWebhook();
+  console.log(`[meta] Webhook oficial registrado en ${PATH_TOKEN ? '/webhook/meta/<token-secreto>' : RUTA_WEBHOOK} (ruta secreta: ${seg.rutaSecreta ? 'sí' : 'NO'} · valida IDs: ${seg.validaIds ? 'sí' : 'NO'} · firma HMAC: ${seg.firma ? 'sí' : 'no disponible vía Dualhook'}).`);
 }
 
-module.exports = { activo, motivoInactivo, firmaActiva, registrarVerificacion, registrarWebhook, enviarTexto, sockAdapter, aMensajeBaileys, firmaValida };
+module.exports = { activo, motivoInactivo, firmaActiva, seguridadWebhook, registrarVerificacion, registrarWebhook, enviarTexto, sockAdapter, aMensajeBaileys, firmaValida };
