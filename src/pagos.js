@@ -175,6 +175,11 @@ async function procesarVoucher(numero, zona, imageBuffer) {
         } else {
           respuesta += `\n⏳ El partido del ${db.fechaBonita(p.fecha)} está lleno: quedaste primero en la lista de espera y te avisamos si se libera un cupo.`;
         }
+      } else if (db.partidosAbiertos().length) {
+        // Sin reserva y con varios partidos posibles: en vez de dejar el pago
+        // huérfano en el panel, se le pregunta al jugador — cuando responda y
+        // se inscriba, index.js le pega este pago a su inscripción solo.
+        respuesta += '\n📅 ¿Para qué pichanga es tu pago? Dime el día y la zona y te anoto en la lista ⚽';
       }
     } catch (e) { console.error('[pagos] Error vinculando pago a partido:', e.message); }
   }

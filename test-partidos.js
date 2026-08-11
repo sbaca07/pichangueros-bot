@@ -108,5 +108,17 @@ check('sin reserva se sigue validando contra la zona del contacto', (() => {
   return r.estado === 'confirmado';
 })());
 
+console.log('== Pago suelto se pega a la inscripción posterior ==');
+const p4 = db.crearPartido({ zona: 'brena', fecha: enUnosDias(5), cupo: 10 });
+const p5 = db.crearPartido({ zona: 'brena', fecha: enUnosDias(6), cupo: 10 });
+db.getOrCreateLead('51900000030');
+const pagoS = db.registrarPago({ numero: '51900000030', monto: 15, numero_operacion: 'OP-SUELTO', estado: 'confirmado' });
+check('con 2 partidos abiertos el pago queda suelto', db.vincularPago('51900000030', pagoS, 1, 'brena') === null);
+check('pagoSueltoDe lo encuentra', db.pagoSueltoDe('51900000030')?.id === pagoS);
+const rIns = db.inscribir(p4, '51900000030');
+db.pagarInscripcion(rIns.inscripcion.id, pagoS);
+check('pagarInscripcion la deja pagada con su pago', db.inscripcionActiva(p4, '51900000030')?.estado === 'pagado');
+check('y el pago deja de estar suelto', db.pagoSueltoDe('51900000030') === null && !db.pagosSinPartido().some((p) => p.id === pagoS));
+
 console.log(fallos ? `\n❌ ${ok} OK, ${fallos} FALLOS` : `\n✅ ${ok} checks OK, 0 fallos`);
 process.exit(fallos ? 1 : 0);

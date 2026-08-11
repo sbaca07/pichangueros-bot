@@ -362,6 +362,15 @@ async function manejarMensaje(sock, msg) {
     if (inscripcion && resultado !== 'ya_inscrito') {
       const p = db.getPartido(inscripcion.partido_id);
       console.log(`[partido] ${numero} → partido ${inscripcion.partido_id} (${resultado}).`);
+      // Si el jugador YA había mandado su Yape (pago suelto sin partido), la
+      // inscripción nace pagada y el pago deja de estar huérfano — es la otra
+      // mitad del "¿para qué pichanga es tu pago?" de pagos.js.
+      const suelto = resultado === 'reservado' ? db.pagoSueltoDe(numero) : null;
+      if (suelto) {
+        db.pagarInscripcion(inscripcion.id, suelto.id);
+        if (decision.reply) decision.reply += `\n✅ Y tu Yape de S/${suelto.monto} ya lo tenía registrado — quedaste CONFIRMADO en la lista.`;
+        console.log(`[partido] Pago suelto #${suelto.id} vinculado a la inscripción de ${numero}.`);
+      }
       if (!modoSilencio) await notificarControl(
         sock,
         `📝 ${actualizado.nombre || `+${numero}`} se ${resultado === 'espera' ? 'anotó en la ESPERA' : 'inscribió'} al partido del ${p ? db.fechaBonita(p.fecha) : '?'}${p?.hora ? ` ${p.hora}` : ''} (${p?.zona}) · wa.me/${numero}`

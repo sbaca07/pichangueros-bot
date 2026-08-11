@@ -677,13 +677,33 @@ function partidoReservadoDe(numero) {
   `).get(numero, hoyLimaDb()) || null;
 }
 
-/** Pagos confirmados sin partido asignado (para que Clarck los asigne a mano). */
-function pagosSinPartido() {
+/** Pagos confirmados sin partido asignado (para que Clarck los asigne a mano).
+ *  Solo los RECIENTES (48 h): los pagos históricos de antes del sistema de
+ *  partidos son historia muerta — mostrarlos todos inundaba la vista con
+ *  entradas de julio que jamás se van a asignar a nada. */
+function pagosSinPartido(horas = 48) {
   return db.prepare(`
     SELECT p.*, l.nombre, l.zona FROM pagos p LEFT JOIN leads l ON l.numero = p.numero
-    WHERE p.estado = 'confirmado' AND p.id NOT IN (SELECT pago_id FROM inscripciones WHERE pago_id IS NOT NULL)
-    ORDER BY p.id DESC LIMIT 20
-  `).all();
+    WHERE p.estado = 'confirmado'
+      AND p.id NOT IN (SELECT pago_id FROM inscripciones WHERE pago_id IS NOT NULL)
+      AND p.creado_en >= datetime('now', '-5 hours', ?)
+    ORDER BY p.id DESC LIMIT 15
+  `).all(`-${horas} hours`);
+}
+
+/** Último pago confirmado RECIENTE de un contacto que quedó sin partido. */
+function pagoSueltoDe(numero, horas = 48) {
+  return db.prepare(`
+    SELECT * FROM pagos WHERE numero = ? AND estado = 'confirmado'
+      AND id NOT IN (SELECT pago_id FROM inscripciones WHERE pago_id IS NOT NULL)
+      AND creado_en >= datetime('now', '-5 hours', ?)
+    ORDER BY id DESC LIMIT 1
+  `).get(numero, `-${horas} hours`) || null;
+}
+
+/** Marca una inscripción como pagada con su pago (cierra un pago suelto). */
+function pagarInscripcion(inscripcionId, pagoId) {
+  db.prepare("UPDATE inscripciones SET estado = 'pagado', pago_id = ? WHERE id = ?").run(pagoId, inscripcionId);
 }
 
 /** Texto de la lista para pegar en el grupo de WhatsApp. */
@@ -732,4 +752,5 @@ module.exports = {
   crearPartido, getPartido, setEstadoPartido, listPartidos, partidosAbiertos, inscripcionesDe,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
+  pagoSueltoDe, pagarInscripcion,
 };
