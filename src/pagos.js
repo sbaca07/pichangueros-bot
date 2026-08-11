@@ -147,8 +147,28 @@ async function procesarVoucher(numero, zona, imageBuffer) {
   if (!lectura || !lectura.es_voucher_yape) return null;
 
   const r = evaluarVoucher(numero, zona, lectura);
-  db.registrarPago({ numero, monto: r.monto, titular: r.titular, numero_operacion: r.numeroOperacion, estado: r.estado, motivo: r.motivo, medio: lectura.medio || 'yape', cupos: r.cupos });
-  return { respuesta: r.respuesta, handoff: r.handoff, motivoHandoff: r.motivoHandoff };
+  const pagoId = db.registrarPago({ numero, monto: r.monto, titular: r.titular, numero_operacion: r.numeroOperacion, estado: r.estado, motivo: r.motivo, medio: lectura.medio || 'yape', cupos: r.cupos });
+
+  // Pago confirmado → cubrir el cupo del partido. Si el contacto tenía reserva
+  // se marca pagada; si no, solo se le inscribe cuando hay UN único partido
+  // abierto en su zona (sin adivinar). Si no se puede vincular, el pago queda
+  // "sin partido" y Clarck lo asigna desde el panel — la respuesta no cambia.
+  let respuesta = r.respuesta;
+  if (r.estado === 'confirmado') {
+    try {
+      const v = db.vincularPago(numero, pagoId, r.cupos || 1, zona);
+      if (v) {
+        const enCancha = v.inscripciones.filter((i) => i.estado === 'pagado').length;
+        const p = v.partido;
+        if (enCancha > 0) {
+          respuesta += `\n📋 Ya estás en la lista del ${p.fecha}${p.hora ? ` ${p.hora}` : ''}${p.sede ? ` en ${p.sede}` : ''}. ¡Nos vemos en la cancha!`;
+        } else {
+          respuesta += `\n⏳ El partido del ${p.fecha} está lleno: quedaste primero en la lista de espera y te avisamos si se libera un cupo.`;
+        }
+      }
+    } catch (e) { console.error('[pagos] Error vinculando pago a partido:', e.message); }
+  }
+  return { respuesta, handoff: r.handoff, motivoHandoff: r.motivoHandoff };
 }
 
 module.exports = { leerVoucher, evaluarVoucher, procesarVoucher, cerebroActivo: () => Boolean(process.env.OPENAI_API_KEY) };

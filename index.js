@@ -349,6 +349,24 @@ async function manejarMensaje(sock, msg) {
     );
   }
 
+  // El jugador pidió cupo en un partido abierto: se reserva de verdad (el
+  // cerebro solo decide, la BD manda). Si entre que la IA leyó los cupos y
+  // ahora el partido se llenó, la reserva cae a lista de espera y se le avisa.
+  if (decision.inscribir_partido) {
+    const { inscripcion, resultado } = db.inscribir(decision.inscribir_partido, numero, { nombre: actualizado.nombre });
+    if (resultado === 'espera' && decision.reply && !/lista de espera/i.test(decision.reply)) {
+      decision.reply += '\n\n⚠️ Ojo: el cupo se acaba de llenar, así que te dejé en la lista de espera — si se libera un lugar te avisamos al toque 🙏';
+    }
+    if (inscripcion && resultado !== 'ya_inscrito') {
+      const p = db.getPartido(inscripcion.partido_id);
+      console.log(`[partido] ${numero} → partido ${inscripcion.partido_id} (${resultado}).`);
+      if (!modoSilencio) await notificarControl(
+        sock,
+        `📝 ${actualizado.nombre || `+${numero}`} se ${resultado === 'espera' ? 'anotó en la ESPERA' : 'inscribió'} al partido del ${p?.fecha}${p?.hora ? ` ${p.hora}` : ''} (${p?.zona}) · wa.me/${numero}`
+      );
+    }
+  }
+
   if (decision.reply && !modoSilencio) {
     // Naturalidad anti-spam: "escribiendo…" + pausa corta antes de responder.
     try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}

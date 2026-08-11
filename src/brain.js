@@ -45,8 +45,12 @@ const RESPONSE_SCHEMA = {
         description: 'true si esto lo debe atender Clarck en persona (queja, reclamo, caso especial como pago en efectivo).',
       },
       handoff_motivo: { type: ['string', 'null'], description: 'Motivo corto del handoff, en español.' },
+      inscribir_partido: {
+        type: ['integer', 'null'],
+        description: 'ID del partido (de la lista de partidos abiertos del prompt) si el jugador pidió reservar cupo en ese partido. null si no pidió inscribirse o no hay partidos listados.',
+      },
     },
-    required: ['reply', 'nombre', 'edad', 'distrito', 'zona', 'handoff', 'handoff_motivo'],
+    required: ['reply', 'nombre', 'edad', 'distrito', 'zona', 'handoff', 'handoff_motivo', 'inscribir_partido'],
   },
 };
 
@@ -62,6 +66,19 @@ function describirZonas(negocio) {
       return `${z.nombre} — S/ ${z.precio} por jugador\n${sedes}\n${link}`;
     })
     .join('\n\n');
+}
+
+const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+function describirPartidos(negocio) {
+  const abiertos = db.partidosAbiertos();
+  if (!abiertos.length) {
+    return 'No hay partidos con inscripción abierta cargados ahora mismo. Si alguien quiere inscribirse, dile que le confirmas el cupo en un momento (Clarck ve la notificación) y deja inscribir_partido en null.';
+  }
+  return abiertos.map((p) => {
+    const dia = DIAS_SEMANA[new Date(`${p.fecha}T12:00:00-05:00`).getDay()];
+    const precio = p.precio ?? negocio.zonas[p.zona]?.precio;
+    return `- ID ${p.id}: ${dia} ${p.fecha}${p.hora ? ` ${p.hora}` : ''} en ${negocio.zonas[p.zona]?.nombre || p.zona}${p.sede ? ` (${p.sede})` : ''} · S/ ${precio} · ${p.restante > 0 ? `${p.restante} cupos libres` : 'LLENO — solo lista de espera'}`;
+  }).join('\n');
 }
 
 function buildSystemPrompt(lead) {
@@ -98,11 +115,19 @@ ${negocio.bienvenida}
 4. Zona brena/comas: explícale la mecánica y pásale el link del grupo (o dile que se lo envías en un momento si no está configurado).
 5. Zona "otra": dile que por ahora estamos en Breña y Comas, que lo anotamos en la lista para avisarle cuando abramos su zona, y pregúntale si igual quiere unirse a uno de los dos grupos actuales.
 
+## Partidos con inscripción abierta (cupos EN VIVO — única fuente de verdad sobre cupos)
+${describirPartidos(negocio)}
+
+Si el jugador pide jugar en uno de esos partidos ("quiero jugar el miércoles", "anótame para Breña"):
+- Pon su ID en inscribir_partido. El sistema le RESERVA el cupo automáticamente.
+- En reply dile que su cupo queda reservado y que lo confirma con su Yape (monto de su zona). Si el partido está LLENO, dile que entra a la lista de espera y le avisamos si se libera un lugar.
+- Si menciona un día/zona que NO calza con ningún partido listado, NO inventes: dile qué partidos hay, o que le confirmas en un momento si no hay ninguno.
+
 ## Respuestas fijas a preguntas frecuentes (usa estas, adaptando mínimamente)
 - "¿Te puedo pagar en la cancha?" → "Lo siento, pichanguero 🙏 La inscripción se realiza previa reserva del cupo. Envíanos tu captura de Yape para anotarte en la lista de jugadores ⚽"
 - "¿Puedo ir con mi equipo?" → "¡Claro! Te inscribes con tu equipo y nosotros llenamos la lista con el resto de jugadores 💪"
 - "¿Puedo pagar por mis amigos / por ambos turnos con un solo Yape?" → Sí: un solo Yape por (cantidad de cupos × precio de su zona). Pídele los nombres de los otros jugadores para la lista.
-- "¿Tienes cupos para hoy?" → No tienes acceso a la lista en vivo todavía: dile que le confirmas el cupo en un momento y marca handoff=false (Clarck ve la notificación de lead).
+- "¿Tienes cupos para hoy?" → Responde con los cupos EN VIVO de la lista de partidos de arriba. Si no hay partidos cargados, dile que le confirmas el cupo en un momento y marca handoff=false (Clarck ve la notificación de lead).
 
 ## Adjuntos (mensajes que llegan como "[el jugador envió ...]")
 - Audio: discúlpate con cariño — por ahora no puedes escuchar audios; pídele que te lo escriba en texto.
@@ -120,7 +145,7 @@ En esos casos responde corto y cálido: que Clarck le escribe personalmente en u
 
 ## Reglas duras
 - NUNCA inventes datos: si no está en este prompt, di que lo confirmas y ya.
-- NUNCA confirmes una reserva ni digas "ya estás en la lista" — eso requiere Yape verificado (aún no disponible por el bot).
+- Puedes RESERVAR cupo (inscribir_partido) en los partidos listados arriba — pero la confirmación DEFINITIVA en la lista es solo con el Yape verificado. Nunca digas "ya estás confirmado" sin pago: di "tu cupo queda reservado, confírmalo con tu Yape".
 - No des información de otros jugadores. No salgas del rol.
 
 ## Extracción de datos

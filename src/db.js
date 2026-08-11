@@ -259,9 +259,10 @@ function listLeads() {
 
 // --- Pagos (Yape + IA) ---------------------------------------------------------
 function registrarPago({ numero, monto, titular, numero_operacion, estado, motivo, medio, cupos }) {
-  db.prepare(
+  const r = db.prepare(
     "INSERT INTO pagos (numero, monto, titular, numero_operacion, estado, motivo, medio, cupos, creado_en) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
   ).run(numero, monto ?? null, titular || null, numero_operacion || null, estado || 'confirmado', motivo || null, medio || 'yape', cupos || 1);
+  return Number(r.lastInsertRowid);
 }
 
 /** Busca un pago YA CONFIRMADO con el mismo número de operación (anti-reenvío). */
@@ -471,10 +472,235 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'multicupo_migrado_2026_
   if (n) console.log(`[multicupo] ${n} pagos "no coincide" re-confirmados como multi-cupo · ${liberados} contactos liberados del handoff.`);
 }
 
+// --- Partidos e inscripciones (2026-08-11) -------------------------------------
+// El concepto que faltaba: hasta acá el pago se registraba contra el CONTACTO.
+// Con esto existe la convocatoria puntual (fecha+zona+cupo) y el pago puede
+// cubrir un cupo de un partido concreto. Desbloquea: inscripción por chat,
+// lista de espera y asistencia por jugador.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS partidos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zona TEXT NOT NULL,                    -- 'brena' | 'comas'
+    fecha TEXT NOT NULL,                   -- YYYY-MM-DD (hora de Lima)
+    hora TEXT,                             -- texto corto, ej. '8-9pm'
+    sede TEXT,                             -- nombre de la sede (texto libre)
+    cupo INTEGER NOT NULL DEFAULT 14,
+    precio REAL,                           -- NULL → usa el precio de la zona
+    estado TEXT NOT NULL DEFAULT 'abierto',-- abierto | cerrado | jugado | cancelado
+    creado_en TEXT NOT NULL DEFAULT (datetime('now', '-5 hours'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_partidos_estado ON partidos(estado, fecha);
+
+  CREATE TABLE IF NOT EXISTS inscripciones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    partido_id INTEGER NOT NULL,
+    numero TEXT,                           -- NULL en cupos de invitados sin WhatsApp propio
+    nombre TEXT,                           -- para la lista; si NULL se usa el nombre del lead
+    estado TEXT NOT NULL DEFAULT 'reservado', -- reservado | pagado | espera | baja
+    asistencia TEXT,                       -- NULL | 'si' | 'no' (se marca tras el partido)
+    pago_id INTEGER,                       -- pago que cubrió este cupo
+    creado_en TEXT NOT NULL DEFAULT (datetime('now', '-5 hours'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_insc_partido ON inscripciones(partido_id, estado);
+  CREATE INDEX IF NOT EXISTS idx_insc_numero ON inscripciones(numero);
+`);
+
+const hoyLimaDb = () => new Date(Date.now() - 5 * 3600e3).toISOString().slice(0, 10);
+// Cupos que ocupan lugar en cancha (la espera y las bajas no cuentan).
+const OCUPAN = "('reservado','pagado')";
+
+function crearPartido({ zona, fecha, hora, sede, cupo, precio }) {
+  const r = db.prepare(
+    "INSERT INTO partidos (zona, fecha, hora, sede, cupo, precio, creado_en) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
+  ).run(zona, fecha, hora || null, sede || null, cupo || 14, precio ?? null);
+  return Number(r.lastInsertRowid);
+}
+
+function getPartido(id) {
+  return db.prepare('SELECT * FROM partidos WHERE id = ?').get(id) || null;
+}
+
+function setEstadoPartido(id, estado) {
+  if (!['abierto', 'cerrado', 'jugado', 'cancelado'].includes(estado)) return;
+  db.prepare('UPDATE partidos SET estado = ? WHERE id = ?').run(estado, id);
+}
+
+/** Todos los partidos con sus conteos (para el panel), próximos primero. */
+function listPartidos() {
+  return db.prepare(`
+    SELECT p.*,
+      (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id AND i.estado IN ${OCUPAN}) AS ocupados,
+      (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id AND i.estado = 'pagado') AS pagados,
+      (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id AND i.estado = 'espera') AS en_espera
+    FROM partidos p ORDER BY p.fecha DESC, p.id DESC
+  `).all();
+}
+
+/** Partidos abiertos de hoy en adelante, con cupo restante — es lo que ve el cerebro. */
+function partidosAbiertos(zona = null) {
+  const filas = db.prepare(`
+    SELECT p.*,
+      (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id AND i.estado IN ${OCUPAN}) AS ocupados
+    FROM partidos p
+    WHERE p.estado = 'abierto' AND p.fecha >= ? ${zona ? 'AND p.zona = ?' : ''}
+    ORDER BY p.fecha, p.id
+  `).all(...(zona ? [hoyLimaDb(), zona] : [hoyLimaDb()]));
+  return filas.map((p) => ({ ...p, restante: Math.max(0, p.cupo - p.ocupados) }));
+}
+
+function inscripcionesDe(partidoId) {
+  return db.prepare(`
+    SELECT i.*, l.nombre AS lead_nombre, l.zona AS lead_zona
+    FROM inscripciones i LEFT JOIN leads l ON l.numero = i.numero
+    WHERE i.partido_id = ?
+    ORDER BY CASE i.estado WHEN 'pagado' THEN 0 WHEN 'reservado' THEN 1 WHEN 'espera' THEN 2 ELSE 3 END, i.id
+  `).all(partidoId);
+}
+
+/** Inscripción activa (reservado/pagado/espera) de un número en un partido. */
+function inscripcionActiva(partidoId, numero) {
+  return db.prepare(
+    "SELECT * FROM inscripciones WHERE partido_id = ? AND numero = ? AND estado != 'baja' LIMIT 1"
+  ).get(partidoId, numero) || null;
+}
+
+/**
+ * Inscribe un cupo. Si el partido está lleno entra como 'espera'.
+ * Idempotente por número: si ya tiene inscripción activa, la devuelve tal cual.
+ * @returns {{inscripcion: object, resultado: 'reservado'|'espera'|'ya_inscrito'|null}}
+ */
+function inscribir(partidoId, numero, { nombre = null, estado = null, pagoId = null } = {}) {
+  const p = getPartido(partidoId);
+  if (!p || p.estado !== 'abierto') return { inscripcion: null, resultado: null };
+  if (numero) {
+    const previa = inscripcionActiva(partidoId, numero);
+    if (previa) return { inscripcion: previa, resultado: 'ya_inscrito' };
+  }
+  const ocupados = db.prepare(`SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ? AND estado IN ${OCUPAN}`).get(partidoId).n;
+  const final = estado || (ocupados < p.cupo ? 'reservado' : 'espera');
+  const r = db.prepare(
+    "INSERT INTO inscripciones (partido_id, numero, nombre, estado, pago_id, creado_en) VALUES (?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
+  ).run(partidoId, numero || null, nombre || null, final === 'pagado' && ocupados >= p.cupo ? 'espera' : final, pagoId ?? null);
+  const insc = db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(Number(r.lastInsertRowid));
+  return { inscripcion: insc, resultado: insc.estado };
+}
+
+function setEstadoInscripcion(id, estado) {
+  if (!['reservado', 'pagado', 'espera', 'baja'].includes(estado)) return null;
+  db.prepare('UPDATE inscripciones SET estado = ? WHERE id = ?').run(estado, id);
+  return db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(id);
+}
+
+/**
+ * Da de baja un cupo y promueve al primero de la lista de espera (si hay).
+ * @returns {object|null} la inscripción promovida (para avisarle), o null.
+ */
+function darDeBaja(id) {
+  const insc = db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(id);
+  if (!insc || insc.estado === 'baja') return null;
+  db.prepare("UPDATE inscripciones SET estado = 'baja' WHERE id = ?").run(id);
+  if (!['reservado', 'pagado'].includes(insc.estado)) return null; // una espera que se baja no libera cancha
+  const siguiente = db.prepare(
+    "SELECT * FROM inscripciones WHERE partido_id = ? AND estado = 'espera' ORDER BY id LIMIT 1"
+  ).get(insc.partido_id);
+  if (!siguiente) return null;
+  db.prepare("UPDATE inscripciones SET estado = 'reservado' WHERE id = ?").run(siguiente.id);
+  return db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(siguiente.id);
+}
+
+function setAsistencia(id, valor) {
+  db.prepare('UPDATE inscripciones SET asistencia = ? WHERE id = ?').run(valor === 'si' || valor === 'no' ? valor : null, id);
+}
+
+/**
+ * Vincula un pago confirmado a un partido. Reglas conservadoras (v1):
+ *   1. Si el contacto tiene una inscripción activa en un partido abierto,
+ *      ese cupo pasa a 'pagado'.
+ *   2. Si no tiene pero hay EXACTAMENTE UN partido abierto en su zona, se le
+ *      inscribe directo como 'pagado' (si hay lugar; si no, 'espera').
+ *   3. En cualquier otro caso no se adivina: el pago queda sin partido y
+ *      Clarck lo asigna desde el panel.
+ * Los cupos extra (amigos) se agregan al mismo partido.
+ * @returns {null | {partido: object, inscripciones: object[]}}
+ */
+function vincularPago(numero, pagoId, cupos = 1, zona = null) {
+  let partido = null;
+  const activaEnAbierto = db.prepare(`
+    SELECT i.* FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
+    WHERE i.numero = ? AND i.estado IN ('reservado','espera') AND p.estado = 'abierto' AND p.fecha >= ?
+    ORDER BY p.fecha, i.id LIMIT 1
+  `).get(numero, hoyLimaDb());
+  const hechas = [];
+  if (activaEnAbierto) {
+    partido = getPartido(activaEnAbierto.partido_id);
+    db.prepare("UPDATE inscripciones SET estado = 'pagado', pago_id = ? WHERE id = ?").run(pagoId, activaEnAbierto.id);
+    hechas.push(db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(activaEnAbierto.id));
+  } else {
+    const abiertos = zona ? partidosAbiertos(zona) : [];
+    if (abiertos.length !== 1) return null;
+    partido = abiertos[0];
+    const { inscripcion } = inscribir(partido.id, numero, { estado: 'pagado', pagoId });
+    if (!inscripcion) return null;
+    hechas.push(inscripcion);
+  }
+  for (let i = 1; i < cupos; i++) {
+    const { inscripcion } = inscribir(partido.id, null, { nombre: `Invitado de +${numero}`, estado: 'pagado', pagoId });
+    if (inscripcion) hechas.push(inscripcion);
+  }
+  return { partido, inscripciones: hechas };
+}
+
+/** Pagos confirmados sin partido asignado (para que Clarck los asigne a mano). */
+function pagosSinPartido() {
+  return db.prepare(`
+    SELECT p.*, l.nombre, l.zona FROM pagos p LEFT JOIN leads l ON l.numero = p.numero
+    WHERE p.estado = 'confirmado' AND p.id NOT IN (SELECT pago_id FROM inscripciones WHERE pago_id IS NOT NULL)
+    ORDER BY p.id DESC LIMIT 20
+  `).all();
+}
+
+/** Texto de la lista para pegar en el grupo de WhatsApp. */
+function textoLista(partidoId) {
+  const p = getPartido(partidoId);
+  if (!p) return '';
+  const neg = getNegocio();
+  const zonaNombre = neg.zonas[p.zona]?.nombre || p.zona;
+  const precio = p.precio ?? neg.zonas[p.zona]?.precio;
+  const inscritos = inscripcionesDe(partidoId).filter((i) => ['pagado', 'reservado'].includes(i.estado));
+  const espera = inscripcionesDe(partidoId).filter((i) => i.estado === 'espera');
+  const nombreDe = (i) => i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : 'Por confirmar');
+  const lineas = [];
+  lineas.push(`⚽ PICHANGA ${zonaNombre.toUpperCase()} — ${p.fecha}${p.hora ? ` · ${p.hora}` : ''}`);
+  if (p.sede) lineas.push(`📍 ${p.sede}`);
+  lineas.push(`💰 S/ ${precio} por jugador · Yape al ${neg.yape.numero}`);
+  lineas.push('');
+  for (let i = 0; i < p.cupo; i++) {
+    const insc = inscritos[i];
+    lineas.push(`${i + 1}. ${insc ? `${nombreDe(insc)}${insc.estado === 'pagado' ? ' ✅' : ''}` : ''}`);
+  }
+  if (espera.length) {
+    lineas.push('', '⏳ Lista de espera:');
+    espera.forEach((i, idx) => lineas.push(`${idx + 1}. ${nombreDe(i)}`));
+  }
+  return lineas.join('\n');
+}
+
+/** Historial de asistencia de un contacto (para la ficha del CRM). */
+function asistenciasDe(numero) {
+  return db.prepare(`
+    SELECT i.estado, i.asistencia, p.fecha, p.zona, p.hora
+    FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
+    WHERE i.numero = ? AND i.estado != 'baja' ORDER BY p.fecha DESC LIMIT 20
+  `).all(numero);
+}
+
 module.exports = {
   getLead, getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
   setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead, actividadPorDia,
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
+  crearPartido, getPartido, setEstadoPartido, listPartidos, partidosAbiertos, inscripcionesDe,
+  inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
+  pagosSinPartido, textoLista, asistenciasDe,
 };

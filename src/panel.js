@@ -209,6 +209,67 @@ function registrarPanel(app, db, conexion = null) {
     volverAConfig(req, res);
   });
 
+  // --- Partidos: convocatorias, inscripciones, asistencia ----------------------
+  const volverAPartidos = (req, res, partidoId = null) =>
+    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=partidos${partidoId ? `&partido=${partidoId}` : ''}`);
+
+  app.post('/admin/partido', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const zona = req.body.zona === 'comas' ? 'comas' : 'brena';
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.body.fecha || '') ? req.body.fecha : null;
+    if (!fecha) return volverAPartidos(req, res);
+    const id = db.crearPartido({
+      zona, fecha,
+      hora: (req.body.hora || '').trim().slice(0, 40),
+      sede: (req.body.sede || '').trim().slice(0, 120),
+      cupo: Math.max(2, Math.min(60, Number(req.body.cupo) || 14)),
+      precio: req.body.precio ? Number(req.body.precio) : null,
+    });
+    volverAPartidos(req, res, id);
+  });
+
+  app.post('/admin/partido/estado', (req, res) => {
+    if (!autorizado(req, res)) return;
+    db.setEstadoPartido(Number(req.body.id), req.body.estado);
+    volverAPartidos(req, res, Number(req.body.id));
+  });
+
+  // Inscripción manual desde el panel (jugador con número, o invitado a nombre).
+  app.post('/admin/partido/inscribir', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const partidoId = Number(req.body.partido_id);
+    const numero = (req.body.numero || '').replace(/\D/g, '') || null;
+    const nombre = (req.body.nombre || '').trim().slice(0, 80) || null;
+    if (numero || nombre) db.inscribir(partidoId, numero, { nombre });
+    volverAPartidos(req, res, partidoId);
+  });
+
+  app.post('/admin/inscripcion/estado', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const id = Number(req.body.id);
+    if (req.body.estado === 'baja') db.darDeBaja(id);
+    else db.setEstadoInscripcion(id, req.body.estado);
+    volverAPartidos(req, res, Number(req.body.partido_id));
+  });
+
+  app.post('/admin/inscripcion/asistencia', (req, res) => {
+    if (!autorizado(req, res)) return;
+    db.setAsistencia(Number(req.body.id), req.body.valor);
+    volverAPartidos(req, res, Number(req.body.partido_id));
+  });
+
+  // Asignar a un partido un pago confirmado que quedó sin vincular.
+  app.post('/admin/pago/asignar', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const partidoId = Number(req.body.partido_id);
+    const pago = db.listPagosTodos().find((p) => p.id === Number(req.body.pago_id));
+    if (pago && partidoId) {
+      db.inscribir(partidoId, pago.numero, { estado: 'pagado', pagoId: pago.id });
+      for (let i = 1; i < (pago.cupos || 1); i++) db.inscribir(partidoId, null, { nombre: `Invitado de +${pago.numero}`, estado: 'pagado', pagoId: pago.id });
+    }
+    volverAPartidos(req, res, partidoId);
+  });
+
   // --- Conexión (WhatsApp): desconectar / cambiar de número --------------------
   // Mensaje suelto desde el panel (prueba de conexión o aviso manual).
   app.post('/admin/enviar', async (req, res) => {
@@ -234,6 +295,7 @@ function registrarPanel(app, db, conexion = null) {
     if (numero) return res.send(paginaFicha(db, key, numero));
     if (req.query.vista === 'crm') return res.send(paginaCRM(db, key, req.query));
     if (req.query.vista === 'pagos') return res.send(paginaPagos(db, key, req.query));
+    if (req.query.vista === 'partidos') return res.send(paginaPartidos(db, key, req.query));
     if (req.query.vista === 'config') return res.send(paginaConfig(db, key));
     if (req.query.vista === 'conexion') return res.send(paginaConexion(key, conexion));
     res.send(paginaResumen(db, key, req.query));
@@ -475,12 +537,14 @@ const SVG = {
   iConfig: '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13.5a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V20a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.04-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.04H4a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.56-1.04 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H10a1.7 1.7 0 0 0 1.04-1.56V4a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V10a1.7 1.7 0 0 0 1.56 1.04H20a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.56 1.04Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
   iConexion: '<svg viewBox="0 0 24 24" fill="none"><path d="M9 15l6-6M10.5 6.5l.9-.9a4 4 0 0 1 5.66 5.66l-.9.9M13.5 17.5l-.9.9a4 4 0 0 1-5.66-5.66l.9-.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   iPagos: '<svg viewBox="0 0 24 24" fill="none"><rect x="2.5" y="6" width="19" height="12.5" rx="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12.2" r="2.8" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.2h.01M18 15.2h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
+  iPartidos: '<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M3 9.5h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="15.2" r="2.6" stroke="currentColor" stroke-width="1.6"/></svg>',
 };
 
 const tabbar = (key, activo) => `<nav class="tabbar">
   <a class="tab ${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen}Resumen</a>
   <a class="tab ${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm}CRM</a>
   <a class="tab ${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos}Pagos</a>
+  <a class="tab ${activo === 'partidos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=partidos">${SVG.iPartidos}Partidos</a>
   <a class="tab ${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig}Config</a>
   <a class="tab ${activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=conexion">${SVG.iConexion}Conexión</a>
 </nav>`;
@@ -491,6 +555,7 @@ const sidebar = (key, activo) => `<aside class="sidebar">
     <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Resumen</a>
     <a class="${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm} CRM</a>
     <a class="${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos} Pagos</a>
+    <a class="${activo === 'partidos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=partidos">${SVG.iPartidos} Partidos</a>
     <a class="${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig} Config</a>
     <a class="${activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=conexion">${SVG.iConexion} Conexión</a>
   </nav>
@@ -1200,6 +1265,167 @@ function paginaConfig(db, key) {
       <div class="foot">⚽ Pichangueros · Config</div>
     </div>
   `, { refresh: false, activo: 'config', key });
+}
+
+// ==============================================================================
+//  Vista PARTIDOS — convocatorias, inscripciones, lista de espera, asistencia
+// ==============================================================================
+const ESTADOS_PARTIDO = { abierto: 'Abierto', cerrado: 'Cerrado', jugado: 'Jugado ✅', cancelado: 'Cancelado' };
+const ESTADOS_INSC = { pagado: 'Pagado ✅', reservado: 'Reservado', espera: 'En espera ⏳', baja: 'Baja' };
+
+function paginaPartidos(db, key, query = {}) {
+  const keyRaw = decodeURIComponent(key);
+  const partidoId = Number(query.partido) || null;
+  if (partidoId) return paginaPartidoDetalle(db, key, keyRaw, partidoId);
+
+  const partidos = db.listPartidos();
+  const neg = db.getNegocio();
+  const hoy = hoyLima();
+
+  const fila = (p) => {
+    const z = ZONAS[p.zona];
+    const pasado = p.fecha < hoy;
+    return `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}" style="display:flex;align-items:center;gap:12px;padding:13px 14px;border-bottom:1px solid var(--sep)">
+      <div style="min-width:52px;text-align:center">
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:22px;line-height:1">${esc(p.fecha.slice(8, 10))}</div>
+        <div style="font-size:11px;color:var(--faint)">${esc(p.fecha.slice(5, 7))}/${esc(p.fecha.slice(2, 4))}</div>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:15px">${z ? z.nombre : esc(p.zona)}${p.hora ? ` · ${esc(p.hora)}` : ''}</div>
+        <div style="font-size:12.5px;color:var(--muted)">${esc(p.sede || 'Sede por definir')} · S/ ${esc(p.precio ?? neg.zonas[p.zona]?.precio ?? '?')}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-weight:800;font-size:15px;color:${p.ocupados >= p.cupo ? 'var(--amber-d)' : 'var(--green-d)'}">${p.ocupados}/${p.cupo}</div>
+        <div style="font-size:11px;color:var(--faint)">${p.pagados} pagados${p.en_espera ? ` · ${p.en_espera} espera` : ''}</div>
+      </div>
+      <span class="badge ${p.estado === 'abierto' && !pasado ? 'b-zona' : 'b-new'}" style="${p.estado === 'abierto' && !pasado ? 'background:var(--green)' : ''}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
+      ${SVG.chev}
+    </a>`;
+  };
+
+  return baseHtml('Partidos · Pichangueros', `
+    <div class="px">
+      <div class="ltitle"><div><div class="eyebrow">Convocatorias</div><h2>Partidos</h2></div></div>
+
+      <div class="shdr">Abrir partido nuevo</div>
+      <div class="group">
+        <form class="inline" method="post" action="/admin/partido">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <select name="zona" style="font:inherit;padding:10px;border-radius:11px;border:1px solid var(--sep)">
+            <option value="brena">Breña</option><option value="comas">Comas</option>
+          </select>
+          <input name="fecha" type="date" required min="${hoy}">
+          <input name="hora" placeholder="Hora (ej. 8-9pm)">
+          <input name="sede" placeholder="Sede (opcional)">
+          <input name="cupo" type="number" min="2" max="60" value="14" style="max-width:90px" title="Cupo">
+          <input name="precio" type="number" step="0.5" placeholder="S/ (auto)" style="max-width:110px" title="Precio; vacío = precio de la zona">
+          <button>+ Abrir partido</button>
+        </form>
+      </div>
+
+      <div class="shdr">Todos los partidos</div>
+      <div class="group">
+        ${partidos.map(fila).join('') || '<p style="padding:14px;color:var(--faint);font-size:14px">Sin partidos todavía. Abre el primero arriba — el bot lo ofrece automáticamente a quien pida jugar.</p>'}
+      </div>
+
+      <div class="foot">⚽ Pichangueros · Partidos</div>
+    </div>
+  `, { refresh: false, activo: 'partidos', key });
+}
+
+function paginaPartidoDetalle(db, key, keyRaw, partidoId) {
+  const p = db.getPartido(partidoId);
+  if (!p) return baseHtml('Partido · Pichangueros', `<div class="px"><p style="padding:20px">Partido no encontrado. <a href="/admin/leads?key=${key}&vista=partidos">Volver</a></p></div>`, { activo: 'partidos', key });
+
+  const neg = db.getNegocio();
+  const z = ZONAS[p.zona];
+  const inscripciones = db.inscripcionesDe(partidoId);
+  const activas = inscripciones.filter((i) => i.estado !== 'baja');
+  const ocupados = inscripciones.filter((i) => ['pagado', 'reservado'].includes(i.estado)).length;
+  const lista = db.textoLista(partidoId);
+  const pagosSueltos = db.pagosSinPartido();
+
+  const accion = (i, estado, etiqueta, estilo = '') => `
+    <form method="post" action="/admin/inscripcion/estado" style="display:inline">
+      <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${i.id}"><input type="hidden" name="partido_id" value="${partidoId}"><input type="hidden" name="estado" value="${estado}">
+      <button style="border:none;border-radius:9px;padding:6px 10px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;${estilo}">${etiqueta}</button>
+    </form>`;
+  const btnAsist = (i, valor, etiqueta, on) => `
+    <form method="post" action="/admin/inscripcion/asistencia" style="display:inline">
+      <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${i.id}"><input type="hidden" name="partido_id" value="${partidoId}"><input type="hidden" name="valor" value="${i.asistencia === valor ? '' : valor}">
+      <button style="border:none;border-radius:9px;padding:6px 10px;font:inherit;font-size:12px;font-weight:700;cursor:pointer;background:${on ? (valor === 'si' ? 'var(--green)' : 'var(--red)') : 'var(--inset)'};color:${on ? '#fff' : 'var(--muted)'}">${etiqueta}</button>
+    </form>`;
+
+  const filaInsc = (i) => {
+    const nombre = i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : '¿?');
+    return `<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--sep);flex-wrap:wrap">
+      <div style="flex:1;min-width:140px">
+        <div style="font-weight:700;font-size:14.5px">${i.numero ? `<a href="/admin/leads?key=${key}&numero=${i.numero}">${esc(nombre)}</a>` : esc(nombre)}</div>
+        <div style="font-size:12px;color:var(--faint)">${esc(ESTADOS_INSC[i.estado] || i.estado)}${i.pago_id ? ` · pago #${i.pago_id}` : ''}</div>
+      </div>
+      ${i.estado !== 'baja' ? `
+        ${i.estado !== 'pagado' ? accion(i, 'pagado', '💰 Pagó', 'background:rgba(52,199,89,.14);color:var(--green-d)') : ''}
+        ${i.estado === 'espera' ? accion(i, 'reservado', '⬆ Subir', 'background:var(--inset);color:var(--muted)') : ''}
+        ${p.estado === 'jugado' || p.fecha <= hoyLima() ? `${btnAsist(i, 'si', '✔ Vino', i.asistencia === 'si')}${btnAsist(i, 'no', '✘ Faltó', i.asistencia === 'no')}` : ''}
+        ${accion(i, 'baja', '🗑 Baja', 'background:rgba(255,59,48,.12);color:var(--red)')}` : ''}
+    </div>`;
+  };
+
+  const cambioEstado = (estado, etiqueta, clase) => `
+    <form method="post" action="/admin/partido/estado" style="display:inline">
+      <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${partidoId}"><input type="hidden" name="estado" value="${estado}">
+      <button style="border:none;border-radius:11px;padding:9px 14px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;${clase}">${etiqueta}</button>
+    </form>`;
+
+  return baseHtml(`Partido ${p.fecha} · Pichangueros`, `
+    <div class="px">
+      <div class="ltitle">
+        <div>
+          <div class="eyebrow"><a href="/admin/leads?key=${key}&vista=partidos" style="color:inherit">← Partidos</a></div>
+          <h2>${z ? z.nombre : esc(p.zona)} · ${esc(p.fecha)}${p.hora ? ` · ${esc(p.hora)}` : ''}</h2>
+        </div>
+        <span class="badge b-zona" style="background:${p.estado === 'abierto' ? 'var(--green)' : 'var(--faint)'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
+      </div>
+      <p style="color:var(--muted);font-size:13.5px;margin:-6px 0 14px">${esc(p.sede || 'Sede por definir')} · S/ ${esc(p.precio ?? neg.zonas[p.zona]?.precio ?? '?')} · <b style="color:${ocupados >= p.cupo ? 'var(--amber-d)' : 'var(--green-d)'}">${ocupados}/${p.cupo} cupos</b></p>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+        ${p.estado === 'abierto' ? cambioEstado('cerrado', '🔒 Cerrar inscripción', 'background:var(--inset);color:var(--muted)') : cambioEstado('abierto', '🔓 Reabrir', 'background:rgba(52,199,89,.14);color:var(--green-d)')}
+        ${p.estado !== 'jugado' ? cambioEstado('jugado', '✅ Marcar jugado', 'background:rgba(52,199,89,.14);color:var(--green-d)') : ''}
+        ${p.estado !== 'cancelado' ? cambioEstado('cancelado', '✖ Cancelar', 'background:rgba(255,59,48,.12);color:var(--red)') : ''}
+      </div>
+
+      <div class="shdr">Inscritos (${activas.length})</div>
+      <div class="group">
+        ${activas.map(filaInsc).join('') || '<p style="padding:14px;color:var(--faint);font-size:14px">Nadie inscrito aún.</p>'}
+        <form class="inline" method="post" action="/admin/partido/inscribir" style="padding-top:10px">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="partido_id" value="${partidoId}">
+          <input name="numero" placeholder="Número WhatsApp (o vacío)" style="max-width:200px">
+          <input name="nombre" placeholder="Nombre (para invitados)" style="max-width:200px">
+          <button>+ Inscribir a mano</button>
+        </form>
+      </div>
+
+      ${pagosSueltos.length ? `
+      <div class="shdr">Pagos confirmados sin partido <small>(asignar a este partido)</small></div>
+      <div class="group">
+        ${pagosSueltos.map((pg) => `
+          <form method="post" action="/admin/pago/asignar" style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--sep)">
+            <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="pago_id" value="${pg.id}"><input type="hidden" name="partido_id" value="${partidoId}">
+            <div style="flex:1;font-size:13.5px"><b>${esc(pg.nombre || `+${pg.numero}`)}</b> · S/ ${esc(pg.monto)} ${pg.cupos > 1 ? `(${pg.cupos} cupos)` : ''} · ${horaCorta(pg.creado_en)}</div>
+            <button style="border:none;border-radius:9px;padding:7px 12px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;background:rgba(52,199,89,.14);color:var(--green-d)">Asignar acá</button>
+          </form>`).join('')}
+      </div>` : ''}
+
+      <div class="shdr">Lista para el grupo <small>(el bot la arma, tú la pegas)</small></div>
+      <div class="group" style="padding:14px">
+        <textarea id="lista" readonly style="width:100%;min-height:${Math.min(420, 90 + (p.cupo + 4) * 21)}px;font:13px/1.6 ui-monospace,monospace;border:1px solid var(--sep);border-radius:11px;padding:12px;background:var(--inset);resize:vertical">${esc(lista)}</textarea>
+        <button onclick="navigator.clipboard.writeText(document.getElementById('lista').value).then(()=>{this.textContent='✅ Copiada'; setTimeout(()=>this.textContent='📋 Copiar lista',1500)})"
+          style="margin-top:10px;width:100%;border:none;border-radius:12px;padding:13px;font:inherit;font-weight:700;font-size:14px;cursor:pointer;background:var(--green);color:#fff">📋 Copiar lista</button>
+      </div>
+
+      <div class="foot">⚽ Pichangueros · Partido #${partidoId}</div>
+    </div>
+  `, { refresh: false, activo: 'partidos', key });
 }
 
 // ==============================================================================
