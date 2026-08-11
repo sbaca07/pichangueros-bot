@@ -42,6 +42,7 @@ const {
 
 const db = require('./src/db');
 const brain = require('./src/brain');
+const atajos = require('./src/atajos');
 const pagos = require('./src/pagos');
 const sheet = require('./src/sheetsync');
 const backup = require('./src/backup');
@@ -298,6 +299,23 @@ async function manejarMensaje(sock, msg) {
         return; // no pasa al cerebro conversacional — ya se atendió como pago
       }
     } catch (e) { console.error('[pagos] Error procesando imagen:', e.message); }
+  }
+
+  // Capa rápida (el "embudo"): mensajes inconfundibles (saludo de un nuevo,
+  // precios, horarios, parrilla) se responden con plantillas desde la BD —
+  // sin IA, en milisegundos, y siguen vivos aunque OpenAI esté caído.
+  const rapida = atajos.responder(lead, body);
+  if (rapida) {
+    console.log(`[atajo] ${numero} → ${rapida.atajo} (sin IA)`);
+    if (!modoSilencio) {
+      try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
+      await sleep(600 + Math.random() * 700);
+      try {
+        await enviarTexto(sock, destino, rapida.respuesta);
+        db.saveMessage(numero, 'assistant', rapida.respuesta);
+      } catch (e) { console.error(`[send] ERROR atajo → ${destino}:`, e?.message); }
+    }
+    return;
   }
 
   if (!brain.cerebroActivo()) {
