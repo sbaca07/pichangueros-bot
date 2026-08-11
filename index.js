@@ -364,7 +364,7 @@ async function manejarMensaje(sock, msg) {
       console.log(`[partido] ${numero} → partido ${inscripcion.partido_id} (${resultado}).`);
       if (!modoSilencio) await notificarControl(
         sock,
-        `📝 ${actualizado.nombre || `+${numero}`} se ${resultado === 'espera' ? 'anotó en la ESPERA' : 'inscribió'} al partido del ${p?.fecha}${p?.hora ? ` ${p.hora}` : ''} (${p?.zona}) · wa.me/${numero}`
+        `📝 ${actualizado.nombre || `+${numero}`} se ${resultado === 'espera' ? 'anotó en la ESPERA' : 'inscribió'} al partido del ${p ? db.fechaBonita(p.fecha) : '?'}${p?.hora ? ` ${p.hora}` : ''} (${p?.zona}) · wa.me/${numero}`
       );
     }
   }

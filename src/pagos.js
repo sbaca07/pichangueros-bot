@@ -171,9 +171,9 @@ async function procesarVoucher(numero, zona, imageBuffer) {
         const enCancha = v.inscripciones.filter((i) => i.estado === 'pagado').length;
         const p = v.partido;
         if (enCancha > 0) {
-          respuesta += `\n📋 Ya estás en la lista del ${p.fecha}${p.hora ? ` ${p.hora}` : ''}${p.sede ? ` en ${p.sede}` : ''}. ¡Nos vemos en la cancha!`;
+          respuesta += `\n📋 Ya estás en la lista del ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''}${p.sede ? ` en ${p.sede}` : ''}. ¡Nos vemos en la cancha!`;
         } else {
-          respuesta += `\n⏳ El partido del ${p.fecha} está lleno: quedaste primero en la lista de espera y te avisamos si se libera un cupo.`;
+          respuesta += `\n⏳ El partido del ${db.fechaBonita(p.fecha)} está lleno: quedaste primero en la lista de espera y te avisamos si se libera un cupo.`;
         }
       }
     } catch (e) { console.error('[pagos] Error vinculando pago a partido:', e.message); }

@@ -68,17 +68,16 @@ function describirZonas(negocio) {
     .join('\n\n');
 }
 
-const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 function describirPartidos(negocio) {
   const abiertos = db.partidosAbiertos();
   if (!abiertos.length) {
     return 'No hay partidos con inscripción abierta cargados ahora mismo. Si alguien quiere inscribirse, dile que le confirmas el cupo en un momento (Clarck ve la notificación) y deja inscribir_partido en null.';
   }
   return abiertos.map((p) => {
-    const dia = DIAS_SEMANA[new Date(`${p.fecha}T12:00:00-05:00`).getDay()];
     const precio = p.precio ?? negocio.zonas[p.zona]?.precio;
-    return `- ID ${p.id}: ${dia} ${p.fecha}${p.hora ? ` ${p.hora}` : ''} en ${negocio.zonas[p.zona]?.nombre || p.zona}${p.sede ? ` (${p.sede})` : ''} · S/ ${precio} · ${p.restante > 0 ? `${p.restante} cupos libres` : 'LLENO — solo lista de espera'}`;
-  }).join('\n');
+    return `- ID ${p.id}: ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''} en ${negocio.zonas[p.zona]?.nombre || p.zona}${p.sede ? ` (${p.sede})` : ''} · S/ ${precio} · ${p.restante > 0 ? `${p.restante} cupos libres` : 'LLENO — solo lista de espera'}`;
+  }).join('\n')
+  + '\n\nAl mencionar un partido usa la fecha tal cual está arriba ("MAÑANA miércoles 12 de agosto") — NUNCA el formato 2026-08-12.';
 }
 
 function buildSystemPrompt(lead) {

@@ -506,6 +506,22 @@ db.exec(`
 `);
 
 const hoyLimaDb = () => new Date(Date.now() - 5 * 3600e3).toISOString().slice(0, 10);
+
+// "2026-08-12" es formato de máquina. Todo lo que ve un humano (mensajes del
+// bot, avisos a Clarck, la lista del grupo, el panel) usa esta versión.
+const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const MESES_LARGOS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+/** "2026-08-12" → "miércoles 12 de agosto" (o "HOY miércoles…" / "MAÑANA…"). */
+function fechaBonita(ymd, { relativa = true } = {}) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd || '')) return ymd || '';
+  const dia = DIAS_SEMANA[new Date(`${ymd}T12:00:00-05:00`).getUTCDay()];
+  const base = `${dia} ${Number(ymd.slice(8, 10))} de ${MESES_LARGOS[Number(ymd.slice(5, 7)) - 1]}`;
+  if (!relativa) return base;
+  const hoy = hoyLimaDb();
+  if (ymd === hoy) return `HOY ${base}`;
+  if (ymd === new Date(Date.now() - 5 * 3600e3 + 86400e3).toISOString().slice(0, 10)) return `MAÑANA ${base}`;
+  return base;
+}
 // Cupos que ocupan lugar en cancha (la espera y las bajas no cuentan).
 const OCUPAN = "('reservado','pagado')";
 
@@ -681,7 +697,9 @@ function textoLista(partidoId) {
   const espera = inscripcionesDe(partidoId).filter((i) => i.estado === 'espera');
   const nombreDe = (i) => i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : 'Por confirmar');
   const lineas = [];
-  lineas.push(`⚽ PICHANGA ${zonaNombre.toUpperCase()} — ${p.fecha}${p.hora ? ` · ${p.hora}` : ''}`);
+  // Fecha ABSOLUTA a propósito: la lista queda pegada en el grupo y un
+  // "MAÑANA" envejece mal. El relativo es solo para mensajes efímeros del chat.
+  lineas.push(`⚽ PICHANGA ${zonaNombre.toUpperCase()} — ${fechaBonita(p.fecha, { relativa: false }).toUpperCase()}${p.hora ? ` · ${p.hora}` : ''}`);
   if (p.sede) lineas.push(`📍 ${p.sede}`);
   lineas.push(`💰 S/ ${precio} por jugador · Yape al ${neg.yape.numero}`);
   lineas.push('');
@@ -713,5 +731,5 @@ module.exports = {
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
   crearPartido, getPartido, setEstadoPartido, listPartidos, partidosAbiertos, inscripcionesDe,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
-  pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe,
+  pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
 };

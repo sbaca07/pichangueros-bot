@@ -258,7 +258,7 @@ function registrarPanel(app, db, conexion = null) {
         const lead = promovido.numero ? db.getLead(promovido.numero) : null;
         const quien = promovido.nombre || (lead && lead.nombre) || (promovido.numero ? `+${promovido.numero}` : 'alguien');
         Promise.resolve(conexion.enviar(control,
-          `⬆ ${quien} subió de la lista de espera al partido del ${p ? p.fecha : '?'}${p && p.hora ? ` ${p.hora}` : ''}. Avísale y pídele su Yape${promovido.numero ? `: wa.me/${promovido.numero}` : ''}.`
+          `⬆ ${quien} subió de la lista de espera al partido del ${p ? db.fechaBonita(p.fecha) : '?'}${p && p.hora ? ` ${p.hora}` : ''}. Avísale y pídele su Yape${promovido.numero ? `: wa.me/${promovido.numero}` : ''}.`
         )).catch((e) => console.error('[partido] Aviso de promoción falló:', e.message));
       }
     } else db.setEstadoInscripcion(id, req.body.estado);
@@ -730,7 +730,7 @@ function paginaResumen(db, key, query = {}) {
         <div class="mtop"><span class="mlabel">⚽ Próxima pichanga · ${ZONAS[prox.zona]?.nombre || esc(prox.zona)}</span>
           <span class="mdelta">${prox.restante > 0 ? `${prox.restante} cupos libres` : '⏳ LLENO — hay espera'}</span></div>
         <div class="mnum">${prox.ocupados}<span style="font-size:32px;color:#8FA3BC">/${prox.cupo}</span></div>
-        <div class="mfoot" style="font-size:12px;color:#C4D1DF">${esc(prox.fecha)}${prox.hora ? ` · ${esc(prox.hora)}` : ''}${prox.sede ? ` · ${esc(prox.sede)}` : ''} — toca para ver la lista y copiarla al grupo</div>
+        <div class="mfoot" style="font-size:12px;color:#C4D1DF">${esc(db.fechaBonita(prox.fecha))}${prox.hora ? ` · ${esc(prox.hora)}` : ''}${prox.sede ? ` · ${esc(prox.sede)}` : ''} — toca para ver la lista y copiarla al grupo</div>
       </a>`
     : `<a class="banner px" href="/admin/leads?key=${key}&vista=partidos" style="margin:0 0 14px;text-decoration:none"><div class="bic">⚽</div>
         <div class="btxt"><b>No hay partidos con inscripción abierta.</b> Abre uno y el bot empieza a llenar la lista solo.</div></a>`;
@@ -1463,7 +1463,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId) {
       <div class="ltitle">
         <div>
           <div class="eyebrow"><a href="/admin/leads?key=${key}&vista=partidos" style="color:inherit">← Partidos</a></div>
-          <h2>${z ? z.nombre : esc(p.zona)} · ${esc(p.fecha)}${p.hora ? ` · ${esc(p.hora)}` : ''}</h2>
+          <h2>${z ? z.nombre : esc(p.zona)} · ${esc(db.fechaBonita(p.fecha))}${p.hora ? ` · ${esc(p.hora)}` : ''}</h2>
         </div>
         <span class="badge b-zona" style="background:${p.estado === 'abierto' ? 'var(--green)' : 'var(--faint)'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
       </div>
