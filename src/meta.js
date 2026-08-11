@@ -5,10 +5,12 @@
  * los pagos (pagos.js), la BD y el panel no cambian. Se activa con
  * TRANSPORTE=meta y estas variables:
  *
- *   META_TOKEN            token de acceso (del Tech Provider / system user)
+ *   META_TOKEN            token de acceso (con Dualhook: la key dh_live_…)
  *   META_PHONE_NUMBER_ID  id del número en la plataforma (no es el número)
  *   META_VERIFY_TOKEN     string secreto para la verificación del webhook
- *   META_GRAPH_VERSION    opcional, default v23.0
+ *   META_API_BASE         opcional, default https://graph.facebook.com
+ *                         (con Dualhook: https://api.dualhook.com)
+ *   META_GRAPH_VERSION    opcional, default v23.0 (con Dualhook: v25.0)
  *
  * Cómo encaja con index.js:
  *   - Los mensajes entrantes se convierten a la MISMA forma que produce
@@ -33,7 +35,12 @@ const TOKEN = (process.env.META_TOKEN || '').trim();
 const PHONE_ID = (process.env.META_PHONE_NUMBER_ID || '').trim();
 const VERIFY_TOKEN = (process.env.META_VERIFY_TOKEN || '').trim();
 const APP_SECRET = (process.env.META_APP_SECRET || '').trim();
-const GRAPH = `https://graph.facebook.com/${process.env.META_GRAPH_VERSION || 'v23.0'}`;
+// Base de la API saliente. Con Dualhook los envíos NO van a graph.facebook.com:
+// van a su proxy (META_API_BASE=https://api.dualhook.com) con una key dh_live_…
+// como META_TOKEN — las credenciales reales de Meta nunca salen de Dualhook.
+// Los webhooks entrantes no cambian: Meta pega directo a nuestro endpoint.
+const API_BASE = (process.env.META_API_BASE || 'https://graph.facebook.com').trim().replace(/\/+$/, '');
+const GRAPH = `${API_BASE}/${(process.env.META_GRAPH_VERSION || 'v23.0').trim()}`;
 
 /**
  * ¿Hay credenciales USABLES? No alcanza con que las variables existan.
