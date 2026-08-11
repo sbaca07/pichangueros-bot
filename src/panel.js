@@ -758,6 +758,10 @@ function paginaResumen(db, key, query = {}) {
         <div class="mtop"><span class="mlabel">Contactos captados</span>
           <span class="mdelta">▲ +${semana} esta semana</span></div>
         <div class="mnum">${todos.length}</div>
+        <div style="font-size:13px;font-weight:700;margin-top:4px">
+          <span style="color:#C6E34E">Hoy: ${dias[dias.length - 1].nuevos} nuevo${dias[dias.length - 1].nuevos === 1 ? '' : 's'}</span>
+          <span style="color:#8fb3e0"> · ${dias[dias.length - 1].rec} recurrente${dias[dias.length - 1].rec === 1 ? '' : 's'} (ya registrados, volvieron a escribir)</span>
+        </div>
         <div class="bars">${barras}</div>
         <div class="mfoot"><span style="color:#C6E34E">■ Nuevos</span> (escriben por 1.ª vez) · <span style="color:#8fb3e0">■ Recurrentes</span> (ya registrados, volvieron a escribir) — solo chats directos, los grupos no cuentan. Toca una barra para ver a todos los de ese día, separados en nuevos y recurrentes.</div>
       </div>
@@ -1343,21 +1347,62 @@ function paginaPartidos(db, key, query = {}) {
     <div class="px">
       <div class="ltitle"><div><div class="eyebrow">Convocatorias</div><h2>Partidos</h2></div></div>
 
-      <div class="shdr">Abrir partido nuevo</div>
+      <div class="shdr">Abrir partido nuevo <small>· 3 toques: zona, día y listo</small></div>
+      <style>
+        .zbtn{flex:1;text-align:center;padding:11px;border:2px solid var(--trazo);border-radius:12px;background:#fff;
+          font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:16px;letter-spacing:.06em;
+          text-transform:uppercase;color:var(--muted);cursor:pointer}
+        .zbtn:has(input:checked){background:var(--navy);color:#fff;box-shadow:2px 2px 0 rgba(46,58,69,.25)}
+        .zbtn input{display:none}
+        .qd{padding:10px 14px;border:2px solid var(--trazo);border-radius:12px;background:#fff;font:inherit;font-weight:700;font-size:13px;cursor:pointer}
+        .qd.on{background:var(--lime);color:var(--navy)}
+      </style>
       <div class="group">
         <form class="inline" method="post" action="/admin/partido">
           <input type="hidden" name="key" value="${esc(keyRaw)}">
-          <select name="zona" style="font:inherit;padding:10px;border-radius:11px;border:1px solid var(--sep)">
-            <option value="brena">Breña</option><option value="comas">Comas</option>
-          </select>
-          <input name="fecha" type="date" required min="${hoy}">
-          <input name="hora" placeholder="Hora (ej. 8-9pm)">
-          <input name="sede" placeholder="Sede (opcional)">
-          <input name="cupo" type="number" min="2" max="60" value="14" style="max-width:90px" title="Cupo">
-          <input name="precio" type="number" step="0.5" placeholder="S/ (auto)" style="max-width:110px" title="Precio; vacío = precio de la zona">
-          <button>+ Abrir partido</button>
+          <label>¿Dónde?</label>
+          <div style="display:flex;gap:8px;flex-basis:100%">
+            <label class="zbtn"><input type="radio" name="zona" value="brena" checked onchange="pintaSedes('brena')">Breña</label>
+            <label class="zbtn"><input type="radio" name="zona" value="comas" onchange="pintaSedes('comas')">Comas</label>
+          </div>
+          <select name="sede" id="selSede" onchange="cupoDeSede()" style="flex-basis:100%;font:inherit;font-size:14px;padding:10px 12px;border-radius:11px;border:1px solid var(--sep);background:var(--inset)"></select>
+          <label>¿Cuándo?</label>
+          <div style="display:flex;gap:8px;flex-basis:100%;align-items:center">
+            <button type="button" class="qd on" onclick="setDia(this,'${hoy}')">Hoy</button>
+            <button type="button" class="qd" onclick="setDia(this,'${fechaLima(1)}')">Mañana</button>
+            <input name="fecha" id="fFecha" type="date" required min="${hoy}" value="${hoy}" style="flex:1;min-width:130px">
+          </div>
+          <label>Hora, cupo y precio</label>
+          <input name="hora" placeholder="Hora (ej. 8-9pm)" style="flex:2">
+          <input name="cupo" id="fCupo" type="number" min="2" max="60" value="14" style="max-width:84px" title="Cupo (se llena solo al elegir cancha)">
+          <input name="precio" type="number" step="0.5" placeholder="S/ auto" style="max-width:100px" title="Vacío = precio de la zona">
+          <button style="flex-basis:100%">⚽ Abrir partido — el bot empieza a llenarlo</button>
         </form>
       </div>
+      <script>
+        const SEDES = ${JSON.stringify({
+          brena: db.listSedes('brena').map((s) => ({ n: s.nombre, c: s.cupo || 14 })),
+          comas: db.listSedes('comas').map((s) => ({ n: s.nombre, c: s.cupo || 14 })),
+        }).replace(/</g, '\\u003c')};
+        function pintaSedes(z){
+          const sel = document.getElementById('selSede');
+          sel.innerHTML = SEDES[z].map(s => '<option value="' + s.n.replace(/"/g,'&quot;') + '" data-cupo="' + s.c + '">🏟 ' + s.n + ' (cupo ' + s.c + ')</option>').join('')
+            + '<option value="" data-cupo="14">Otra cancha / por definir</option>';
+          cupoDeSede();
+        }
+        function cupoDeSede(){
+          const sel = document.getElementById('selSede');
+          const c = sel.selectedOptions[0] && sel.selectedOptions[0].dataset.cupo;
+          if (c) document.getElementById('fCupo').value = c;
+        }
+        function setDia(btn, d){
+          document.getElementById('fFecha').value = d;
+          document.querySelectorAll('.qd').forEach(b => b.classList.toggle('on', b === btn));
+        }
+        document.getElementById('fFecha').addEventListener('input', () =>
+          document.querySelectorAll('.qd').forEach(b => b.classList.remove('on')));
+        pintaSedes('brena');
+      </script>
 
       <div class="shdr">Todos los partidos</div>
       <div class="group">
