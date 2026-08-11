@@ -30,8 +30,12 @@ const esc = (v) =>
 const ZONAS = {
   brena: { nombre: 'Breña', color: '#A3C614' },
   comas: { nombre: 'Comas', color: '#16385F' },
+  rimac: { nombre: 'Rímac', color: '#0A7E8C' },
+  chorrillos: { nombre: 'Chorrillos', color: '#8944AB' },
   otra: { nombre: 'Otra zona', color: '#64748b' },
 };
+// Zonas con sedes operativas (los partidos y las sedes solo aceptan estas).
+const ZONAS_OPERATIVAS = ['brena', 'comas', 'rimac', 'chorrillos'];
 
 // Pipeline (etapas) — orden y etiquetas pensadas para el flujo de Clarck.
 const ESTADOS = {
@@ -188,7 +192,7 @@ function registrarPanel(app, db, conexion = null) {
   app.post('/admin/config/sede', (req, res) => {
     if (!autorizado(req, res)) return;
     const campos = {
-      zona: req.body.zona === 'comas' ? 'comas' : 'brena',
+      zona: ZONAS_OPERATIVAS.includes(req.body.zona) ? req.body.zona : 'brena',
       nombre: (req.body.nombre || '').trim(),
       cancha: (req.body.cancha || '').trim(),
       cupo: req.body.cupo ? Number(req.body.cupo) : null,
@@ -215,7 +219,7 @@ function registrarPanel(app, db, conexion = null) {
 
   app.post('/admin/partido', (req, res) => {
     if (!autorizado(req, res)) return;
-    const zona = req.body.zona === 'comas' ? 'comas' : 'brena';
+    const zona = ZONAS_OPERATIVAS.includes(req.body.zona) ? req.body.zona : 'brena';
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.body.fecha || '') ? req.body.fecha : null;
     if (!fecha) return volverAPartidos(req, res);
     const id = db.crearPartido({
@@ -1361,9 +1365,11 @@ function paginaPartidos(db, key, query = {}) {
         <form class="inline" method="post" action="/admin/partido">
           <input type="hidden" name="key" value="${esc(keyRaw)}">
           <label>¿Dónde?</label>
-          <div style="display:flex;gap:8px;flex-basis:100%">
+          <div style="display:flex;gap:8px;flex-basis:100%;flex-wrap:wrap">
             <label class="zbtn"><input type="radio" name="zona" value="brena" checked onchange="pintaSedes('brena')">Breña</label>
             <label class="zbtn"><input type="radio" name="zona" value="comas" onchange="pintaSedes('comas')">Comas</label>
+            <label class="zbtn"><input type="radio" name="zona" value="rimac" onchange="pintaSedes('rimac')">Rímac</label>
+            <label class="zbtn"><input type="radio" name="zona" value="chorrillos" onchange="pintaSedes('chorrillos')">Chorrillos</label>
           </div>
           <select name="sede" id="selSede" onchange="cupoDeSede()" style="flex-basis:100%;font:inherit;font-size:14px;padding:10px 12px;border-radius:11px;border:1px solid var(--sep);background:var(--inset)"></select>
           <label>¿Cuándo?</label>
@@ -1380,13 +1386,12 @@ function paginaPartidos(db, key, query = {}) {
         </form>
       </div>
       <script>
-        const SEDES = ${JSON.stringify({
-          brena: db.listSedes('brena').map((s) => ({ n: s.nombre, c: s.cupo || 14 })),
-          comas: db.listSedes('comas').map((s) => ({ n: s.nombre, c: s.cupo || 14 })),
-        }).replace(/</g, '\\u003c')};
+        const SEDES = ${JSON.stringify(Object.fromEntries(
+          ZONAS_OPERATIVAS.map((z) => [z, db.listSedes(z).map((s) => ({ n: s.nombre, c: s.cupo || 14 }))])
+        )).replace(/</g, '\\u003c')};
         function pintaSedes(z){
           const sel = document.getElementById('selSede');
-          sel.innerHTML = SEDES[z].map(s => '<option value="' + s.n.replace(/"/g,'&quot;') + '" data-cupo="' + s.c + '">🏟 ' + s.n + ' (cupo ' + s.c + ')</option>').join('')
+          sel.innerHTML = (SEDES[z] || []).map(s => '<option value="' + s.n.replace(/"/g,'&quot;') + '" data-cupo="' + s.c + '">🏟 ' + s.n + ' (cupo ' + s.c + ')</option>').join('')
             + '<option value="" data-cupo="14">Otra cancha / por definir</option>';
           cupoDeSede();
         }

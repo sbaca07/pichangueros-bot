@@ -75,7 +75,10 @@ function describirPartidos(negocio) {
   }
   return abiertos.map((p) => {
     const precio = p.precio ?? negocio.zonas[p.zona]?.precio;
-    return `- ID ${p.id}: ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''} en ${negocio.zonas[p.zona]?.nombre || p.zona}${p.sede ? ` (${p.sede})` : ''} · S/ ${precio} · ${p.restante > 0 ? `${p.restante} cupos libres` : 'LLENO — solo lista de espera'}`;
+    const nombreZona = negocio.zonas[p.zona]?.nombre
+      || ({ rimac: 'Rímac', chorrillos: 'Chorrillos' })[p.zona]
+      || p.zona.charAt(0).toUpperCase() + p.zona.slice(1);
+    return `- ID ${p.id}: ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''} en ${nombreZona}${p.sede ? ` (${p.sede})` : ''} · S/ ${precio ?? '?'} · ${p.restante > 0 ? `${p.restante} cupos libres` : 'LLENO — solo lista de espera'}`;
   }).join('\n')
   + '\n\nAl mencionar un partido usa la fecha tal cual está arriba ("MAÑANA miércoles 12 de agosto") — NUNCA el formato 2026-08-12.';
 }
