@@ -384,7 +384,13 @@ const CAMPOS_CONFIG = [
 // una sede en una zona la enciende en todo el sistema (guion del bot, precios,
 // links de grupo, formularios) — nada más que enlazar a mano.
 const ZONA_NOMBRES = { brena: 'Breña', comas: 'Comas', rimac: 'Rímac', chorrillos: 'Chorrillos' };
-const nombreDeZona = (z) => ZONA_NOMBRES[z] || (z ? z[0].toUpperCase() + z.slice(1) : z);
+function nombreDeZona(z) {
+  if (!z) return z;
+  // El nombre para mostrar es editable desde Config (clave zonanombre_<slug>);
+  // si no existe, el mapa de conocidas; si tampoco, capitalizado.
+  const c = db.prepare('SELECT valor FROM config WHERE clave = ?').get(`zonanombre_${z}`);
+  return (c && c.valor) || ZONA_NOMBRES[z] || z[0].toUpperCase() + z.slice(1);
+}
 
 /** Zonas con al menos una sede (brena/comas siempre, por compatibilidad). */
 function zonasOperativas() {
@@ -406,7 +412,7 @@ function setConfig(campos) {
   // Además de los campos fijos, precio_<zona> y grouplink_<zona> de cualquier
   // zona operativa (dinámicas: siguen a las sedes).
   const permitidas = new Set(CAMPOS_CONFIG);
-  for (const z of zonasOperativas()) { permitidas.add(`precio_${z}`); permitidas.add(`grouplink_${z}`); }
+  for (const z of zonasOperativas()) { permitidas.add(`precio_${z}`); permitidas.add(`grouplink_${z}`); permitidas.add(`zonanombre_${z}`); }
   for (const clave of permitidas) {
     if (campos[clave] !== undefined) stmt.run(clave, campos[clave]);
   }

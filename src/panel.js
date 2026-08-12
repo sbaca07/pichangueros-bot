@@ -34,8 +34,12 @@ const ZONAS = {
   chorrillos: { nombre: 'Chorrillos', color: '#8944AB' },
   otra: { nombre: 'Otra zona', color: '#64748b' },
 };
-// Zonas con sedes operativas (los partidos y las sedes solo aceptan estas).
-const ZONAS_OPERATIVAS = ['brena', 'comas', 'rimac', 'chorrillos'];
+// Color para zonas creadas después de este mapa (nuevos distritos).
+const colorZona = (z) => ZONAS[z]?.color || '#5D8A3C';
+// Slug de zona a partir del nombre que escribe Clarck ("San Miguel" → sanmiguel).
+const slugZona = (nombre) => (nombre || '')
+  .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/[^a-z]/g, '').slice(0, 24);
 
 // Pipeline (etapas) — orden y etiquetas pensadas para el flujo de Clarck.
 const ESTADOS = {
@@ -192,7 +196,7 @@ function registrarPanel(app, db, conexion = null) {
   app.post('/admin/config/sede', (req, res) => {
     if (!autorizado(req, res)) return;
     const campos = {
-      zona: ZONAS_OPERATIVAS.includes(req.body.zona) ? req.body.zona : 'brena',
+      zona: db.zonasOperativas().includes(req.body.zona) ? req.body.zona : 'brena',
       nombre: (req.body.nombre || '').trim(),
       cancha: (req.body.cancha || '').trim(),
       cupo: req.body.cupo ? Number(req.body.cupo) : null,
@@ -213,13 +217,46 @@ function registrarPanel(app, db, conexion = null) {
     volverAConfig(req, res);
   });
 
+  // Precio, link de grupo y nombre para mostrar de UNA zona (tarjeta por distrito).
+  app.post('/admin/config/zona', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const zona = db.zonasOperativas().includes(req.body.zona) ? req.body.zona : null;
+    if (zona) db.setConfig({
+      [`precio_${zona}`]: (req.body.precio || '').trim(),
+      [`grouplink_${zona}`]: (req.body.grouplink || '').trim(),
+      [`zonanombre_${zona}`]: (req.body.nombre_mostrar || '').trim(),
+    });
+    volverAConfig(req, res);
+  });
+
+  // Crear un DISTRITO nuevo: nace con su primera sede (la fuente de verdad de
+  // las zonas) y desde ese momento existe en todo el sistema — guion del bot,
+  // partidos, clasificación de leads, esta página.
+  app.post('/admin/config/zona/nueva', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const nombre = (req.body.nombre || '').trim().slice(0, 40);
+    const zona = slugZona(nombre);
+    if (zona.length >= 3 && !db.zonasOperativas().includes(zona)) {
+      db.addSede({
+        zona,
+        nombre: (req.body.sede || '').trim().slice(0, 120) || 'Sede por definir',
+        cupo: Math.max(2, Math.min(60, Number(req.body.cupo) || 14)),
+      });
+      db.setConfig({
+        [`zonanombre_${zona}`]: nombre,
+        [`precio_${zona}`]: (req.body.precio || '').trim() || '15',
+      });
+    }
+    volverAConfig(req, res);
+  });
+
   // --- Partidos: convocatorias, inscripciones, asistencia ----------------------
   const volverAPartidos = (req, res, partidoId = null) =>
     res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=partidos${partidoId ? `&partido=${partidoId}` : ''}`);
 
   app.post('/admin/partido', (req, res) => {
     if (!autorizado(req, res)) return;
-    const zona = ZONAS_OPERATIVAS.includes(req.body.zona) ? req.body.zona : 'brena';
+    const zona = db.zonasOperativas().includes(req.body.zona) ? req.body.zona : 'brena';
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.body.fecha || '') ? req.body.fecha : null;
     if (!fecha) return volverAPartidos(req, res);
     const id = db.crearPartido({
@@ -1258,12 +1295,39 @@ function paginaConfig(db, key) {
       <button class="btn-rojo" style="border:none;border-radius:11px;color:#fff;padding:8px 14px;font:inherit;font-size:13px" onclick="return confirm('¿Eliminar esta sede?')">Eliminar</button>
     </form>` : ''}`;
 
+  // Una TARJETA por distrito: precio + grupo + nombre + sus sedes, todo junto.
   const bloqueZona = (zona) => `
-    <div class="shdr">Sedes · ${esc(db.nombreDeZona(zona))} <small>(precio S/ ${esc(c[`precio_${zona}`] || '—')} por jugador)</small></div>
-    <div class="group">
-      ${sedesPorZona[zona].map((s) => filaSede(zona, s)).join('') || '<p style="padding:14px;color:var(--faint);font-size:14px">Sin sedes todavía.</p>'}
-    </div>
-    <div class="group" style="margin-top:8px">${filaSede(zona, null)}</div>`;
+    <div class="shdr">📍 ${esc(db.nombreDeZona(zona))} <small>· precio, grupo y sedes de este distrito</small></div>
+    <div class="group" style="border-left:6px solid ${colorZona(zona)}">
+      <form class="inline" method="post" action="/admin/config/zona">
+        <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="zona" value="${esc(zona)}">
+        <label>Precio por jugador (S/)</label>
+        <input name="precio" type="number" step="0.5" value="${esc(c[`precio_${zona}`] || '')}" style="max-width:110px">
+        <label>Link del grupo de WhatsApp <small>(el bot lo entrega a los que se unen)</small></label>
+        <input name="grouplink" value="${esc(c[`grouplink_${zona}`] || '')}" placeholder="https://chat.whatsapp.com/…">
+        <label>Nombre para mostrar</label>
+        <input name="nombre_mostrar" value="${esc(db.nombreDeZona(zona))}" style="max-width:200px">
+        <button>Guardar ${esc(db.nombreDeZona(zona))}</button>
+      </form>
+      ${sedesPorZona[zona].map((s) => filaSede(zona, s)).join('') || '<p style="padding:0 14px 10px;color:var(--faint);font-size:14px">Sin sedes todavía.</p>'}
+      ${filaSede(zona, null)}
+    </div>`;
+
+  const nuevoDistrito = `
+    <div class="shdr">➕ Nuevo distrito <small>· al crearlo aparece en el bot, los partidos y esta página</small></div>
+    <div class="group" style="border:2.5px dashed var(--trazo);box-shadow:none">
+      <form class="inline" method="post" action="/admin/config/zona/nueva">
+        <input type="hidden" name="key" value="${esc(keyRaw)}">
+        <label>Nombre del distrito</label>
+        <input name="nombre" placeholder="Ej. Miraflores" required style="max-width:220px">
+        <label>Precio (S/)</label>
+        <input name="precio" type="number" step="0.5" value="15" style="max-width:100px">
+        <label>Primera cancha <small>(puedes editarla después)</small></label>
+        <input name="sede" placeholder="Nombre de la sede">
+        <input name="cupo" type="number" min="2" max="60" value="14" style="max-width:84px" title="Cupo">
+        <button>➕ Crear distrito</button>
+      </form>
+    </div>`;
 
   return baseHtml('Config · Pichangueros', `
     <div class="px">
@@ -1279,11 +1343,6 @@ function paginaConfig(db, key) {
           <input name="yape_numero" value="${esc(c.yape_numero)}">
           <label>Yape — titular</label>
           <input name="yape_titular" value="${esc(c.yape_titular)}">
-          ${zonasOp.map((z) => `
-          <label>Precio ${esc(db.nombreDeZona(z))} (S/)</label>
-          <input name="precio_${esc(z)}" type="number" step="0.5" value="${esc(c[`precio_${z}`] || '')}">
-          <label>Link grupo WhatsApp — ${esc(db.nombreDeZona(z))}</label>
-          <input name="grouplink_${esc(z)}" value="${esc(c[`grouplink_${z}`] || '')}" placeholder="https://chat.whatsapp.com/…">`).join('')}
           <label>Hora de llegada</label>
           <input name="hora_llegada" value="${esc(c.hora_llegada)}">
           <label>Emojis de la casa <small>(separados por coma)</small></label>
@@ -1303,6 +1362,7 @@ function paginaConfig(db, key) {
       </div>
 
       ${zonasOp.map((z) => bloqueZona(z)).join('')}
+      ${nuevoDistrito}
 
       <div class="foot">⚽ Pichangueros · Config</div>
     </div>
@@ -1364,10 +1424,7 @@ function paginaPartidos(db, key, query = {}) {
           <input type="hidden" name="key" value="${esc(keyRaw)}">
           <label>¿Dónde?</label>
           <div style="display:flex;gap:8px;flex-basis:100%;flex-wrap:wrap">
-            <label class="zbtn"><input type="radio" name="zona" value="brena" checked onchange="pintaSedes('brena')">Breña</label>
-            <label class="zbtn"><input type="radio" name="zona" value="comas" onchange="pintaSedes('comas')">Comas</label>
-            <label class="zbtn"><input type="radio" name="zona" value="rimac" onchange="pintaSedes('rimac')">Rímac</label>
-            <label class="zbtn"><input type="radio" name="zona" value="chorrillos" onchange="pintaSedes('chorrillos')">Chorrillos</label>
+            ${db.zonasOperativas().map((z, i) => `<label class="zbtn"><input type="radio" name="zona" value="${esc(z)}" ${i === 0 ? 'checked' : ''} onchange="pintaSedes('${esc(z)}')">${esc(db.nombreDeZona(z))}</label>`).join('')}
           </div>
           <select name="sede" id="selSede" onchange="cupoDeSede()" style="flex-basis:100%;font:inherit;font-size:14px;padding:10px 12px;border-radius:11px;border:1px solid var(--sep);background:var(--inset)"></select>
           <label>¿Cuándo?</label>
@@ -1385,7 +1442,7 @@ function paginaPartidos(db, key, query = {}) {
       </div>
       <script>
         const SEDES = ${JSON.stringify(Object.fromEntries(
-          ZONAS_OPERATIVAS.map((z) => [z, db.listSedes(z).map((s) => ({ n: s.nombre, c: s.cupo || 14 }))])
+          db.zonasOperativas().map((z) => [z, db.listSedes(z).map((s) => ({ n: s.nombre, c: s.cupo || 14 }))])
         )).replace(/</g, '\\u003c')};
         function pintaSedes(z){
           const sel = document.getElementById('selSede');
