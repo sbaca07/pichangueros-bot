@@ -17,6 +17,10 @@ const OpenAI = require('openai');
 const db = require('./db');
 
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+// Mismo respaldo anti-429 que brain.js: en Gemini cada modelo tiene su cuota.
+const ES_GOOGLE = (process.env.OPENAI_BASE_URL || '').includes('googleapis');
+const MODEL_RESPALDO = process.env.OPENAI_MODEL_FALLBACK || (ES_GOOGLE ? 'gemini-3.1-flash-lite' : null);
+const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let client = null;
 function getClient() {
@@ -52,25 +56,33 @@ const RESPONSE_SCHEMA = {
 async function leerVoucher(imageBuffer) {
   const openai = getClient();
   if (!openai) return null;
+  const params = {
+    messages: [
+      { role: 'system', content: 'Lees comprobantes de pago de Yape (app de pagos móviles de Perú). Extrae los datos exactos del voucher, sin inventar nada.' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Lee este comprobante de Yape y extrae monto, nombre del remitente y número de operación.' },
+          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}` } },
+        ],
+      },
+    ],
+    response_format: { type: 'json_schema', json_schema: RESPONSE_SCHEMA },
+    temperature: 0.2,
+    // Margen para modelos pensantes (ver el comentario gemelo en brain.js).
+    max_tokens: 1500,
+    ...(ES_GOOGLE ? { reasoning_effort: 'low' } : {}),
+  };
   try {
-    const completion = await openai.chat.completions.create({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: 'Lees comprobantes de pago de Yape (app de pagos móviles de Perú). Extrae los datos exactos del voucher, sin inventar nada.' },
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: 'Lee este comprobante de Yape y extrae monto, nombre del remitente y número de operación.' },
-            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}` } },
-          ],
-        },
-      ],
-      response_format: { type: 'json_schema', json_schema: RESPONSE_SCHEMA },
-      temperature: 0.2,
-      // Margen para modelos pensantes (ver el comentario gemelo en brain.js).
-      max_tokens: 1500,
-      ...((process.env.OPENAI_BASE_URL || '').includes('googleapis') ? { reasoning_effort: 'low' } : {}),
-    });
+    let completion;
+    try {
+      completion = await openai.chat.completions.create({ model: MODEL, ...params });
+    } catch (e) {
+      if (![429, 503].includes(e.status) || !MODEL_RESPALDO) throw e;
+      console.warn(`[pagos] ${e.status} con ${MODEL} — reintento con ${MODEL_RESPALDO}.`);
+      await espera(1500);
+      completion = await openai.chat.completions.create({ model: MODEL_RESPALDO, ...params });
+    }
     return JSON.parse(completion.choices[0].message.content);
   } catch (e) {
     console.error('[pagos] Error leyendo voucher:', e.message);

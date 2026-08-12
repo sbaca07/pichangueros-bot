@@ -14,6 +14,11 @@ const db = require('./db');
 const backup = require('./backup');
 
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+// En Gemini cada modelo tiene su PROPIA cuota: cuando el principal da 429
+// (límite por minuto del tier gratis), el respaldo es un segundo tanque lleno.
+const ES_GOOGLE = (process.env.OPENAI_BASE_URL || '').includes('googleapis');
+const MODEL_RESPALDO = process.env.OPENAI_MODEL_FALLBACK || (ES_GOOGLE ? 'gemini-3.1-flash-lite' : null);
+const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // El cerebro puede caerse (créditos de OpenAI agotados, cuota, caída) y el bot
 // sigue "vivo" pidiendo disculpas — nadie se entera, como el 2026-08-11 que
@@ -198,22 +203,31 @@ async function pensar(lead, historial, textoUsuario) {
     { role: 'user', content: textoUsuario },
   ];
 
+  const params = {
+    messages,
+    response_format: { type: 'json_schema', json_schema: buildSchema(Object.keys(db.getNegocio().zonas)) },
+    temperature: 0.6,
+    // 2000, no 600: los modelos "pensantes" (Gemini flash) gastan tokens en
+    // razonar ANTES del JSON — con 600 el JSON salía cortado a media cadena
+    // ("Unterminated string") y el bot pedía disculpas. Para gpt-4o-mini es
+    // solo un tope, no un costo.
+    max_tokens: 2000,
+    // Gemini acepta reasoning_effort y con 'low' responde más rápido sin
+    // perder calidad en esta tarea; OpenAI clásico no lo soporta.
+    ...(ES_GOOGLE ? { reasoning_effort: 'low' } : {}),
+  };
   try {
-    const completion = await openai.chat.completions.create({
-      model: MODEL,
-      messages,
-      response_format: { type: 'json_schema', json_schema: buildSchema(Object.keys(db.getNegocio().zonas)) },
-      temperature: 0.6,
-      // 2000, no 600: los modelos "pensantes" (Gemini flash) gastan tokens en
-      // razonar ANTES del JSON — con 600 el JSON salía cortado a media cadena
-      // ("Unterminated string") y el bot pedía disculpas. Para gpt-4o-mini es
-      // solo un tope, no un costo.
-      max_tokens: 2000,
-      // Gemini acepta reasoning_effort y con 'low' responde más rápido sin
-      // perder calidad en esta tarea; OpenAI clásico no lo soporta — solo se
-      // manda cuando el proveedor es Google.
-      ...((process.env.OPENAI_BASE_URL || '').includes('googleapis') ? { reasoning_effort: 'low' } : {}),
-    });
+    let completion;
+    try {
+      completion = await openai.chat.completions.create({ model: MODEL, ...params });
+    } catch (e) {
+      // 429 (cuota del minuto) o 503 (sobrecarga puntual): un respiro y el
+      // modelo de respaldo — el jugador ni se entera.
+      if (![429, 503].includes(e.status) || !MODEL_RESPALDO) throw e;
+      console.warn(`[brain] ${e.status} con ${MODEL} — reintento con ${MODEL_RESPALDO}.`);
+      await espera(1500);
+      completion = await openai.chat.completions.create({ model: MODEL_RESPALDO, ...params });
+    }
     fallosSeguidos = 0;
     return JSON.parse(completion.choices[0].message.content);
   } catch (e) {
