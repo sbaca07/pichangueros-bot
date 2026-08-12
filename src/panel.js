@@ -1343,7 +1343,7 @@ function paginaConfig(db, key) {
           <input name="yape_numero" value="${esc(c.yape_numero)}">
           <label>Yape — titular</label>
           <input name="yape_titular" value="${esc(c.yape_titular)}">
-          <label>Hora de llegada</label>
+          <label>Regla de llegada <small>(relativa, vale para todo horario y sede — ej. "15 minutos antes del inicio de tu turno". Si una cancha necesita algo especial, ponlo en el horario de esa sede)</small></label>
           <input name="hora_llegada" value="${esc(c.hora_llegada)}">
           <label>Emojis de la casa <small>(separados por coma)</small></label>
           <input name="emojis" value="${esc(c.emojis)}">
