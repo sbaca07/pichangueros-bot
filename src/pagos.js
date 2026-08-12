@@ -21,7 +21,8 @@ const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 let client = null;
 function getClient() {
   if (!process.env.OPENAI_API_KEY) return null;
-  if (!client) client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  // Mismo soporte multi-proveedor que brain.js (OPENAI_BASE_URL → Gemini, etc.).
+  if (!client) client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
   return client;
 }
 

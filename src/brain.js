@@ -35,7 +35,11 @@ function registrarFalloCerebro(e) {
 let client = null;
 function getClient() {
   if (!process.env.OPENAI_API_KEY) return null;
-  if (!client) client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  // OPENAI_BASE_URL permite apuntar a cualquier API compatible con el SDK de
+  // OpenAI — p. ej. el tier GRATIS de Gemini:
+  //   OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+  //   OPENAI_MODEL=gemini-2.5-flash  ·  OPENAI_API_KEY=<key de aistudio.google.com>
+  if (!client) client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
   return client;
 }
 
