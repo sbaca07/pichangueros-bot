@@ -532,6 +532,18 @@ db.exec(`
 
 const hoyLimaDb = () => new Date(Date.now() - 5 * 3600e3).toISOString().slice(0, 10);
 
+// Migración (2026-08-11, una vez): partidos cargados por consola llegaron con
+// tildes rotas (U+FFFD) en la sede. La tabla sedes está sana → se copia de ahí.
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'sedes_mojibake_2026_08'").get()) {
+  const n = db.prepare(`
+    UPDATE partidos SET sede = (SELECT s.nombre FROM sedes s WHERE s.zona = partidos.zona ORDER BY s.orden, s.id LIMIT 1)
+    WHERE sede LIKE '%' || char(65533) || '%'
+      AND EXISTS (SELECT 1 FROM sedes s WHERE s.zona = partidos.zona)
+  `).run().changes;
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('sedes_mojibake_2026_08', '1')").run();
+  if (n) console.log(`[mojibake] ${n} partidos con sede rota corregidos desde la tabla sedes.`);
+}
+
 // "2026-08-12" es formato de máquina. Todo lo que ve un humano (mensajes del
 // bot, avisos a Clarck, la lista del grupo, el panel) usa esta versión.
 const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];

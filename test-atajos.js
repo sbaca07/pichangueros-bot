@@ -43,8 +43,15 @@ check('"puedo pagar en efectivo" → IA (handoff)', atajos.responder(conocido, '
 check('una queja → IA', atajos.responder(conocido, 'oye ayer me trataron mal en la cancha') === null);
 check('mensaje largo con palabra clave → IA', atajos.responder(conocido, 'hola una consulta sobre los horarios de la sede de breña porque trabajo hasta tarde') === null);
 
+console.log('== Parrilla compacta y "semana" ==');
+for (let d = 2; d <= 4; d++) db.crearPartido({ zona: 'comas', fecha: enDias(d), hora: '8-9pm', cupo: 12 });
+const corta = atajos.responder(conocido, 'que pichangas hay')?.respuesta || '';
+check('por defecto solo 2 días y avisa que hay más', /escribe \*semana\*/.test(corta) && corta.split('⚽').length <= 3);
+const completa = atajos.responder(conocido, 'semana')?.respuesta || '';
+check('"semana" muestra todos los días', completa.split('⚽').length >= 4 && !/escribe \*semana\*/.test(completa));
+
 console.log('== Sin data no improvisa ==');
-db.setEstadoPartido(1, 'cancelado');
+for (const p of db.listPartidos()) db.setEstadoPartido(p.id, 'cancelado');
 check('sin partidos abiertos, "qué pichangas hay" → IA', atajos.responder(conocido, 'que pichangas hay') === null);
 
 console.log(fallos ? `\n❌ ${ok} OK, ${fallos} FALLOS` : `\n✅ ${ok} checks OK, 0 fallos`);

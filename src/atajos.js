@@ -24,15 +24,32 @@ const limpiar = (t) => (t || '')
 const nombreZona = (neg, z) =>
   neg.zonas[z]?.nombre || ({ rimac: 'Rímac', chorrillos: 'Chorrillos' })[z] || (z ? z[0].toUpperCase() + z.slice(1) : z);
 
-/** La parrilla de partidos abiertos, armada desde la BD (misma data que ve la IA). */
-function textoParrilla() {
+/**
+ * La parrilla de partidos abiertos, agrupada por día — 17 líneas de golpe son
+ * un menú de restaurante, no un chat. Por defecto solo los 2 días más
+ * próximos; con completa=true, la semana entera (intención "semana").
+ */
+function textoParrilla({ completa = false } = {}) {
   const abiertos = db.partidosAbiertos();
   if (!abiertos.length) return null; // sin partidos cargados → que responda la IA
   const neg = db.getNegocio();
-  const lineas = abiertos.map((p) =>
-    `⚽ ${db.fechaBonita(p.fecha)}${p.hora ? ` · ${p.hora}` : ''} — ${nombreZona(neg, p.zona)}${p.sede ? ` (${p.sede})` : ''} · S/ ${p.precio ?? neg.zonas[p.zona]?.precio ?? '?'} · ${p.restante > 0 ? `${p.restante} cupos` : 'LLENO ⏳'}`
-  );
-  return `Estas son las pichangas con inscripción abierta:\n\n${lineas.join('\n')}\n\n¿A cuál te anoto? Dime el día y la zona 🙌`;
+
+  const porDia = new Map();
+  for (const p of abiertos) {
+    if (!porDia.has(p.fecha)) porDia.set(p.fecha, []);
+    porDia.get(p.fecha).push(p);
+  }
+  const fechas = [...porDia.keys()];
+  const mostrar = completa ? fechas : fechas.slice(0, 2);
+  const resto = abiertos.length - mostrar.reduce((n, f) => n + porDia.get(f).length, 0);
+
+  const bloque = (fecha) => `⚽ *${db.fechaBonita(fecha)}*\n` + porDia.get(fecha).map((p) =>
+    `· ${p.hora ? `${p.hora} — ` : ''}${nombreZona(neg, p.zona)}${p.sede ? ` (${p.sede})` : ''} · S/ ${p.precio ?? neg.zonas[p.zona]?.precio ?? '?'} · ${p.restante > 0 ? `${p.restante} cupos` : 'LLENO ⏳'}`
+  ).join('\n');
+
+  return `${completa ? 'Todas las pichangas de la semana:' : 'Las pichangas más próximas:'}\n\n${mostrar.map(bloque).join('\n\n')}`
+    + (resto > 0 ? `\n\n📅 Hay ${resto} pichangas más en la semana — escribe *semana* para verlas todas.` : '')
+    + '\n\n¿A cuál te anoto? Dime el día y la zona 🙌';
 }
 
 function textoPrecios() {
@@ -67,6 +84,11 @@ function textoUbicacion() {
 
 // Cada intención: patrón inconfundible + generador de respuesta.
 const INTENCIONES = [
+  {
+    atajo: 'semana',
+    prueba: (t) => /^((ver |toda |todas? )?la semana|semana( completa)?|todas las pichangas|todos los partidos)$/.test(t),
+    responder: () => textoParrilla({ completa: true }),
+  },
   {
     atajo: 'parrilla',
     prueba: (t) => /\b(que|cuales|hay)\b.*\b(pichangas?|partidos?|cupos?)\b|\b(pichangas?|partidos?|cupos?)\b.*\bhay\b|^(pichangas?|partidos?)( de la semana| esta semana| hoy)?$/.test(t),
