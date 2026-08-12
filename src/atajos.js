@@ -94,7 +94,9 @@ const INTENCIONES = [
   },
 ];
 
-const SALUDO = /^(hola+|buenas|buenos dias|buenas tardes|buenas noches|hey|alo+|ola|que tal|hi)( hola)?( amigos?| bro| causa| pichangueros?| que tal| buenas)?$/;
+// Con typos comunes incluidos (aloh, olaa, holq…): un saludo mal tipeado
+// sigue siendo inconfundible.
+const SALUDO = /^(hola+|holaa+|holq|buenas+|buenos dias|buenas tardes|buenas noches|hey+|alo+h?|ola+|que tal|hi|hello)( hola)?( amigos?| bro| causa| pichangueros?| que tal| buenas)?$/;
 
 /**
  * @returns {null | {respuesta: string, atajo: string}} null → que decida la IA.
