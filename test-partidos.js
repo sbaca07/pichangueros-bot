@@ -148,6 +148,20 @@ const p8 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(9), cupo: 10 });
 db.setEstadoPartido(p8, 'cerrado');
 check('inscribir en partido cerrado devuelve null limpio', db.inscribir(p8, '51900000042').inscripcion === null);
 
+console.log('== Anti-fraude: el pago tiene que ser AL Yape del negocio ==');
+const pagosMod = require('./src/pagos');
+db.setConfig({ yape_numero: '915395067', yape_titular: 'Clarck Valentin' });
+db.getOrCreateLead('51900000070'); db.updateLead('51900000070', { zona: 'brena' });
+const vBase = { es_voucher_yape: true, medio: 'yape', monto: 15, nombre_remitente: 'X', confianza: 'alta' };
+const ajeno = pagosMod.evaluarVoucher('51900000070', 'brena', { ...vBase, numero_operacion: 'AF-1', destinatario: 'Amaretti Import Sac', destino_ultimos_digitos: '867' });
+check('un comprobante a otro destinatario NO se confirma', ajeno.estado === 'revisar' && /OTRO destinatario/.test(ajeno.motivo));
+check('…y no molesta a Clarck (el jugador lo corrige solo)', ajeno.handoff === false);
+check('…y se le explica a dónde debe pagar', ajeno.respuesta.includes('915395067'));
+check('el pago al Yape correcto sí se confirma',
+  pagosMod.evaluarVoucher('51900000070', 'brena', { ...vBase, numero_operacion: 'AF-2', destinatario: 'Clarck V.', destino_ultimos_digitos: '067' }).estado === 'confirmado');
+check('sin datos de destino visibles NO se rechaza (evita falsos positivos)',
+  pagosMod.evaluarVoucher('51900000070', 'brena', { ...vBase, numero_operacion: 'AF-3', destinatario: null, destino_ultimos_digitos: null }).estado === 'confirmado');
+
 console.log('== Multi-reserva: el pago va a la reserva cuyo precio calza ==');
 const pA = db.crearPartido({ zona: 'brena', fecha: enUnosDias(10), cupo: 10, precio: 15 });
 const pB = db.crearPartido({ zona: 'comas', fecha: enUnosDias(11), cupo: 10, precio: 10 });

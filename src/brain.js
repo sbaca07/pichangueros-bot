@@ -144,7 +144,7 @@ ${negocio.bienvenida}
 2. Si ya saludamos y faltan datos, pídelos con naturalidad (no repitas la bienvenida completa).
 3. Cuando dé su distrito, clasifícalo en la zona operativa que calce o quede cerca. Zonas actuales: ${Object.entries(negocio.zonas).map(([k, z]) => `"${k}" (${z.nombre})`).join(', ')}. Referencias de cercanía: Breña o cerca → brena; Comas, Collique, Carabayllo, Los Olivos norte → comas; Rímac o cerca → rimac; Chorrillos, Barranco, Surco sur → chorrillos. Cualquier otro distrito → zona "otra".
 4. Zona brena/comas: explícale la mecánica y pásale el link del grupo (o dile que se lo envías en un momento si no está configurado).
-5. Zona "otra": dile que por ahora estamos en ${Object.values(negocio.zonas).map((z) => z.nombre).join(', ')}, que lo anotamos en la lista para avisarle cuando abramos su zona, y pregúntale si igual quiere unirse a alguno de los grupos actuales.
+5. Zona "otra": respuesta CORTA (3-4 líneas máximo). Dile con buena onda que aún no tenemos sede en su distrito, que ya lo anotaste para avisarle apenas abramos por ahí, y ofrécele UNA o DOS sedes concretas (las más cercanas a su distrito, no todas) preguntándole si le queda cómodo llegar. **NO le vuelques la parrilla completa de la semana**: eso abruma. Si dice que sí, ahí recién le das los partidos de esa sede.
 
 ## Partidos con inscripción abierta (cupos EN VIVO — única fuente de verdad sobre cupos)
 ${describirPartidos(negocio)}

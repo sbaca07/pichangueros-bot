@@ -46,9 +46,11 @@ const RESPONSE_SCHEMA = {
       monto: { type: ['number', 'null'], description: 'Monto pagado en soles, ej. 15.00' },
       nombre_remitente: { type: ['string', 'null'], description: 'Nombre de quien envió el pago, tal como aparece en el voucher.' },
       numero_operacion: { type: ['string', 'null'], description: 'Número o código de operación/transacción del voucher.' },
+      destinatario: { type: ['string', 'null'], description: 'A QUIÉN se le pagó: nombre del beneficiario, empresa o banco de destino tal como aparece (ej. "Clarck V.", "Amaretti Import Sac", "BBVA Perú"). null si no se ve.' },
+      destino_ultimos_digitos: { type: ['string', 'null'], description: 'Los últimos dígitos visibles del número/cuenta de DESTINO (ej. de "*** *** 172" devuelve "172"). null si no se ve.' },
       confianza: { type: 'string', enum: ['alta', 'media', 'baja'], description: 'Qué tan seguro estás de la lectura (borrosa, cortada, etc. → baja).' },
     },
-    required: ['es_voucher_yape', 'medio', 'monto', 'nombre_remitente', 'numero_operacion', 'confianza'],
+    required: ['es_voucher_yape', 'medio', 'monto', 'nombre_remitente', 'numero_operacion', 'destinatario', 'destino_ultimos_digitos', 'confianza'],
   },
 };
 
@@ -107,6 +109,24 @@ function evaluarVoucher(numero, zona, lectura) {
       estado: 'revisar', motivo: 'No se pudo leer con confianza', monto, titular, numeroOperacion,
       respuesta: 'No pude leer bien tu comprobante 🧐 ¿me lo mandas de nuevo, bien enfocado y completo?',
       handoff: false,
+    };
+  }
+
+  // ¿EL PAGO ES PARA NOSOTROS? Un comprobante puede ser real y aun así no
+  // tener nada que ver con la pichanga (Mauricio mandó uno de S/210 de
+  // "Amaretti Import Sac" a "BBVA Perú"). Se compara contra el Yape del
+  // negocio por los últimos dígitos del destino — la señal más confiable.
+  // Solo se rechaza con evidencia clara: si el voucher no muestra destino,
+  // se sigue como antes (mejor pasar uno dudoso que frenar uno legítimo).
+  const yapeNegocio = (db.getNegocio().yape.numero || '').replace(/\D/g, '');
+  const digitosDestino = String(lectura.destino_ultimos_digitos || '').replace(/\D/g, '');
+  if (yapeNegocio.length >= 3 && digitosDestino.length >= 3 && !yapeNegocio.endsWith(digitosDestino.slice(-3))) {
+    return {
+      estado: 'revisar',
+      motivo: `Pago a OTRO destinatario: ${lectura.destinatario || '¿?'} (…${digitosDestino}), no al Yape del negocio (…${yapeNegocio.slice(-3)})`,
+      monto, titular, numeroOperacion, cupos: 1,
+      respuesta: `Ese comprobante es de otro pago 🧐 (aparece a nombre de ${lectura.destinatario || 'otro destinatario'}). Para tu cupo, el Yape va al ${db.getNegocio().yape.numero} (${db.getNegocio().yape.titular}) — mándame esa captura y te confirmo al toque ⚽`,
+      handoff: false, // no molesta a Clarck: el jugador puede corregirlo solo
     };
   }
 

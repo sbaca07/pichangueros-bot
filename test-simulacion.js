@@ -122,12 +122,14 @@ const enDias = (n) => new Date(Date.now() - 5 * 3600e3 + n * 86400e3).toISOStrin
   check('el bot responde la bienvenida', /pichanguero/i.test(enviadosA(A)[0]?.texto || ''));
   check('el lead quedó en la BD', Boolean(db.getLead(A)));
 
-  console.log('== 2 · Datos + aviso de lead completo ==');
+  console.log('== 2 · Datos capturados, SIN spamear a Clarck ==');
   await escribe(A, 'soy diego, 27, de Breña');
   await esperar(() => db.getLead(A)?.nombre, 'datos guardados');
   check('nombre/edad/zona guardados', db.getLead(A)?.nombre === 'Diego Sim' && db.getLead(A)?.zona === 'brena');
-  await esperar(() => enviadosA(process.env.NOTIFY_NUMBER).some((e) => e.texto.includes('Lead completo')), 'aviso 🆕');
-  check('aviso 🆕 Lead completo al número de control', enviadosA(process.env.NOTIFY_NUMBER).some((e) => e.texto.includes('Lead completo')));
+  await sleep(1200);
+  // Política de avisos (2026-08-11): a WhatsApp solo va lo ACCIONABLE. Un
+  // lead nuevo no le pide nada a Clarck — vive en el panel.
+  check('NO se avisa por WhatsApp un lead nuevo', !enviadosA(process.env.NOTIFY_NUMBER).some((e) => e.texto.includes('Lead completo')));
 
   console.log('== 3 · Inscripción por chat ==');
   const p1 = db.crearPartido({ zona: 'brena', fecha: enDias(1), hora: '8-9pm', sede: 'Sim FC', cupo: 14 });
@@ -135,7 +137,7 @@ const enDias = (n) => new Date(Date.now() - 5 * 3600e3 + n * 86400e3).toISOStrin
   await escribe(A, 'quiero jugar mañana');
   await esperar(() => db.inscripcionActiva(p1, A), 'reserva');
   check('la reserva existe en la BD', db.inscripcionActiva(p1, A)?.estado === 'reservado');
-  check('aviso 📝 de inscripción a control', await esperar(() => enviadosA(process.env.NOTIFY_NUMBER).some((e) => e.texto.includes('inscribió')), 'aviso 📝'));
+  check('una reserva normal tampoco avisa por WhatsApp', !enviadosA(process.env.NOTIFY_NUMBER).some((e) => e.texto.includes('inscribió')));
 
   console.log('== 4 · Yape → cupo pagado ==');
   lecturas.push({ es_voucher_yape: true, medio: 'yape', monto: 15, nombre_remitente: 'Diego Sim', numero_operacion: 'SIM-001', confianza: 'alta' });

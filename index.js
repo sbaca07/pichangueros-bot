@@ -366,10 +366,11 @@ async function manejarMensaje(sock, msg) {
   if (datosCompletos && lead.estado === 'nuevo') {
     const estado = actualizado.zona === 'otra' ? 'lista_espera' : 'datos_completos';
     db.updateLead(numero, { estado });
-    if (!modoSilencio) await notificarControl(
-      sock,
-      `🆕 Lead completo: ${actualizado.nombre} (${actualizado.edad}) · ${actualizado.distrito} → zona ${actualizado.zona || '?'} · wa.me/${numero}`
-    );
+    // Sin aviso a Clarck: un lead nuevo NO le pide hacer nada (el bot ya lo
+    // atendió) y con 50-100 mensajes/día su WhatsApp se volvía spam. Vive en
+    // el panel, que es donde se revisa. A WhatsApp solo va lo ACCIONABLE:
+    // handoffs, pagos por revisar, listas de espera y salud de la cuenta.
+    console.log(`[lead] Completo: ${actualizado.nombre} (${actualizado.edad}) · ${actualizado.distrito} → zona ${actualizado.zona || '?'}`);
   }
 
   if (decision.handoff) {
@@ -418,9 +419,12 @@ async function manejarMensaje(sock, msg) {
         if (decision.reply) decision.reply += `\n✅ Y tu Yape de S/${suelto.monto}${extras ? ` (${suelto.cupos} cupos)` : ''} ya lo tenía registrado — quedaste CONFIRMADO${extras ? ` junto a tus ${extras} invitado${extras === 1 ? '' : 's'}` : ''} en la lista.`;
         console.log(`[partido] Pago suelto #${suelto.id} (${suelto.cupos || 1} cupos) vinculado a la inscripción de ${numero}.`);
       }
-      if (!modoSilencio) await notificarControl(
+      // Una reserva tampoco pide acción de Clarck (la lista del panel se
+      // actualiza sola). Solo si cae en ESPERA se le avisa, porque ahí sí
+      // puede querer mover algo o abrir otro turno.
+      if (!modoSilencio && resultado === 'espera') await notificarControl(
         sock,
-        `📝 ${actualizado.nombre || `+${numero}`} se ${resultado === 'espera' ? 'anotó en la ESPERA' : 'inscribió'} al partido del ${p ? db.fechaBonita(p.fecha) : '?'}${p?.hora ? ` ${p.hora}` : ''} (${p?.zona}) · wa.me/${numero}`
+        `⏳ ${actualizado.nombre || `+${numero}`} quedó en LISTA DE ESPERA del partido del ${p ? db.fechaBonita(p.fecha) : '?'}${p?.hora ? ` ${p.hora}` : ''} (${p?.zona}) — está lleno · wa.me/${numero}`
       );
     }
   }
