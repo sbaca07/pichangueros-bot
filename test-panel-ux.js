@@ -103,6 +103,27 @@ const srv = app.listen(0, async () => {
   const pagos7d = (await GET('/admin/leads?key=ux&vista=pagos')).html;
   check('La plata abre en 7 días con el histórico a un clic', pagos7d.includes('Últimos 7 días') && pagos7d.includes('Todo el histórico'));
 
+  console.log('== 2b · NADA clickeable es decorativo ni ambiguo ==');
+  // Toda tarjeta .stat debe ser un <a> con destino propio: una métrica que no
+  // lleva a su detalle es un callejón sin salida (hallazgo de Sebas, 11-ago).
+  for (const [vista, nombre] of [['', 'Hoy'], ['&vista=pagos', 'La plata']]) {
+    const html = (await GET(`/admin/leads?key=ux${vista}`)).html;
+    const muertas = [...html.matchAll(/<div class="stat[^"]*">([\s\S]*?)<\/div>\s*<\/div>/g)].length;
+    check(`${nombre}: ninguna tarjeta de métrica es un div muerto`, muertas === 0, `(${muertas} sin link)`);
+  }
+  const pagosHtml = (await GET('/admin/leads?key=ux&vista=pagos')).html;
+  check('La plata: "Cobrado" lleva a los pagos que lo componen', /Cobrado[^<]*›/.test(pagosHtml) && pagosHtml.includes('estado=conf'));
+  check('La plata: "Cupos pagados" lleva a Partidos', pagosHtml.includes('vista=partidos'));
+  const filtrado = (await GET('/admin/leads?key=ux&vista=pagos&estado=rev')).html;
+  check('el filtro activo se ve marcado en su tarjeta', /class="stat[^"]*sel/.test(filtrado));
+  check('…y ofrece quitarlo con ✕', filtrado.includes('Por revisar ✕'));
+  // Cada destino de las tarjetas debe existir de verdad.
+  for (const m of pagosHtml.matchAll(/<a class="stat[^"]*" href="([^"]+)"/g)) {
+    const destino = m[1].replace(/&amp;/g, '&');
+    const r = await GET(destino);
+    check(`destino vivo: ${destino.replace(/key=ux&?/, '').slice(0, 46)}`, r.status === 200);
+  }
+
   console.log('== 3 · Exports y descargas responden ==');
   for (const ruta of ['/admin/leads.csv?key=ux', '/admin/leads.xlsx?key=ux', '/admin/backup-db?key=ux']) {
     check(`GET ${ruta.split('?')[0]}`, (await GET(ruta)).status === 200);

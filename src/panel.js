@@ -443,6 +443,10 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .stat .sn{font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:34px;line-height:1;font-variant-numeric:tabular-nums}
   .stat .sl{font-size:12px;color:var(--muted);font-weight:500;margin-top:3px}
   .stat.amber .sn{color:var(--amber)} .stat.green .sn{color:var(--green-d)} .stat.navy .sn{color:var(--navy2)} .stat.red .sn{color:var(--red)}
+  /* Tarjeta-filtro activa: se ve que ESA es la que está aplicada. */
+  .stat.sel{background:var(--navy);box-shadow:3px 3px 0 rgba(46,58,69,.3)}
+  .stat.sel .sn,.stat.sel .sl{color:#fff}
+  a.stat:hover{transform:translate(-1px,-1px);box-shadow:4px 4px 0 rgba(46,58,69,.2)}
   .stat .chip{float:right;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px}
   .chip.up{background:rgba(163,198,20,.14);color:var(--green-d)}
   .chip.wait{background:rgba(255,149,0,.14);color:var(--amber-d)}
@@ -802,7 +806,7 @@ function paginaResumen(db, key, query = {}) {
       <div class="shdr">Pendientes <small>· toca para actuar</small></div>
       <div class="grid2" style="margin-top:2px">
         <a class="stat green" href="/admin/leads?key=${key}&vista=crm">${delta ? `<span class="chip ${delta > 0 ? 'up' : 'wait'}">${delta > 0 ? '▲' : '▼'} ${Math.abs(delta)}%</span>` : ''}<div class="sn">${semana}</div><div class="sl">Esta semana</div></a>
-        <div class="stat navy"><div class="sn">${hoyN}</div><div class="sl">Nuevos hoy</div></div>
+        <a class="stat navy" href="/admin/leads?key=${key}&vista=crm&dia=${hoy}&tipo=nuevos" title="Ver a los que escribieron por primera vez hoy"><div class="sn">${hoyN}</div><div class="sl">Nuevos hoy ›</div></a>
         <a class="stat amber" href="/admin/leads?key=${key}&vista=crm&filtro=responder">${colaResp ? '<span class="chip wait">pendiente</span>' : ''}<div class="sn">${colaResp}</div><div class="sl">${modoSeguro ? 'Testers sin responder' : 'Sin responder (48 h)'}</div></a>
         <a class="stat ${enHandoff ? 'red' : ''}" href="/admin/leads?key=${key}&vista=crm&filtro=handoff"><div class="sn">${enHandoff}</div><div class="sl">Para Clarck</div></a>
       </div>
@@ -957,10 +961,10 @@ function paginaPagos(db, key, query = {}) {
     </div>
     <div class="px">
       <div class="grid2">
-        <div class="stat green"><div class="sn">${soles(totalAlcance)}</div><div class="sl">Cobrado${hayFiltro ? ' (filtro)' : ' (confirmado)'}</div></div>
-        <div class="stat navy"><div class="sn">${cuposAlcance}</div><div class="sl">Cupos pagados</div></div>
-        <a class="stat" href="/admin/leads?key=${key}&vista=pagos${qs({ estado: fEstado === 'conf' ? '' : 'conf' })}"><div class="sn">${confAlcance.length}</div><div class="sl">Pagos confirmados</div></a>
-        <a class="stat ${revAlcance.length ? 'amber' : ''}" href="/admin/leads?key=${key}&vista=pagos${qs({ estado: fEstado === 'rev' ? '' : 'rev' })}"><div class="sn">${revAlcance.length}</div><div class="sl">Por revisar</div></a>
+        <a class="stat green ${fEstado === 'conf' ? 'sel' : ''}" href="/admin/leads?key=${key}&vista=pagos${qs({ estado: 'conf' })}" title="Ver los pagos que suman este monto"><div class="sn">${soles(totalAlcance)}</div><div class="sl">Cobrado${hayFiltro ? ' (filtro)' : ' (confirmado)'} ›</div></a>
+        <a class="stat navy" href="/admin/leads?key=${key}&vista=partidos" title="Ver los partidos donde están estos cupos"><div class="sn">${cuposAlcance}</div><div class="sl">Cupos pagados ›</div></a>
+        <a class="stat ${fEstado === 'conf' ? 'sel' : ''}" href="/admin/leads?key=${key}&vista=pagos${qs({ estado: fEstado === 'conf' ? '' : 'conf' })}" title="${fEstado === 'conf' ? 'Quitar el filtro' : 'Ver solo los confirmados'}"><div class="sn">${confAlcance.length}</div><div class="sl">Pagos confirmados ${fEstado === 'conf' ? '✕' : '›'}</div></a>
+        <a class="stat ${revAlcance.length ? 'amber' : ''} ${fEstado === 'rev' ? 'sel' : ''}" href="/admin/leads?key=${key}&vista=pagos${qs({ estado: fEstado === 'rev' ? '' : 'rev' })}" title="${fEstado === 'rev' ? 'Quitar el filtro' : 'Ver solo los que hay que revisar'}"><div class="sn">${revAlcance.length}</div><div class="sl">Por revisar ${fEstado === 'rev' ? '✕' : '›'}</div></a>
       </div>
 
       <form class="fbar" method="get" action="/admin/leads">
