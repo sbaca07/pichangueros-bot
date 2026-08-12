@@ -1049,8 +1049,13 @@ function paginaCRM(db, key, query) {
   const distritosCrm = Object.entries(ddCrm).sort((a, b) => b[1].n - a[1].n);
 
   // Dos grupos: necesitan respuesta (handoff o sin responder) y el resto.
-  const urgentes = leads.filter((l) => l.handoff || sinResp(l));
-  const resto = leads.filter((l) => !(l.handoff || sinResp(l)));
+  // Un handoff solo es URGENTE si el contacto sigue activo (habló en 72 h).
+  // Los derivados de julio que Clarck ya atendió a mano no son cola de hoy:
+  // siguen filtrables con el chip "Clarck" y el bot sigue callado con ellos,
+  // pero no infla "Necesitan respuesta" con historia muerta.
+  const handoffActivo = (l) => { const u = roles[l.numero]; return Boolean(l.handoff && u && u.en >= limaHace(72)); };
+  const urgentes = leads.filter((l) => handoffActivo(l) || sinResp(l));
+  const resto = leads.filter((l) => !(handoffActivo(l) || sinResp(l)));
 
   // Los chips COMBINAN filtros (no se pisan); tocar uno activo lo quita.
   const qsCrm = (over) => {
