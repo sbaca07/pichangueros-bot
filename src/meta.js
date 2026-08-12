@@ -152,12 +152,38 @@ async function descargarMedia(mediaId) {
   return Buffer.from(await bin.arrayBuffer());
 }
 
+// Último mensaje entrante por contacto: el indicador de "escribiendo…" de
+// Cloud API se envía como respuesta a un message_id concreto.
+const ULTIMO_ENTRANTE_MAX = 2000;
+const ultimoEntrante = new Map();
+function recordarEntrante(numero, wamid) {
+  if (!numero || !wamid) return;
+  ultimoEntrante.set(numero, wamid);
+  if (ultimoEntrante.size > ULTIMO_ENTRANTE_MAX) ultimoEntrante.delete(ultimoEntrante.keys().next().value);
+}
+
+/**
+ * "Escribiendo…" real por Cloud API (Meta lo agregó en 2025): marca el mensaje
+ * entrante como leído (✓✓ azul) Y muestra el typing indicator hasta ~25 s o
+ * hasta que llegue la respuesta. Best-effort: si falla, no rompe el flujo.
+ */
+async function indicarEscribiendo(numero) {
+  const wamid = ultimoEntrante.get(numero);
+  if (!wamid || !activo()) return;
+  try {
+    await fetch(`${GRAPH}/${PHONE_ID}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', status: 'read', message_id: wamid, typing_indicator: { type: 'text' } }),
+    });
+  } catch (e) { console.warn('[meta] typing indicator falló (ignorado):', e.message); }
+}
+
 /** Adaptador con la interfaz mínima de Baileys que usa manejarMensaje/el panel. */
 const sockAdapter = {
   sendMessage: async (jid, contenido) => enviarTexto(String(jid).split('@')[0], contenido.text),
-  // La API oficial tiene indicador de "escribiendo" solo al marcar leído un
-  // mensaje entrante; para no complicar, el "composing" es un no-op acá.
-  sendPresenceUpdate: async () => {},
+  // "composing" → typing indicator real de Cloud API (visto azul + escribiendo…).
+  sendPresenceUpdate: async (_tipo, jid) => indicarEscribiendo(String(jid || '').split('@')[0]),
   updateMediaMessage: async () => {},
 };
 
@@ -344,6 +370,7 @@ function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
           // Mensajes entrantes de clientes.
           for (const m of v.messages || []) {
             if (yaVisto(m.id)) { console.log(`[meta] Mensaje repetido ${m.id} — ignorado (reintento de Meta).`); continue; }
+            recordarEntrante((m.from || '').replace(/\D/g, ''), m.id);
             const msg = aMensajeBaileys(m, false);
             if (msg) Promise.resolve(onMensaje(sockAdapter, msg)).catch((e) => console.error('[meta] Error manejando mensaje:', e.message));
           }
