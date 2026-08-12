@@ -375,10 +375,22 @@ function resumenPagos() {
 
 // --- Configuración del negocio (editable en /admin/leads?vista=config) --------
 const CAMPOS_CONFIG = [
-  'marca', 'yape_numero', 'yape_titular', 'precio_brena', 'precio_comas',
-  'grouplink_brena', 'grouplink_comas', 'hora_llegada', 'pago', 'devoluciones',
+  'marca', 'yape_numero', 'yape_titular', 'hora_llegada', 'pago', 'devoluciones',
   'convivencia', 'mecanica', 'bienvenida', 'emojis',
 ];
+
+// Nombres bonitos de las zonas conocidas; una zona nueva sin entrada acá sale
+// capitalizada. LA FUENTE DE VERDAD de qué zonas existen son las SEDES: crear
+// una sede en una zona la enciende en todo el sistema (guion del bot, precios,
+// links de grupo, formularios) — nada más que enlazar a mano.
+const ZONA_NOMBRES = { brena: 'Breña', comas: 'Comas', rimac: 'Rímac', chorrillos: 'Chorrillos' };
+const nombreDeZona = (z) => ZONA_NOMBRES[z] || (z ? z[0].toUpperCase() + z.slice(1) : z);
+
+/** Zonas con al menos una sede (brena/comas siempre, por compatibilidad). */
+function zonasOperativas() {
+  const deSedes = db.prepare('SELECT DISTINCT zona FROM sedes ORDER BY zona').all().map((r) => r.zona);
+  return [...new Set(['brena', 'comas', ...deSedes])];
+}
 
 function getConfigMap() {
   const mapa = {};
@@ -391,7 +403,11 @@ function setConfig(campos) {
   const stmt = db.prepare(
     'INSERT INTO config (clave, valor) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor'
   );
-  for (const clave of CAMPOS_CONFIG) {
+  // Además de los campos fijos, precio_<zona> y grouplink_<zona> de cualquier
+  // zona operativa (dinámicas: siguen a las sedes).
+  const permitidas = new Set(CAMPOS_CONFIG);
+  for (const z of zonasOperativas()) { permitidas.add(`precio_${z}`); permitidas.add(`grouplink_${z}`); }
+  for (const clave of permitidas) {
     if (campos[clave] !== undefined) stmt.run(clave, campos[clave]);
   }
 }
@@ -417,7 +433,8 @@ function deleteSede(id) {
   db.prepare('DELETE FROM sedes WHERE id = ?').run(id);
 }
 
-/** Arma el mismo shape que antes exportaba config/negocio.js, ahora desde la BD. */
+/** Arma el mismo shape que antes exportaba config/negocio.js, ahora desde la BD.
+ *  Las ZONAS son dinámicas: una por cada zona con sedes (ver zonasOperativas). */
 function getNegocio() {
   const c = getConfigMap();
   const sedesDe = (zona) => listSedes(zona).map((s) => ({
@@ -426,10 +443,12 @@ function getNegocio() {
   return {
     marca: c.marca || 'Pichangueros',
     yape: { numero: c.yape_numero || '', titular: c.yape_titular || '', tipo: 'personal' },
-    zonas: {
-      brena: { nombre: 'Breña', precio: Number(c.precio_brena) || 0, sedes: sedesDe('brena'), groupLink: c.grouplink_brena || null },
-      comas: { nombre: 'Comas', precio: Number(c.precio_comas) || 0, sedes: sedesDe('comas'), groupLink: c.grouplink_comas || null },
-    },
+    zonas: Object.fromEntries(zonasOperativas().map((z) => [z, {
+      nombre: nombreDeZona(z),
+      precio: Number(c[`precio_${z}`]) || 0,
+      sedes: sedesDe(z),
+      groupLink: c[`grouplink_${z}`] || null,
+    }])),
     reglas: {
       horaLlegada: c.hora_llegada || '',
       pago: c.pago || '',
@@ -748,7 +767,7 @@ module.exports = {
   setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead, actividadPorDia,
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
-  getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio,
+  getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
   crearPartido, getPartido, setEstadoPartido, listPartidos, partidosAbiertos, inscripcionesDe,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,

@@ -1236,12 +1236,14 @@ function paginaFicha(db, key, numero) {
 function paginaConfig(db, key) {
   const keyRaw = decodeURIComponent(key);
   const c = db.getConfigMap();
-  const sedesPorZona = { brena: db.listSedes('brena'), comas: db.listSedes('comas') };
+  // Zonas dinámicas: las mismas que ve el bot (siguen a las sedes).
+  const zonasOp = db.zonasOperativas();
+  const sedesPorZona = Object.fromEntries(zonasOp.map((z) => [z, db.listSedes(z)]));
 
   const filaSede = (zona, s) => `
     <form class="inline" method="post" action="/admin/config/sede">
       <input type="hidden" name="key" value="${esc(keyRaw)}">
-      <input type="hidden" name="zona" value="${zona}">
+      <input type="hidden" name="zona" value="${esc(zona)}">
       ${s ? `<input type="hidden" name="id" value="${s.id}">` : ''}
       <input name="nombre" value="${esc(s?.nombre || '')}" placeholder="Nombre de la sede" required>
       <input name="cancha" value="${esc(s?.cancha || '')}" placeholder="Cancha (opcional)">
@@ -1256,8 +1258,8 @@ function paginaConfig(db, key) {
       <button class="btn-rojo" style="border:none;border-radius:11px;color:#fff;padding:8px 14px;font:inherit;font-size:13px" onclick="return confirm('¿Eliminar esta sede?')">Eliminar</button>
     </form>` : ''}`;
 
-  const bloqueZona = (zona, nombreZona) => `
-    <div class="shdr">Sedes · ${nombreZona} <small>(precio S/ ${esc(c[`precio_${zona}`])} por jugador)</small></div>
+  const bloqueZona = (zona) => `
+    <div class="shdr">Sedes · ${esc(db.nombreDeZona(zona))} <small>(precio S/ ${esc(c[`precio_${zona}`] || '—')} por jugador)</small></div>
     <div class="group">
       ${sedesPorZona[zona].map((s) => filaSede(zona, s)).join('') || '<p style="padding:14px;color:var(--faint);font-size:14px">Sin sedes todavía.</p>'}
     </div>
@@ -1277,14 +1279,11 @@ function paginaConfig(db, key) {
           <input name="yape_numero" value="${esc(c.yape_numero)}">
           <label>Yape — titular</label>
           <input name="yape_titular" value="${esc(c.yape_titular)}">
-          <label>Precio Breña (S/)</label>
-          <input name="precio_brena" type="number" value="${esc(c.precio_brena)}">
-          <label>Precio Comas (S/)</label>
-          <input name="precio_comas" type="number" value="${esc(c.precio_comas)}">
-          <label>Link grupo WhatsApp — Breña</label>
-          <input name="grouplink_brena" value="${esc(c.grouplink_brena)}" placeholder="https://chat.whatsapp.com/…">
-          <label>Link grupo WhatsApp — Comas</label>
-          <input name="grouplink_comas" value="${esc(c.grouplink_comas)}" placeholder="https://chat.whatsapp.com/…">
+          ${zonasOp.map((z) => `
+          <label>Precio ${esc(db.nombreDeZona(z))} (S/)</label>
+          <input name="precio_${esc(z)}" type="number" step="0.5" value="${esc(c[`precio_${z}`] || '')}">
+          <label>Link grupo WhatsApp — ${esc(db.nombreDeZona(z))}</label>
+          <input name="grouplink_${esc(z)}" value="${esc(c[`grouplink_${z}`] || '')}" placeholder="https://chat.whatsapp.com/…">`).join('')}
           <label>Hora de llegada</label>
           <input name="hora_llegada" value="${esc(c.hora_llegada)}">
           <label>Emojis de la casa <small>(separados por coma)</small></label>
@@ -1303,8 +1302,7 @@ function paginaConfig(db, key) {
         </form>
       </div>
 
-      ${bloqueZona('brena', 'Breña')}
-      ${bloqueZona('comas', 'Comas')}
+      ${zonasOp.map((z) => bloqueZona(z)).join('')}
 
       <div class="foot">⚽ Pichangueros · Config</div>
     </div>

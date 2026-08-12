@@ -43,7 +43,9 @@ function getClient() {
   return client;
 }
 
-const RESPONSE_SCHEMA = {
+// El schema se arma por llamada: el enum de zonas sigue a las sedes de la BD
+// (crear una sede en Rímac habilita zona 'rimac' acá también, sin tocar código).
+const buildSchema = (zonas) => ({
   name: 'respuesta_pichanguero',
   strict: true,
   schema: {
@@ -59,8 +61,8 @@ const RESPONSE_SCHEMA = {
       distrito: { type: ['string', 'null'], description: 'Distrito(s) donde quiere jugar, si lo dijo.' },
       zona: {
         type: ['string', 'null'],
-        enum: ['brena', 'comas', 'otra', null],
-        description: 'Zona clasificada según el distrito: brena, comas, u otra si no calza con las sedes actuales.',
+        enum: [...zonas, 'otra', null],
+        description: 'Zona operativa clasificada según el distrito, u "otra" si no calza con ninguna sede actual.',
       },
       handoff: {
         type: 'boolean',
@@ -74,7 +76,7 @@ const RESPONSE_SCHEMA = {
     },
     required: ['reply', 'nombre', 'edad', 'distrito', 'zona', 'handoff', 'handoff_motivo', 'inscribir_partido'],
   },
-};
+});
 
 function describirZonas(negocio) {
   return Object.values(negocio.zonas)
@@ -135,9 +137,9 @@ Datos que aún nos faltan de ESTE contacto: ${faltantes.length ? faltantes.join(
 1. Si es su primer mensaje y no tenemos sus datos, dale la bienvenida con este texto tal cual y no agregues más:
 ${negocio.bienvenida}
 2. Si ya saludamos y faltan datos, pídelos con naturalidad (no repitas la bienvenida completa).
-3. Cuando dé su distrito: si es Breña o cerca → zona "brena"; si es Comas o cerca (Collique, Carabayllo, Los Olivos norte) → zona "comas"; cualquier otro → zona "otra".
+3. Cuando dé su distrito, clasifícalo en la zona operativa que calce o quede cerca. Zonas actuales: ${Object.entries(negocio.zonas).map(([k, z]) => `"${k}" (${z.nombre})`).join(', ')}. Referencias de cercanía: Breña o cerca → brena; Comas, Collique, Carabayllo, Los Olivos norte → comas; Rímac o cerca → rimac; Chorrillos, Barranco, Surco sur → chorrillos. Cualquier otro distrito → zona "otra".
 4. Zona brena/comas: explícale la mecánica y pásale el link del grupo (o dile que se lo envías en un momento si no está configurado).
-5. Zona "otra": dile que por ahora estamos en Breña y Comas, que lo anotamos en la lista para avisarle cuando abramos su zona, y pregúntale si igual quiere unirse a uno de los dos grupos actuales.
+5. Zona "otra": dile que por ahora estamos en ${Object.values(negocio.zonas).map((z) => z.nombre).join(', ')}, que lo anotamos en la lista para avisarle cuando abramos su zona, y pregúntale si igual quiere unirse a alguno de los grupos actuales.
 
 ## Partidos con inscripción abierta (cupos EN VIVO — única fuente de verdad sobre cupos)
 ${describirPartidos(negocio)}
@@ -200,7 +202,7 @@ async function pensar(lead, historial, textoUsuario) {
     const completion = await openai.chat.completions.create({
       model: MODEL,
       messages,
-      response_format: { type: 'json_schema', json_schema: RESPONSE_SCHEMA },
+      response_format: { type: 'json_schema', json_schema: buildSchema(Object.keys(db.getNegocio().zonas)) },
       temperature: 0.6,
       // 2000, no 600: los modelos "pensantes" (Gemini flash) gastan tokens en
       // razonar ANTES del JSON — con 600 el JSON salía cortado a media cadena
