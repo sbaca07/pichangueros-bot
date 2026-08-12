@@ -132,7 +132,7 @@ function evaluarVoucher(numero, zona, lectura) {
   // El precio a validar es EL DEL PARTIDO RESERVADO cuando existe (puede tener
   // precio custom, o ser de otra zona — jugador multi-distrito). Solo si no hay
   // reserva se usa el precio de la zona del contacto.
-  const reservaP = db.partidoReservadoDe(numero);
+  const reservaP = db.partidoReservadoDe(numero, monto);
   const negocioP = db.getNegocio();
   const precioEsperado = reservaP
     ? (reservaP.precio ?? negocioP.zonas[reservaP.zona]?.precio ?? null)
@@ -181,7 +181,7 @@ async function procesarVoucher(numero, zona, imageBuffer) {
   let respuesta = r.respuesta;
   if (r.estado === 'confirmado') {
     try {
-      const v = db.vincularPago(numero, pagoId, r.cupos || 1, zona);
+      const v = db.vincularPago(numero, pagoId, r.cupos || 1, zona, r.monto);
       if (v) {
         const enCancha = v.inscripciones.filter((i) => i.estado === 'pagado').length;
         const p = v.partido;

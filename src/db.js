@@ -709,13 +709,14 @@ function setAsistencia(id, valor) {
  * Los cupos extra (amigos) se agregan al mismo partido.
  * @returns {null | {partido: object, inscripciones: object[]}}
  */
-function vincularPago(numero, pagoId, cupos = 1, zona = null) {
+function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null) {
   let partido = null;
-  const activaEnAbierto = db.prepare(`
-    SELECT i.* FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
-    WHERE i.numero = ? AND i.estado IN ('reservado','espera') AND p.estado = 'abierto' AND p.fecha >= ?
-    ORDER BY p.fecha, i.id LIMIT 1
-  `).get(numero, hoyLimaDb());
+  // La misma preferencia que la validación: con varias reservas activas, el
+  // pago se aplica a la reserva cuyo precio calza con el monto.
+  const partidoPref = partidoReservadoDe(numero, monto);
+  const activaEnAbierto = partidoPref
+    ? db.prepare("SELECT * FROM inscripciones WHERE partido_id = ? AND numero = ? AND estado IN ('reservado','espera') LIMIT 1").get(partidoPref.id, numero)
+    : null;
   const hechas = [];
   if (activaEnAbierto) {
     partido = getPartido(activaEnAbierto.partido_id);
@@ -746,13 +747,27 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null) {
 
 /** Partido (abierto y próximo) donde el contacto tiene una reserva sin pagar.
  *  Lo usa la validación de vouchers: el precio del PARTIDO manda sobre el de
- *  la zona del contacto (partidos con precio custom, jugador multi-distrito). */
-function partidoReservadoDe(numero) {
-  return db.prepare(`
+ *  la zona del contacto (partidos con precio custom, jugador multi-distrito).
+ *  Con varias reservas activas (ej. Breña S/15 y Comas S/10), si se pasa el
+ *  monto se PREFIERE la reserva cuyo precio calce con lo pagado. */
+function partidoReservadoDe(numero, monto = null) {
+  const filas = db.prepare(`
     SELECT p.* FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
     WHERE i.numero = ? AND i.estado IN ('reservado','espera') AND p.estado = 'abierto' AND p.fecha >= ?
-    ORDER BY p.fecha, i.id LIMIT 1
-  `).get(numero, hoyLimaDb()) || null;
+    ORDER BY p.fecha, i.id
+  `).all(numero, hoyLimaDb());
+  if (!filas.length) return null;
+  if (monto != null) {
+    const neg = getNegocio();
+    const calza = filas.find((p) => {
+      const precio = p.precio ?? neg.zonas[p.zona]?.precio;
+      if (!precio) return false;
+      const n = Math.round(monto / precio);
+      return n >= 1 && n <= 10 && Math.abs(monto - n * precio) <= 0.5;
+    });
+    if (calza) return calza;
+  }
+  return filas[0];
 }
 
 /** Pagos confirmados sin partido asignado (para que Clarck los asigne a mano).

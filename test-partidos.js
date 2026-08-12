@@ -139,6 +139,19 @@ const p8 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(9), cupo: 10 });
 db.setEstadoPartido(p8, 'cerrado');
 check('inscribir en partido cerrado devuelve null limpio', db.inscribir(p8, '51900000042').inscripcion === null);
 
+console.log('== Multi-reserva: el pago va a la reserva cuyo precio calza ==');
+const pA = db.crearPartido({ zona: 'brena', fecha: enUnosDias(10), cupo: 10, precio: 15 });
+const pB = db.crearPartido({ zona: 'comas', fecha: enUnosDias(11), cupo: 10, precio: 10 });
+db.getOrCreateLead('51900000050');
+db.inscribir(pA, '51900000050');
+db.inscribir(pB, '51900000050');
+check('con monto 10, la validación elige la reserva de S/10', db.partidoReservadoDe('51900000050', 10)?.id === pB);
+check('con monto 15, elige la de S/15', db.partidoReservadoDe('51900000050', 15)?.id === pA);
+const pagoMR = db.registrarPago({ numero: '51900000050', monto: 10, numero_operacion: 'OP-MR', estado: 'confirmado' });
+const vMR = db.vincularPago('51900000050', pagoMR, 1, 'brena', 10);
+check('el pago de S/10 paga la reserva de Comas, no la de Breña', vMR?.partido.id === pB && db.inscripcionActiva(pB, '51900000050')?.estado === 'pagado');
+check('la reserva de Breña sigue reservada', db.inscripcionActiva(pA, '51900000050')?.estado === 'reservado');
+
 console.log('== Formato y orden de horas ==');
 const ph1 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(8), hora: '9pm', cupo: 10 });
 const ph2 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(8), hora: '8-9pm', cupo: 10 });
