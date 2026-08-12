@@ -120,6 +120,25 @@ db.pagarInscripcion(rIns.inscripcion.id, pagoS);
 check('pagarInscripcion la deja pagada con su pago', db.inscripcionActiva(p4, '51900000030')?.estado === 'pagado');
 check('y el pago deja de estar suelto', db.pagoSueltoDe('51900000030') === null && !db.pagosSinPartido().some((p) => p.id === pagoS));
 
+console.log('== Fixes del code review: espera que paga no sobrevende ==');
+const p7 = db.crearPartido({ zona: 'brena', fecha: enUnosDias(7), cupo: 1 });
+db.getOrCreateLead('51900000040'); db.getOrCreateLead('51900000041');
+db.inscribir(p7, '51900000040');                                   // ocupa el único cupo
+const rEsp = db.inscribir(p7, '51900000041');                      // cae a espera
+const pagoEsp = db.registrarPago({ numero: '51900000041', monto: 15, numero_operacion: 'OP-ESP', estado: 'confirmado' });
+const vEsp = db.vincularPago('51900000041', pagoEsp, 1, 'brena');
+check('la espera que paga NO pasa a ocupar cancha', db.inscripcionActiva(p7, '51900000041')?.estado === 'espera');
+check('pero su pago queda registrado en la fila', db.inscripcionActiva(p7, '51900000041')?.pago_id === pagoEsp);
+check('y la respuesta refleja que sigue en espera', vEsp && vEsp.inscripciones[0].estado === 'espera');
+check('la lista marca a la espera pagada con ✅', /espera[\s\S]*✅/i.test(db.textoLista(p7)));
+const promovidoPag = db.darDeBaja(db.inscripcionActiva(p7, '51900000040').id);
+check('al liberarse cupo, la espera PAGADA sube directo a pagado', promovidoPag?.numero === '51900000041' && promovidoPag?.estado === 'pagado');
+
+console.log('== Fixes del code review: inscribir en partido no abierto ==');
+const p8 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(9), cupo: 10 });
+db.setEstadoPartido(p8, 'cerrado');
+check('inscribir en partido cerrado devuelve null limpio', db.inscribir(p8, '51900000042').inscripcion === null);
+
 console.log('== Formato y orden de horas ==');
 const ph1 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(8), hora: '9pm', cupo: 10 });
 const ph2 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(8), hora: '8-9pm', cupo: 10 });

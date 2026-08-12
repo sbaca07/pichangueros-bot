@@ -318,7 +318,12 @@ function registrarPanel(app, db, conexion = null) {
     const partidoId = Number(req.body.partido_id);
     const pago = db.listPagosTodos().find((p) => p.id === Number(req.body.pago_id));
     if (pago && partidoId) {
-      db.inscribir(partidoId, pago.numero, { estado: 'pagado', pagoId: pago.id });
+      // Si el pagador YA tiene inscripción activa en este partido, se le
+      // vincula el pago (inscribir devolvería 'ya_inscrito' sin hacer nada y
+      // el botón quedaba muerto — hallazgo del code review 2026-08-11).
+      const activa = pago.numero ? db.inscripcionActiva(partidoId, pago.numero) : null;
+      if (activa) db.pagarInscripcion(activa.id, pago.id);
+      else db.inscribir(partidoId, pago.numero, { estado: 'pagado', pagoId: pago.id });
       for (let i = 1; i < (pago.cupos || 1); i++) db.inscribir(partidoId, null, { nombre: `Invitado de +${pago.numero}`, estado: 'pagado', pagoId: pago.id });
     }
     volverAPartidos(req, res, partidoId);

@@ -685,11 +685,12 @@ function darDeBaja(id) {
   if (!insc || insc.estado === 'baja') return null;
   db.prepare("UPDATE inscripciones SET estado = 'baja' WHERE id = ?").run(id);
   if (!['reservado', 'pagado'].includes(insc.estado)) return null; // una espera que se baja no libera cancha
+  // Prioridad al promover: primero los de la espera que YA pagaron, luego por orden de llegada.
   const siguiente = db.prepare(
-    "SELECT * FROM inscripciones WHERE partido_id = ? AND estado = 'espera' ORDER BY id LIMIT 1"
+    "SELECT * FROM inscripciones WHERE partido_id = ? AND estado = 'espera' ORDER BY (pago_id IS NULL), id LIMIT 1"
   ).get(insc.partido_id);
   if (!siguiente) return null;
-  db.prepare("UPDATE inscripciones SET estado = 'reservado' WHERE id = ?").run(siguiente.id);
+  db.prepare('UPDATE inscripciones SET estado = ? WHERE id = ?').run(siguiente.pago_id ? 'pagado' : 'reservado', siguiente.id);
   return db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(siguiente.id);
 }
 
@@ -718,7 +719,15 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null) {
   const hechas = [];
   if (activaEnAbierto) {
     partido = getPartido(activaEnAbierto.partido_id);
-    db.prepare("UPDATE inscripciones SET estado = 'pagado', pago_id = ? WHERE id = ?").run(pagoId, activaEnAbierto.id);
+    // Una ESPERA que paga no salta el cupo: si la cancha está llena, el pago
+    // queda registrado en su fila de espera (prioridad al promover) pero NO
+    // pasa a ocupar lugar — pagar no puede sobrevender el partido.
+    let nuevoEstado = 'pagado';
+    if (activaEnAbierto.estado === 'espera') {
+      const ocupados = db.prepare(`SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ? AND estado IN ${OCUPAN}`).get(partido.id).n;
+      if (ocupados >= partido.cupo) nuevoEstado = 'espera';
+    }
+    db.prepare('UPDATE inscripciones SET estado = ?, pago_id = ? WHERE id = ?').run(nuevoEstado, pagoId, activaEnAbierto.id);
     hechas.push(db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(activaEnAbierto.id));
   } else {
     const abiertos = zona ? partidosAbiertos(zona) : [];
@@ -798,7 +807,8 @@ function textoLista(partidoId) {
   }
   if (espera.length) {
     lineas.push('', '⏳ Lista de espera:');
-    espera.forEach((i, idx) => lineas.push(`${idx + 1}. ${nombreDe(i)}`));
+    // El ✅ marca a los de la espera que YA pagaron (prioridad si se libera lugar).
+    espera.forEach((i, idx) => lineas.push(`${idx + 1}. ${nombreDe(i)}${i.pago_id ? ' ✅' : ''}`));
   }
   return lineas.join('\n');
 }

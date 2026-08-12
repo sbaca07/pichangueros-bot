@@ -42,6 +42,8 @@ check('"cuánto cuesta si vamos 3 y pagamos juntos el viernes" → IA (contexto)
 check('"puedo pagar en efectivo" → IA (handoff)', atajos.responder(conocido, 'puedo pagar en efectivo?') === null);
 check('una queja → IA', atajos.responder(conocido, 'oye ayer me trataron mal en la cancha') === null);
 check('mensaje largo con palabra clave → IA', atajos.responder(conocido, 'hola una consulta sobre los horarios de la sede de breña porque trabajo hasta tarde') === null);
+check('"que pasa si no llego a tiempo al partido" → IA', atajos.responder(conocido, 'que pasa si no llego a tiempo al partido') === null);
+check('"ya pague mi cupo hay algun problema?" → IA', atajos.responder(conocido, 'ya pague mi cupo hay algun problema?') === null);
 
 console.log('== Parrilla compacta y "semana" ==');
 for (let d = 2; d <= 4; d++) db.crearPartido({ zona: 'comas', fecha: enDias(d), hora: '8-9pm', cupo: 12 });

@@ -91,7 +91,13 @@ const INTENCIONES = [
   },
   {
     atajo: 'parrilla',
-    prueba: (t) => /\b(que|cuales|hay)\b.*\b(pichangas?|partidos?|cupos?)\b|\b(pichangas?|partidos?|cupos?)\b.*\bhay\b|^(pichangas?|partidos?)( de la semana| esta semana| hoy)?$/.test(t),
+    // ANCLADO de punta a punta: sin ^$ , "que pasa si no llego al partido" o
+    // "ya pague mi cupo hay algun problema" disparaban la parrilla y la IA
+    // nunca veía la pregunta real (hallazgo del code review 2026-08-11).
+    prueba: (t) =>
+      /^(q|que|cuales|cuantas?|cuantos?) (pichangas?|partidos?|cupos?)( hay| tienes| tienen| quedan| disponibles)?( hoy| manana| esta semana| de la semana)?$/.test(t)
+      || /^hay (pichangas?|partidos?|cupos?)( hoy| manana| esta semana| disponibles)?$/.test(t)
+      || /^(pichangas?|partidos?)( de la semana| esta semana| hoy| disponibles)?$/.test(t),
     responder: () => textoParrilla(),
   },
   {

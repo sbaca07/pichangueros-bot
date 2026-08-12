@@ -374,7 +374,16 @@ async function manejarMensaje(sock, msg) {
   // y una reserva que el jugador no sabe que existe es un cupo fantasma.
   if (decision.inscribir_partido && !modoSilencio) {
     const { inscripcion, resultado } = db.inscribir(decision.inscribir_partido, numero, { nombre: actualizado.nombre });
-    if (resultado === 'espera' && decision.reply && !/lista de espera/i.test(decision.reply)) {
+    if (!inscripcion) {
+      // El partido se cerró/canceló entre que la IA leyó los cupos y este
+      // write (o el ID no existe): NUNCA mandar el reply que promete la
+      // reserva — el jugador pagaría por un cupo que no está en ninguna lista.
+      console.warn(`[partido] Inscripción rechazada: partido ${decision.inscribir_partido} no está abierto (${numero}).`);
+      decision.reply = db.partidosAbiertos().length
+        ? 'Uy, esa pichanga ya no tiene inscripción abierta 🙈 Pregúntame "¿qué pichangas hay?" y te paso las que sí están disponibles ⚽'
+        : 'Uy, esa pichanga ya no tiene inscripción abierta 🙈 Apenas se abra la próxima convocatoria te avisamos por acá ⚽';
+    }
+    if (inscripcion && resultado === 'espera' && decision.reply && !/lista de espera/i.test(decision.reply)) {
       decision.reply += '\n\n⚠️ Ojo: el cupo se acaba de llenar, así que te dejé en la lista de espera — si se libera un lugar te avisamos al toque 🙏';
     }
     if (inscripcion && resultado !== 'ya_inscrito') {
@@ -386,8 +395,15 @@ async function manejarMensaje(sock, msg) {
       const suelto = resultado === 'reservado' ? db.pagoSueltoDe(numero) : null;
       if (suelto) {
         db.pagarInscripcion(inscripcion.id, suelto.id);
-        if (decision.reply) decision.reply += `\n✅ Y tu Yape de S/${suelto.monto} ya lo tenía registrado — quedaste CONFIRMADO en la lista.`;
-        console.log(`[partido] Pago suelto #${suelto.id} vinculado a la inscripción de ${numero}.`);
+        // Los cupos extra del Yape (amigos) entran al MISMO partido — igual que
+        // vincularPago. Sin esto, un pago de 3 cupos absorbía solo 1 y los
+        // invitados pagados desaparecían (hallazgo del code review 2026-08-11).
+        const extras = Math.max(0, (suelto.cupos || 1) - 1);
+        for (let i = 0; i < extras; i++) {
+          db.inscribir(inscripcion.partido_id, null, { nombre: `Invitado de +${numero}`, estado: 'pagado', pagoId: suelto.id });
+        }
+        if (decision.reply) decision.reply += `\n✅ Y tu Yape de S/${suelto.monto}${extras ? ` (${suelto.cupos} cupos)` : ''} ya lo tenía registrado — quedaste CONFIRMADO${extras ? ` junto a tus ${extras} invitado${extras === 1 ? '' : 's'}` : ''} en la lista.`;
+        console.log(`[partido] Pago suelto #${suelto.id} (${suelto.cupos || 1} cupos) vinculado a la inscripción de ${numero}.`);
       }
       if (!modoSilencio) await notificarControl(
         sock,
