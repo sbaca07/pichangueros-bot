@@ -289,6 +289,14 @@ function registrarPanel(app, db, conexion = null) {
     volverAPartidos(req, res, Number(req.body.id));
   });
 
+  // Eliminar un partido vacío (duplicado o cargado por error). Con gente
+  // adentro db lo rechaza — ahí corresponde "cancelar", no borrar.
+  app.post('/admin/partido/eliminar', (req, res) => {
+    if (!autorizado(req, res)) return;
+    db.eliminarPartido(Number(req.body.id));
+    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=partidos`);
+  });
+
   // Inscripción manual desde el panel (jugador con número, o invitado a nombre).
   app.post('/admin/partido/inscribir', (req, res) => {
     if (!autorizado(req, res)) return;
@@ -1442,7 +1450,12 @@ function paginaPartidos(db, key, query = {}) {
   const partidoId = Number(query.partido) || null;
   if (partidoId) return paginaPartidoDetalle(db, key, keyRaw, partidoId);
 
-  const partidos = db.listPartidos();
+  const todosPartidos = db.listPartidos();
+  const verCancelados = query.cancelados === '1';
+  // Los cancelados sin nadie adentro son ruido (duplicados, cargas erradas):
+  // se ocultan salvo que se pidan explícitamente.
+  const ocultos = todosPartidos.filter((p) => p.estado === 'cancelado' && !p.ocupados && !p.en_espera).length;
+  const partidos = verCancelados ? todosPartidos : todosPartidos.filter((p) => !(p.estado === 'cancelado' && !p.ocupados && !p.en_espera));
   const neg = db.getNegocio();
   const hoy = hoyLima();
 
@@ -1526,7 +1539,7 @@ function paginaPartidos(db, key, query = {}) {
         pintaSedes('brena');
       </script>
 
-      <div class="shdr">Todos los partidos</div>
+      <div class="shdr">Todos los partidos ${ocultos ? `<small>· <a style="color:var(--green-d)" href="/admin/leads?key=${key}&vista=partidos${verCancelados ? '' : '&cancelados=1'}">${verCancelados ? 'ocultar' : `ver ${ocultos}`} cancelado${ocultos === 1 ? '' : 's'} vacío${ocultos === 1 ? '' : 's'}</a></small>` : ''}</div>
       <div class="group">
         ${partidos.map(fila).join('') || '<p style="padding:14px;color:var(--faint);font-size:14px">Sin partidos todavía. Abre el primero arriba — el bot lo ofrece automáticamente a quien pida jugar.</p>'}
       </div>
@@ -1595,6 +1608,11 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId) {
         ${p.estado === 'abierto' ? cambioEstado('cerrado', '🔒 Cerrar inscripción', 'background:var(--inset);color:var(--muted)') : cambioEstado('abierto', '🔓 Reabrir', 'background:rgba(163,198,20,.14);color:var(--green-d)')}
         ${p.estado !== 'jugado' ? cambioEstado('jugado', '✅ Marcar jugado', 'background:rgba(163,198,20,.14);color:var(--green-d)') : ''}
         ${p.estado !== 'cancelado' ? cambioEstado('cancelado', '✖ Cancelar', 'background:rgba(255,59,48,.12);color:var(--red)') : ''}
+        ${!inscripciones.length ? `
+        <form method="post" action="/admin/partido/eliminar" style="display:inline" onsubmit="return confirm('¿Eliminar este partido? Solo se puede porque no tiene a nadie inscrito.')">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${partidoId}">
+          <button style="border:none;border-radius:11px;padding:9px 14px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;background:rgba(255,59,48,.12);color:var(--red)">🗑 Eliminar (está vacío)</button>
+        </form>` : ''}
       </div>
 
       <div class="shdr">Inscritos (${activas.length})</div>

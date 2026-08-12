@@ -602,6 +602,15 @@ function getPartido(id) {
   return db.prepare('SELECT * FROM partidos WHERE id = ?').get(id) || null;
 }
 
+/** Borra un partido SIN inscripciones (errores de carga, duplicados).
+ *  Si tiene gente adentro no se toca: para eso está "cancelar". */
+function eliminarPartido(id) {
+  const n = db.prepare('SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ?').get(id).n;
+  if (n > 0) return false;
+  db.prepare('DELETE FROM partidos WHERE id = ?').run(id);
+  return true;
+}
+
 function setEstadoPartido(id, estado) {
   if (!['abierto', 'cerrado', 'jugado', 'cancelado'].includes(estado)) return;
   db.prepare('UPDATE partidos SET estado = ? WHERE id = ?').run(estado, id);
@@ -880,7 +889,7 @@ module.exports = {
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
-  crearPartido, getPartido, setEstadoPartido, listPartidos, partidosAbiertos, inscripcionesDe,
+  crearPartido, getPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
