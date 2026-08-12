@@ -1,0 +1,139 @@
+/**
+ * UX/UI del panel — crawler + casuísticas de navegación (sin red, BD temporal).
+ *
+ *   node test-panel-ux.js
+ *
+ * Dos capas:
+ *   1. CRAWLER: parte del home, sigue TODOS los links internos (profundidad 3)
+ *      y exige 200 en cada uno — ningún clic puede llevar a un 404/500.
+ *   2. CASUÍSTICAS: cada elemento clickeable importante lleva a donde promete
+ *      (stats → CRM filtrado, partido → detalle, ficha → chat/acciones,
+ *      exports descargan, POSTs redirigen a una página viva).
+ */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+process.env.WWEBJS_AUTH_PATH = fs.mkdtempSync(path.join(os.tmpdir(), 'pich-ux-'));
+process.env.ADMIN_KEY = 'ux';
+process.env.SAFE_MODE = 'true';
+process.env.ALLOWED_TESTERS = '51900000001';
+
+const db = require('./src/db');
+const { registrarPanel } = require('./src/panel');
+const express = require('./node_modules/express');
+
+// --- Semilla realista: leads en todos los estados, partido con de todo -------
+const enDias = (n) => new Date(Date.now() - 5 * 3600e3 + n * 86400e3).toISOString().slice(0, 10);
+const L = {
+  tester: '51900000001', completo: '51911111111', handoff: '51922222222',
+  espera: '51933333333', pagador: '51944444444', nuevo: '51955555555',
+};
+for (const n of Object.values(L)) { db.getOrCreateLead(n); db.saveMessage(n, 'user', 'hola'); }
+db.updateLead(L.completo, { nombre: 'María Prueba', edad: 28, distrito: 'Breña', zona: 'brena', estado: 'datos_completos' });
+db.updateLead(L.pagador, { nombre: 'Pablo Pagador', zona: 'comas', estado: 'invitado_grupo' });
+db.updateLead(L.espera, { nombre: 'Elsa Espera', zona: 'otra', estado: 'lista_espera' });
+db.setHandoff(L.handoff, 'Queja de prueba');
+db.setEtiquetas(L.completo, 'casero,VIP');
+db.setSeguimiento(L.completo, enDias(0), 'llamarla');
+db.addNota(L.completo, 'nota de prueba');
+const partido = db.crearPartido({ zona: 'brena', fecha: enDias(1), hora: '8-9pm', sede: 'Melgar UX', cupo: 2 });
+db.inscribir(partido, L.completo);
+db.inscribir(partido, L.pagador);
+const enEspera = db.inscribir(partido, L.espera);
+const pagoOk = db.registrarPago({ numero: L.pagador, monto: 15, numero_operacion: 'UX-1', estado: 'confirmado' });
+db.vincularPago(L.pagador, pagoOk, 1, 'comas', 15);
+db.registrarPago({ numero: L.nuevo, monto: 7, numero_operacion: 'UX-2', estado: 'revisar', motivo: 'Monto raro' });
+db.registrarPago({ numero: L.nuevo, monto: 15, numero_operacion: 'UX-3', estado: 'confirmado' }); // suelto sin partido
+
+const app = express();
+registrarPanel(app, db, {
+  estado: () => 'ready', numero: () => '51967870413', qr: () => null,
+  desconectar: async () => true, enviar: async () => ({ ok: true, id: 'x' }),
+});
+
+let ok = 0, fallos = 0;
+const check = (nombre, cond, extra = '') => { if (cond) { ok++; console.log(`  ✓ ${nombre}`); } else { fallos++; console.error(`  ✗ ${nombre} ${extra}`); } };
+
+const srv = app.listen(0, async () => {
+  const B = `http://127.0.0.1:${srv.address().port}`;
+  const GET = async (ruta) => { const r = await fetch(B + ruta); return { status: r.status, html: await r.text() }; };
+  const POST = async (ruta, obj) => {
+    const r = await fetch(B + ruta, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(obj).toString(), redirect: 'manual' });
+    return { status: r.status, location: r.headers.get('location') || '' };
+  };
+
+  console.log('== 1 · CRAWLER: ningún clic del panel puede dar 404/500 ==');
+  const vistos = new Set();
+  const porVisitar = ['/admin/leads?key=ux'];
+  let rotos = 0, visitados = 0;
+  while (porVisitar.length && visitados < 200) {
+    const ruta = porVisitar.shift();
+    if (vistos.has(ruta)) continue;
+    vistos.add(ruta); visitados++;
+    const { status, html } = await GET(ruta);
+    if (status !== 200) { rotos++; console.error(`  ✗ ${status} en ${ruta}`); continue; }
+    // Solo páginas HTML del panel siguen aportando links (los exports no).
+    if (!ruta.startsWith('/admin/leads?')) continue;
+    for (const m of html.matchAll(/href="(\/admin[^"]+)"/g)) {
+      const href = m[1].replace(/&amp;/g, '&');
+      if (!vistos.has(href)) porVisitar.push(href);
+    }
+  }
+  check(`${visitados} URLs internas visitadas, 0 rotas`, rotos === 0, `(${rotos} rotas)`);
+
+  console.log('== 2 · Los clics llevan a donde prometen ==');
+  const home = (await GET('/admin/leads?key=ux')).html;
+  check('el hero del partido linkea a SU detalle', home.includes(`vista=partidos&partido=${partido}`));
+  const crmResp = (await GET('/admin/leads?key=ux&vista=crm&filtro=responder')).html;
+  check('stat "Sin responder" → CRM muestra al tester (único real en modo seguro)', crmResp.includes(L.tester));
+  check('…y NO a los silenciados por diseño', !crmResp.includes(L.nuevo));
+  const crmHandoff = (await GET('/admin/leads?key=ux&vista=crm&filtro=handoff')).html;
+  check('chip "Clarck" → muestra al derivado', crmHandoff.includes('Queja de prueba'));
+  const crmZona = (await GET('/admin/leads?key=ux&vista=crm&zona=brena')).html;
+  check('fila de zona → CRM filtrado por Breña', crmZona.includes('María Prueba') && !crmZona.includes('Pablo Pagador'));
+  const crmCombo = (await GET('/admin/leads?key=ux&vista=crm&zona=brena&filtro=responder')).html;
+  check('los chips COMBINAN sin romperse', crmCombo.length > 500);
+  const ficha = (await GET(`/admin/leads?key=ux&numero=${L.completo}`)).html;
+  check('ficha: botón WhatsApp con wa.me', ficha.includes(`wa.me/${L.completo}`));
+  check('ficha: muestra chat, etiquetas, nota y seguimiento', ficha.includes('hola') && ficha.includes('casero') && ficha.includes('nota de prueba') && ficha.includes('llamarla'));
+  const detalle = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${partido}`)).html;
+  check('detalle del partido: inscritos con link a su ficha', detalle.includes(`numero=${L.completo}`));
+  check('detalle: la espera y la lista copiable presentes', detalle.includes('Elsa Espera') && detalle.includes('Copiar lista'));
+  check('detalle: pago suelto reciente ofrecido para asignar', detalle.includes('Asignar acá'));
+  const pagos7d = (await GET('/admin/leads?key=ux&vista=pagos')).html;
+  check('La plata abre en 7 días con el histórico a un clic', pagos7d.includes('Últimos 7 días') && pagos7d.includes('Todo el histórico'));
+
+  console.log('== 3 · Exports y descargas responden ==');
+  for (const ruta of ['/admin/leads.csv?key=ux', '/admin/leads.xlsx?key=ux', '/admin/backup-db?key=ux']) {
+    check(`GET ${ruta.split('?')[0]}`, (await GET(ruta)).status === 200);
+  }
+
+  console.log('== 4 · Cada POST redirige a una página viva ==');
+  const posts = [
+    ['/admin/lead/estado', { key: 'ux', numero: L.completo, estado: 'activo' }],
+    ['/admin/lead/etiquetas', { key: 'ux', numero: L.completo, etiquetas: 'vip' }],
+    ['/admin/lead/seguimiento', { key: 'ux', numero: L.completo, fecha: enDias(2), nota: 'x' }],
+    ['/admin/lead/nota', { key: 'ux', numero: L.completo, texto: 'otra nota' }],
+    ['/admin/lead/reactivar', { key: 'ux', numero: L.handoff }],
+    ['/admin/partido', { key: 'ux', zona: 'comas', fecha: enDias(3), hora: '9pm', cupo: 10 }],
+    ['/admin/partido/estado', { key: 'ux', id: partido, estado: 'cerrado' }],
+    ['/admin/partido/inscribir', { key: 'ux', partido_id: partido, nombre: 'Invitado UX' }],
+    ['/admin/inscripcion/estado', { key: 'ux', id: enEspera.inscripcion.id, partido_id: partido, estado: 'baja' }],
+    ['/admin/config/general', { key: 'ux', marca: 'Pichangueros' }],
+    ['/admin/config/zona', { key: 'ux', zona: 'brena', precio: '15', grouplink: '', nombre_mostrar: 'Breña' }],
+    ['/admin/config/zona/nueva', { key: 'ux', nombre: 'San Borja', precio: '15', sede: 'Cancha UX', cupo: '12' }],
+  ];
+  for (const [ruta, body] of posts) {
+    const r = await POST(ruta, body);
+    const destinoOk = r.status === 302 && (await GET(r.location.replace(B, ''))).status === 200;
+    check(`POST ${ruta}`, destinoOk, `(HTTP ${r.status} → ${r.location.slice(0, 60)})`);
+  }
+  check('el distrito nuevo quedó operativo tras el POST', db.zonasOperativas().includes('sanborja'));
+
+  console.log('== 5 · Sin key, nada existe ==');
+  check('vista sin key → 404', (await GET('/admin/leads?vista=crm')).status === 404);
+  check('export sin key → 404', (await GET('/admin/leads.csv')).status === 404);
+
+  console.log(fallos ? `\n❌ ${ok} OK, ${fallos} FALLOS` : `\n✅ ${ok} checks OK, 0 fallos`);
+  srv.close(); process.exit(fallos ? 1 : 0);
+});

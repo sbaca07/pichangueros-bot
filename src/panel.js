@@ -803,7 +803,7 @@ function paginaResumen(db, key, query = {}) {
       <div class="grid2" style="margin-top:2px">
         <a class="stat green" href="/admin/leads?key=${key}&vista=crm">${delta ? `<span class="chip ${delta > 0 ? 'up' : 'wait'}">${delta > 0 ? '▲' : '▼'} ${Math.abs(delta)}%</span>` : ''}<div class="sn">${semana}</div><div class="sl">Esta semana</div></a>
         <div class="stat navy"><div class="sn">${hoyN}</div><div class="sl">Nuevos hoy</div></div>
-        <a class="stat amber" href="/admin/leads?key=${key}&vista=crm&filtro=responder"><span class="chip wait">pendiente</span><div class="sn">${colaResp}</div><div class="sl">Sin responder (48 h)</div></a>
+        <a class="stat amber" href="/admin/leads?key=${key}&vista=crm&filtro=responder">${colaResp ? '<span class="chip wait">pendiente</span>' : ''}<div class="sn">${colaResp}</div><div class="sl">${modoSeguro ? 'Testers sin responder' : 'Sin responder (48 h)'}</div></a>
         <a class="stat ${enHandoff ? 'red' : ''}" href="/admin/leads?key=${key}&vista=crm&filtro=handoff"><div class="sn">${enHandoff}</div><div class="sl">Para Clarck</div></a>
       </div>
 
@@ -1097,8 +1097,10 @@ function paginaCRM(db, key, query) {
       ? grupo('🟢 Nuevos ese día', leads.filter(esNuevoEse)) + grupo('🔵 Recurrentes · ya estaban registrados', leads.filter((l) => !esNuevoEse(l)))
       : '<p class="vacio">Nadie escribió ese día ⚽</p>')
     : ((urgentes.length || resto.length)
-      ? grupo('Necesitan respuesta', urgentes) + grupo('Todos', resto)
-      : '<p class="vacio">Sin pichangueros en este filtro todavía ⚽</p>');
+      ? grupo('Necesitan tu atención ahora', urgentes) + grupo('Todos los contactos', resto)
+      : `<p class="vacio">${Object.keys(query).some((k) => ['filtro', 'zona', 'estado', 'distrito', 'q'].includes(k))
+          ? 'Ningún pichanguero calza con este filtro ⚽<br><a style="color:var(--green-d);font-weight:600" href="/admin/leads?key=' + key + '&vista=crm">Ver todos</a>'
+          : 'Todavía no hay pichangueros registrados ⚽<br>Cuando alguien escriba al número, aparece acá.'}</p>`);
 
   return baseHtml('Pichangueros — CRM', `
     <div class="ltitle"><div><div class="eyebrow">${hayFiltro ? `${leads.length} de ${todos.length}` : todos.length} contactos</div><h2>CRM</h2></div>
