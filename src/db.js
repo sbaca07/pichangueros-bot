@@ -731,9 +731,25 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null) {
     db.prepare('UPDATE inscripciones SET estado = ?, pago_id = ? WHERE id = ?').run(nuevoEstado, pagoId, activaEnAbierto.id);
     hechas.push(db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(activaEnAbierto.id));
   } else {
-    const abiertos = zona ? partidosAbiertos(zona) : [];
-    if (abiertos.length !== 1) return null;
-    partido = abiertos[0];
+    // Sin reserva previa (el flujo de siempre: yapean directo). La gente paga
+    // para un partido PRÓXIMO, así que se busca entre los de su zona en los
+    // siguientes 3 días y con precio que calce con lo pagado. Si queda
+    // exactamente uno, se asigna; si hay varios o ninguno, NO se adivina — el
+    // bot pregunta y, si está callado, Clarck lo asigna desde el panel.
+    const limite = new Date(Date.now() - 5 * 3600e3 + 3 * 86400e3).toISOString().slice(0, 10);
+    const neg = getNegocio();
+    let candidatos = (zona ? partidosAbiertos(zona) : []).filter((p) => p.fecha <= limite);
+    if (monto != null && candidatos.length > 1) {
+      const calzan = candidatos.filter((p) => {
+        const precio = p.precio ?? neg.zonas[p.zona]?.precio;
+        if (!precio) return false;
+        const n = Math.round(monto / precio);
+        return n >= 1 && n <= 10 && Math.abs(monto - n * precio) <= 0.5;
+      });
+      if (calzan.length) candidatos = calzan;
+    }
+    if (candidatos.length !== 1) return null;
+    partido = candidatos[0];
     const { inscripcion } = inscribir(partido.id, numero, { estado: 'pagado', pagoId });
     if (!inscripcion) return null;
     hechas.push(inscripcion);
@@ -770,18 +786,39 @@ function partidoReservadoDe(numero, monto = null) {
   return filas[0];
 }
 
+/**
+ * PUNTO DE ARRANQUE: fecha desde la que el sistema "cuenta" para las colas de
+ * trabajo. Todo lo anterior es HISTÓRICO — la data queda intacta (la plata se
+ * sigue sumando, las conversaciones siguen ahí), pero no aparece como
+ * pendiente: esos pagos ya se jugaron y esos handoffs Clarck ya los atendió.
+ * Se setea desde Config con "Empezar en limpio desde hoy".
+ */
+function getCorte() {
+  const r = db.prepare("SELECT valor FROM config WHERE clave = 'corte_operativo'").get();
+  return r && /^\d{4}-\d{2}-\d{2}$/.test(r.valor || '') ? r.valor : null;
+}
+function setCorte(fecha) {
+  const f = /^\d{4}-\d{2}-\d{2}$/.test(fecha || '') ? fecha : hoyLimaDb();
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('corte_operativo', ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor").run(f);
+  return f;
+}
+/** ¿Este timestamp entra en las colas de trabajo (es posterior al corte)? */
+const despuesDelCorte = (ts) => { const c = getCorte(); return !c || (ts || '').slice(0, 10) >= c; };
+
 /** Pagos confirmados sin partido asignado (para que Clarck los asigne a mano).
- *  Solo los RECIENTES (48 h): los pagos históricos de antes del sistema de
- *  partidos son historia muerta — mostrarlos todos inundaba la vista con
- *  entradas de julio que jamás se van a asignar a nada. */
+ *  Solo los del período operativo: posteriores al punto de arranque y de las
+ *  últimas 48 h — un pago de la semana pasada pertenece a un partido que ya
+ *  se jugó, no es una tarea de hoy. */
 function pagosSinPartido(horas = 48) {
+  const corte = getCorte() || '0000-00-00';
   return db.prepare(`
     SELECT p.*, l.nombre, l.zona FROM pagos p LEFT JOIN leads l ON l.numero = p.numero
     WHERE p.estado = 'confirmado'
       AND p.id NOT IN (SELECT pago_id FROM inscripciones WHERE pago_id IS NOT NULL)
       AND p.creado_en >= datetime('now', '-5 hours', ?)
+      AND substr(p.creado_en, 1, 10) >= ?
     ORDER BY p.id DESC LIMIT 15
-  `).all(`-${horas} hours`);
+  `).all(`-${horas} hours`, corte);
 }
 
 /** Último pago confirmado RECIENTE de un contacto que quedó sin partido. */
@@ -846,5 +883,5 @@ module.exports = {
   crearPartido, getPartido, setEstadoPartido, listPartidos, partidosAbiertos, inscripcionesDe,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
-  pagoSueltoDe, pagarInscripcion,
+  pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
 };

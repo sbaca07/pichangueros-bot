@@ -63,11 +63,19 @@ const pagoB = db.registrarPago({ numero: '51900000010', monto: 30, numero_operac
 const vB = db.vincularPago('51900000010', pagoB, 2, 'brena');
 check('regla 2: sin reserva y con UN partido abierto en la zona, inscribe directo', vB !== null);
 check('los cupos extra entran como invitados', vB && vB.inscripciones.length === 2 && vB.inscripciones[1].nombre?.startsWith('Invitado'));
-const p2 = db.crearPartido({ zona: 'brena', fecha: enUnosDias(4), cupo: 10 });
+// Dos partidos PRÓXIMOS (ambos dentro de la ventana de 3 días) e igual precio:
+// ambiguo de verdad → no se adivina.
+const p2 = db.crearPartido({ zona: 'brena', fecha: enUnosDias(1), cupo: 10 });
 db.getOrCreateLead('51900000011');
 const pagoC = db.registrarPago({ numero: '51900000011', monto: 15, numero_operacion: 'OP-C', estado: 'confirmado' });
-check('regla 3: con DOS partidos abiertos en la zona no se adivina (null)', db.vincularPago('51900000011', pagoC, 1, 'brena') === null);
+check('regla 3: con DOS partidos próximos en la zona no se adivina (null)', db.vincularPago('51900000011', pagoC, 1, 'brena', 15) === null);
 check('ese pago aparece en pagosSinPartido', db.pagosSinPartido().some((p) => p.id === pagoC));
+// Un partido LEJANO no compite: si solo queda uno próximo, se asigna.
+db.crearPartido({ zona: 'comas', fecha: enUnosDias(20), cupo: 10, precio: 10 });
+const pProx = db.crearPartido({ zona: 'comas', fecha: enUnosDias(2), cupo: 10, precio: 10 });
+db.getOrCreateLead('51900000012');
+const pagoD = db.registrarPago({ numero: '51900000012', monto: 10, numero_operacion: 'OP-D', estado: 'confirmado' });
+check('un partido lejano no vuelve ambiguo al próximo', db.vincularPago('51900000012', pagoD, 1, 'comas', 10)?.partido.id === pProx);
 check('los pagos vinculados NO aparecen ahí', !db.pagosSinPartido().some((p) => p.id === pagoA));
 
 console.log('== Lista para el grupo ==');
@@ -109,11 +117,12 @@ check('sin reserva se sigue validando contra la zona del contacto', (() => {
 })());
 
 console.log('== Pago suelto se pega a la inscripción posterior ==');
-const p4 = db.crearPartido({ zona: 'brena', fecha: enUnosDias(5), cupo: 10 });
-const p5 = db.crearPartido({ zona: 'brena', fecha: enUnosDias(6), cupo: 10 });
+// Zona propia con DOS partidos próximos al mismo precio: ambigüedad real.
+const p4 = db.crearPartido({ zona: 'surco', fecha: enUnosDias(1), cupo: 10, precio: 15 });
+const p5 = db.crearPartido({ zona: 'surco', fecha: enUnosDias(2), cupo: 10, precio: 15 });
 db.getOrCreateLead('51900000030');
 const pagoS = db.registrarPago({ numero: '51900000030', monto: 15, numero_operacion: 'OP-SUELTO', estado: 'confirmado' });
-check('con 2 partidos abiertos el pago queda suelto', db.vincularPago('51900000030', pagoS, 1, 'brena') === null);
+check('con 2 partidos próximos el pago queda suelto', db.vincularPago('51900000030', pagoS, 1, 'surco', 15) === null);
 check('pagoSueltoDe lo encuentra', db.pagoSueltoDe('51900000030')?.id === pagoS);
 const rIns = db.inscribir(p4, '51900000030');
 db.pagarInscripcion(rIns.inscripcion.id, pagoS);

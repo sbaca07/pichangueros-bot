@@ -224,6 +224,13 @@ function registrarPanel(app, db, conexion = null) {
     volverAConfig(req, res);
   });
 
+  // Punto de arranque: deja atrás la historia previa al sistema SIN borrarla.
+  app.post('/admin/config/corte', (req, res) => {
+    if (!autorizado(req, res)) return;
+    db.setCorte(req.body.fecha);
+    volverAConfig(req, res);
+  });
+
   // Precio, link de grupo y nombre para mostrar de UNA zona (tarjeta por distrito).
   app.post('/admin/config/zona', (req, res) => {
     if (!autorizado(req, res)) return;
@@ -909,7 +916,10 @@ function paginaPagos(db, key, query = {}) {
   };
 
   const conf = pagos.filter((p) => p.estado === 'confirmado');
-  const rev = pagos.filter((p) => p.estado === 'revisar');
+  // "Por revisar" es una COLA DE TRABAJO: solo lo posterior al punto de
+  // arranque. Los de julio siguen en la data (y en el filtro de estado), pero
+  // no son tareas de hoy.
+  const rev = pagos.filter((p) => p.estado === 'revisar' && (fEstado === 'rev' || db.despuesDelCorte(p.creado_en)));
   // Tarjetas: siempre sobre el ALCANCE (reaccionan a medio/período/día).
   const confAlcance = alcance.filter((p) => p.estado === 'confirmado');
   const revAlcance = alcance.filter((p) => p.estado === 'revisar');
@@ -1057,7 +1067,10 @@ function paginaCRM(db, key, query) {
   // Los derivados de julio que Clarck ya atendió a mano no son cola de hoy:
   // siguen filtrables con el chip "Clarck" y el bot sigue callado con ellos,
   // pero no infla "Necesitan respuesta" con historia muerta.
-  const handoffActivo = (l) => { const u = roles[l.numero]; return Boolean(l.handoff && u && u.en >= limaHace(72)); };
+  const handoffActivo = (l) => {
+    const u = roles[l.numero];
+    return Boolean(l.handoff && u && u.en >= limaHace(72) && db.despuesDelCorte(u.en));
+  };
   const urgentes = leads.filter((l) => handoffActivo(l) || sinResp(l));
   const resto = leads.filter((l) => !(handoffActivo(l) || sinResp(l)));
 
@@ -1341,6 +1354,26 @@ function paginaConfig(db, key) {
       ${filaSede(zona, null)}
     </div>`;
 
+  const corteActual = db.getCorte();
+  const bloqueCorte = `
+    <div class="shdr">🚦 Punto de arranque <small>· desde cuándo cuentan las colas de trabajo</small></div>
+    <div class="group">
+      <form class="inline" method="post" action="/admin/config/corte">
+        <input type="hidden" name="key" value="${esc(keyRaw)}">
+        <p style="flex-basis:100%;font-size:13.5px;color:var(--muted);line-height:1.45;margin-bottom:4px">
+          Los pagos y las derivaciones <b>anteriores</b> a esta fecha quedan como historial: la plata se sigue
+          sumando y las conversaciones siguen ahí, pero <b>no aparecen como pendientes</b> (esos partidos ya se
+          jugaron y esas derivaciones ya las atendiste). <b>No se borra nada.</b>
+        </p>
+        <label>Cuenta desde</label>
+        <input name="fecha" type="date" value="${esc(corteActual || hoyLima())}" max="${hoyLima()}">
+        <button>🚦 Empezar en limpio desde esta fecha</button>
+        <p style="flex-basis:100%;font-size:12.5px;color:var(--faint);margin-top:2px">
+          ${corteActual ? `Actualmente el sistema cuenta desde el <b>${esc(corteActual)}</b>.` : 'Todavía no hay punto de arranque: las colas incluyen toda la historia.'}
+        </p>
+      </form>
+    </div>`;
+
   const nuevoDistrito = `
     <div class="shdr">➕ Nuevo distrito <small>· al crearlo aparece en el bot, los partidos y esta página</small></div>
     <div class="group" style="border:2.5px dashed var(--trazo);box-shadow:none">
@@ -1389,6 +1422,7 @@ function paginaConfig(db, key) {
         </form>
       </div>
 
+      ${bloqueCorte}
       ${zonasOp.map((z) => bloqueZona(z)).join('')}
       ${nuevoDistrito}
 
