@@ -73,12 +73,19 @@ const hoyLima = () => fechaLima(0);
 // Timestamp Lima de hace N horas (mismo formato 'YYYY-MM-DD HH:MM:SS' de la BD).
 const limaHace = (horas) => new Date(Date.now() - 5 * 3600e3 - horas * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
 // "Sin responder" REAL: el último mensaje es del contacto Y es reciente (48 h).
-// Sin el corte, todo el backlog del modo seguro (bot callado a propósito)
-// aparecería eternamente como pendiente.
+// Y en MODO SEGURO el bot calla a propósito con todos menos los testers: esos
+// silenciados NO "necesitan respuesta" — están siendo capturados por diseño.
+// Mostrarlos como deuda pintaba 124 pendientes falsos en el CRM.
+const modoSeguroOn = () => (process.env.SAFE_MODE || 'true') !== 'false';
+const testersPanel = () => (process.env.ALLOWED_TESTERS || '').split(',').map((n) => n.replace(/\D/g, '')).filter(Boolean);
 const sinResponder = (roles, l) => {
   const u = roles[l.numero];
-  return Boolean(u && u.rol === 'user' && !l.handoff && u.en >= limaHace(48));
+  if (!(u && u.rol === 'user' && !l.handoff && u.en >= limaHace(48))) return false;
+  return !modoSeguroOn() || testersPanel().includes(l.numero);
 };
+/** Capturados en silencio por el modo seguro (últimas 48 h) — para el banner. */
+const silenciados48h = (roles, todos) =>
+  todos.filter((l) => { const u = roles[l.numero]; return u && u.rol === 'user' && !l.handoff && u.en >= limaHace(48); }).length;
 const horaCorta = (ts) => esc((ts || '').slice(5, 16)); // MM-DD HH:MM
 
 function registrarPanel(app, db, conexion = null) {
@@ -759,11 +766,12 @@ function paginaResumen(db, key, query = {}) {
 
   // El banner refleja el modo real del bot (misma lectura de env que index.js).
   const modoSeguro = (process.env.SAFE_MODE || 'true') !== 'false';
+  const capturados = silenciados48h(roles, todos);
   const bannerSeguro = modoSeguro
-    ? `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=responder" style="text-decoration:none">
+    ? `<a class="banner px" href="/admin/leads?key=${key}&vista=crm" style="text-decoration:none">
     <div class="bic">🔒</div>
-    <div class="btxt"><b>Modo seguro activo.</b> El bot registra a todos pero todavía no responde.
-      <b>${colaResp} ${colaResp === 1 ? 'persona' : 'personas'}</b> esperando respuesta — se activa con un cambio.</div></a>`
+    <div class="btxt"><b>Modo seguro activo.</b> El bot captura en silencio (por diseño):
+      <b>${capturados} conversacion${capturados === 1 ? '' : 'es'}</b> registradas en las últimas 48 h, listas para cuando se encienda.</div></a>`
     : `<div class="banner ok px"><div class="bic">🤖</div>
     <div class="btxt"><b>Bot activo.</b> Responde a todos los que escriban al número.</div></div>`;
 
@@ -866,7 +874,11 @@ function paginaPagos(db, key, query = {}) {
   // Filtros (combinables): estado, medio, período o día exacto.
   const fEstado = ['conf', 'rev'].includes(query.estado) ? query.estado : '';
   const fMedio = MEDIOS[query.medio] ? query.medio : '';
-  const fPeriodo = ['hoy', '7d', '30d'].includes(query.periodo) ? query.periodo : '';
+  // Por defecto la vista abre en los ÚLTIMOS 7 DÍAS: la operación es "de hoy
+  // en adelante" — abrir con S/ 4,500 históricos y pagos de julio "por revisar"
+  // confundía (parecía que todo estaba pendiente de nuevo). "Todo" sigue
+  // disponible en el selector para auditar la historia.
+  const fPeriodo = ['hoy', '7d', '30d', 'todo'].includes(query.periodo) ? query.periodo : '7d';
   const fDia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
 
   // "Alcance": medio + período/día (sin el filtro de estado). Las tarjetas de
@@ -878,7 +890,7 @@ function paginaPagos(db, key, query = {}) {
     // Un día puntual se revisa contra la app de Yape: orden cronológico (como Yape).
     alcance = alcance.filter((p) => (p.creado_en || '').slice(0, 10) === fDia)
       .sort((a, b) => (a.creado_en || '').localeCompare(b.creado_en || '') || a.id - b.id);
-  } else if (fPeriodo) {
+  } else if (fPeriodo && fPeriodo !== 'todo') {
     const desde = fPeriodo === 'hoy' ? hoy : fechaLima(fPeriodo === '7d' ? -6 : -29);
     alcance = alcance.filter((p) => (p.creado_en || '').slice(0, 10) >= desde);
   }
@@ -963,10 +975,10 @@ function paginaPagos(db, key, query = {}) {
           ${Object.entries(MEDIOS).map(([k, m]) => `<option value="${k}"${fMedio === k ? ' selected' : ''}>${m.nombre}</option>`).join('')}
         </select>
         <select name="periodo" onchange="this.form.submit()">
-          <option value="">Período: todo</option>
           <option value="hoy"${fPeriodo === 'hoy' ? ' selected' : ''}>Hoy</option>
           <option value="7d"${fPeriodo === '7d' ? ' selected' : ''}>Últimos 7 días</option>
           <option value="30d"${fPeriodo === '30d' ? ' selected' : ''}>Últimos 30 días</option>
+          <option value="todo"${fPeriodo === 'todo' ? ' selected' : ''}>Todo el histórico</option>
         </select>
         <input type="date" name="dia" value="${fDia}" max="${hoy}" onchange="this.form.submit()">
       </form>
