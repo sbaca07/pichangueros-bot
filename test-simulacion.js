@@ -196,6 +196,18 @@ const enDias = (n) => new Date(Date.now() - 5 * 3600e3 + n * 86400e3).toISOStrin
   await escribe(A, 'perfecto causa', { echo: true });
   check('el echo se guardó como respuesta del negocio', await esperar(() => db.getHistory(A, 50).some((m) => m.rol === 'assistant' && m.texto === 'perfecto causa'), 'echo guardado'));
 
+  console.log('== 11 · Si Clarck atiende a mano, el bot NO habla encima ==');
+  // Contacto propio y sin respuestas en vuelo: las pausas de naturalidad
+  // (1.5-3.5 s) harían que una respuesta rezagada de otro paso contamine el conteo.
+  await escribe(B2, 'yo te contesto, causa', { echo: true });
+  await esperar(() => db.getHistory(B2, 50).some((m) => m.rol === 'assistant' && m.texto === 'yo te contesto, causa'), 'echo de B2');
+  await sleep(4000); // que aterrice cualquier envío pendiente previo
+  const antesManual = enviadosA(B2).length;
+  await escribe(B2, 'y a que hora es?');
+  check('el mensaje del cliente SÍ queda registrado', await esperar(() => db.getHistory(B2, 80).some((m) => m.rol === 'user' && m.texto === 'y a que hora es?'), 'mensaje guardado'));
+  await sleep(4000); // margen holgado: si fuera a responder, ya lo habría hecho
+  check('pero el bot se calla mientras Clarck atiende', enviadosA(B2).length === antesManual);
+
   console.log(fallos ? `\n❌ ${ok} OK, ${fallos} FALLOS` : `\n✅ ${ok} checks OK, 0 fallos — simulación completa`);
   process.exit(fallos ? 1 : 0);
 })().catch((e) => { console.error('SIM ERROR:', e); process.exit(1); });

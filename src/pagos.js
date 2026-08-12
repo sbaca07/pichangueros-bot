@@ -58,11 +58,11 @@ async function leerVoucher(imageBuffer) {
   if (!openai) return null;
   const params = {
     messages: [
-      { role: 'system', content: 'Lees comprobantes de pago de Yape (app de pagos móviles de Perú). Extrae los datos exactos del voucher, sin inventar nada.' },
+      { role: 'system', content: 'Lees comprobantes de pago móvil peruanos (Yape, Plin, BCP, Interbank). Extrae los datos exactos, sin inventar nada. Sé GENEROSO al reconocer: una captura de pantalla de la app con un monto y un destinatario ES un comprobante, aunque esté recortada, con brillo raro o le falte algún dato. Solo marca es_voucher_yape=false si claramente NO es un pago (una foto de una cancha, un meme, una persona).' },
       {
         role: 'user',
         content: [
-          { type: 'text', text: 'Lee este comprobante de Yape y extrae monto, nombre del remitente y número de operación.' },
+          { type: 'text', text: '¿Es un comprobante de pago? Si lo es, extrae monto, nombre del remitente y número de operación.' },
           { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}` } },
         ],
       },
@@ -169,7 +169,15 @@ async function procesarVoucher(numero, zona, imageBuffer) {
   // Vía module.exports (no la referencia interna) para que los tests puedan
   // inyectar lecturas simuladas sin llamar a OpenAI.
   const lectura = await module.exports.leerVoucher(imageBuffer);
-  if (!lectura || !lectura.es_voucher_yape) return null;
+  if (!lectura || !lectura.es_voucher_yape) {
+    // Sin este log, una imagen que la visión no reconoce desaparecía sin
+    // rastro: el jugador dice "ya te yapeé" y no había forma de saber si
+    // falló la descarga, el modelo o si de verdad no era un comprobante.
+    console.warn(`[pagos] ${numero}: la imagen NO se reconoció como comprobante`
+      + (lectura ? ` (medio=${lectura.medio}, confianza=${lectura.confianza}, monto=${lectura.monto})` : ' (la lectura falló o volvió vacía)')
+      + ` — ${imageBuffer?.length || 0} bytes.`);
+    return null;
+  }
 
   const r = evaluarVoucher(numero, zona, lectura);
   const pagoId = db.registrarPago({ numero, monto: r.monto, titular: r.titular, numero_operacion: r.numeroOperacion, estado: r.estado, motivo: r.motivo, medio: lectura.medio || 'yape', cupos: r.cupos });

@@ -208,6 +208,13 @@ function encolarPorNumero(numero, tarea) {
  * completa y el cerebro no repita lo que Clarck ya dijo. Solo si el contacto
  * ya existe como lead — los chats personales de Clarck no entran al CRM.
  */
+// Contactos que Clarck acaba de atender a mano: el bot NO habla encima de él.
+// Sin esto, cliente y bot reciben dos respuestas a la vez (pasó el 2026-08-11
+// con la bienvenida: Clarck la pegó a mano y el bot la mandó también).
+const MANUAL_MS = 5 * 60 * 1000;
+const atendidoAMano = new Map(); // numero → timestamp de la última respuesta manual
+const clarckAtendiendo = (numero) => Date.now() - (atendidoAMano.get(numero) || 0) < MANUAL_MS;
+
 function registrarRespuestaManual(msg) {
   const from = msg.key.remoteJid || '';
   if (from.endsWith('@g.us') || from === 'status@broadcast') return;
@@ -218,7 +225,9 @@ function registrarRespuestaManual(msg) {
   if (!numero || numero === NOTIFY_NUMBER) return;
   if (!db.getLead(numero)) return;
   db.saveMessage(numero, 'assistant', texto);
-  console.log(`[manual] Respuesta a mano de Clarck → ${numero} guardada en el historial.`);
+  atendidoAMano.set(numero, Date.now());
+  if (atendidoAMano.size > 1000) atendidoAMano.delete(atendidoAMano.keys().next().value);
+  console.log(`[manual] Clarck respondió a mano a ${numero} — el bot se calla ${MANUAL_MS / 60000} min con él.`);
 }
 
 async function manejarMensaje(sock, msg) {
@@ -259,7 +268,11 @@ async function manejarMensaje(sock, msg) {
   // MODO SEGURO (silencio): el cerebro SIGUE leyendo para extraer datos
   // (nombre/edad/distrito/zona) y enriquecer el CRM, pero el bot no envía
   // nada al contacto ni avisa a Clarck. Los ALLOWED_TESTERS sí reciben todo.
-  const modoSilencio = SAFE_MODE && !ALLOWED_TESTERS.includes(numero);
+  // También calla si Clarck acaba de responderle a mano a este contacto: dos
+  // respuestas simultáneas confunden al jugador y hacen quedar mal al sistema.
+  const enManual = clarckAtendiendo(numero);
+  if (enManual) console.log(`[manual] ${numero}: Clarck lo está atendiendo — el bot registra pero no responde.`);
+  const modoSilencio = (SAFE_MODE && !ALLOWED_TESTERS.includes(numero)) || enManual;
 
   // Contacto derivado a Clarck: el bot no se mete — pero si el contacto sigue
   // escribiendo, se le re-avisa al número de control (máx. 1 vez por hora por
