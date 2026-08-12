@@ -532,6 +532,35 @@ db.exec(`
 
 const hoyLimaDb = () => new Date(Date.now() - 5 * 3600e3).toISOString().slice(0, 10);
 
+/** '9pm' → '9-10pm' (los turnos duran 1 h): un solo formato en todo el sistema. */
+function normalizarHora(hora) {
+  const t = (hora || '').trim();
+  const m = /^(\d{1,2})\s*(am|pm)$/i.exec(t);
+  if (!m) return t;
+  const n = Number(m[1]);
+  return `${n}-${n === 12 ? 1 : n + 1}${m[2].toLowerCase()}`;
+}
+
+/** '8-9pm' → 20 · '9-10am' → 9 — para ordenar los turnos dentro del día. */
+function ordenHora(hora) {
+  const m = /^(\d{1,2})/.exec(hora || '');
+  if (!m) return 99;
+  let h = Number(m[1]) % 12;
+  if (/pm/i.test(hora || '')) h += 12;
+  return h;
+}
+
+// Migración (2026-08-11, una vez): normalizar horas ya guardadas ('9pm' → '9-10pm').
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'horas_normalizadas_2026_08'").get()) {
+  let n = 0;
+  for (const p of db.prepare('SELECT id, hora FROM partidos WHERE hora IS NOT NULL').all()) {
+    const norm = normalizarHora(p.hora);
+    if (norm !== p.hora) { db.prepare('UPDATE partidos SET hora = ? WHERE id = ?').run(norm, p.id); n++; }
+  }
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('horas_normalizadas_2026_08', '1')").run();
+  if (n) console.log(`[horas] ${n} partidos con hora normalizada al formato N-Mpm.`);
+}
+
 // Migración (2026-08-11, una vez): partidos cargados por consola llegaron con
 // tildes rotas (U+FFFD) en la sede. La tabla sedes está sana → se copia de ahí.
 if (!db.prepare("SELECT valor FROM config WHERE clave = 'sedes_mojibake_2026_08'").get()) {
@@ -565,7 +594,7 @@ const OCUPAN = "('reservado','pagado')";
 function crearPartido({ zona, fecha, hora, sede, cupo, precio }) {
   const r = db.prepare(
     "INSERT INTO partidos (zona, fecha, hora, sede, cupo, precio, creado_en) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
-  ).run(zona, fecha, hora || null, sede || null, cupo || 14, precio ?? null);
+  ).run(zona, fecha, normalizarHora(hora) || null, sede || null, cupo || 14, precio ?? null);
   return Number(r.lastInsertRowid);
 }
 
@@ -598,7 +627,10 @@ function partidosAbiertos(zona = null) {
     WHERE p.estado = 'abierto' AND p.fecha >= ? ${zona ? 'AND p.zona = ?' : ''}
     ORDER BY p.fecha, p.id
   `).all(...(zona ? [hoyLimaDb(), zona] : [hoyLimaDb()]));
-  return filas.map((p) => ({ ...p, restante: Math.max(0, p.cupo - p.ocupados) }));
+  return filas
+    .map((p) => ({ ...p, restante: Math.max(0, p.cupo - p.ocupados) }))
+    // Dentro del día, por hora de inicio (la BD solo ordena por fecha e id).
+    .sort((a, b) => (a.fecha === b.fecha ? ordenHora(a.hora) - ordenHora(b.hora) : a.fecha < b.fecha ? -1 : 1));
 }
 
 function inscripcionesDe(partidoId) {

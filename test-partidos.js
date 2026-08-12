@@ -120,5 +120,12 @@ db.pagarInscripcion(rIns.inscripcion.id, pagoS);
 check('pagarInscripcion la deja pagada con su pago', db.inscripcionActiva(p4, '51900000030')?.estado === 'pagado');
 check('y el pago deja de estar suelto', db.pagoSueltoDe('51900000030') === null && !db.pagosSinPartido().some((p) => p.id === pagoS));
 
+console.log('== Formato y orden de horas ==');
+const ph1 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(8), hora: '9pm', cupo: 10 });
+const ph2 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(8), hora: '8-9pm', cupo: 10 });
+check('"9pm" se normaliza a "9-10pm"', db.getPartido(ph1).hora === '9-10pm');
+const delDia = db.partidosAbiertos('comas').filter((p) => [ph1, ph2].includes(p.id));
+check('dentro del día ordena por hora de inicio (8-9pm antes que 9-10pm)', delDia[0]?.id === ph2 && delDia[1]?.id === ph1);
+
 console.log(fallos ? `\n❌ ${ok} OK, ${fallos} FALLOS` : `\n✅ ${ok} checks OK, 0 fallos`);
 process.exit(fallos ? 1 : 0);
