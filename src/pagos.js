@@ -67,7 +67,9 @@ async function leerVoucher(imageBuffer) {
       ],
       response_format: { type: 'json_schema', json_schema: RESPONSE_SCHEMA },
       temperature: 0.2,
-      max_tokens: 300,
+      // Margen para modelos pensantes (ver el comentario gemelo en brain.js).
+      max_tokens: 1500,
+      ...((process.env.OPENAI_BASE_URL || '').includes('googleapis') ? { reasoning_effort: 'low' } : {}),
     });
     return JSON.parse(completion.choices[0].message.content);
   } catch (e) {

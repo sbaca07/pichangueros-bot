@@ -102,7 +102,7 @@ function describirPartidos(negocio) {
       || p.zona.charAt(0).toUpperCase() + p.zona.slice(1);
     return `- ID ${p.id}: ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''} en ${nombreZona}${p.sede ? ` (${p.sede})` : ''} · S/ ${precio ?? '?'} · ${p.restante > 0 ? `${p.restante} cupos libres` : 'LLENO — solo lista de espera'}`;
   }).join('\n')
-  + '\n\nAl mencionar un partido usa la fecha tal cual está arriba ("MAÑANA miércoles 12 de agosto") — NUNCA el formato 2026-08-12.';
+  + '\n\nAl mencionar un partido usa la fecha tal cual está arriba ("MAÑANA miércoles 12 de agosto") — NUNCA el formato 2026-08-12. Los IDs son solo para inscribir_partido: NUNCA los menciones en el reply.';
 }
 
 function buildSystemPrompt(lead) {
@@ -202,7 +202,15 @@ async function pensar(lead, historial, textoUsuario) {
       messages,
       response_format: { type: 'json_schema', json_schema: RESPONSE_SCHEMA },
       temperature: 0.6,
-      max_tokens: 600,
+      // 2000, no 600: los modelos "pensantes" (Gemini flash) gastan tokens en
+      // razonar ANTES del JSON — con 600 el JSON salía cortado a media cadena
+      // ("Unterminated string") y el bot pedía disculpas. Para gpt-4o-mini es
+      // solo un tope, no un costo.
+      max_tokens: 2000,
+      // Gemini acepta reasoning_effort y con 'low' responde más rápido sin
+      // perder calidad en esta tarea; OpenAI clásico no lo soporta — solo se
+      // manda cuando el proveedor es Google.
+      ...((process.env.OPENAI_BASE_URL || '').includes('googleapis') ? { reasoning_effort: 'low' } : {}),
     });
     fallosSeguidos = 0;
     return JSON.parse(completion.choices[0].message.content);
