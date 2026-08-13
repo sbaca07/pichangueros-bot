@@ -704,6 +704,27 @@ function cajaPartido(id) {
   };
 }
 
+/**
+ * Cuántas pichangas jugó cada contacto → { numero: n }.
+ *
+ * "Recurrente" es más de 5 partidos (definición de Clarck, 12-ago). Va en UNA
+ * consulta y no una por lead: la lista de Jugadores pinta cientos de filas.
+ * Solo cuentan partidos que YA pasaron y que no se cancelaron — una reserva
+ * para el jueves no es un partido jugado, y un partido cancelado no lo jugó
+ * nadie.
+ */
+const RECURRENTE_DESDE = 6; // "más de 5"
+function partidosJugadosPorNumero() {
+  const filas = db.prepare(`
+    SELECT i.numero AS numero, COUNT(*) AS n
+    FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
+    WHERE i.numero IS NOT NULL AND i.estado != 'baja'
+      AND p.estado != 'cancelado' AND p.fecha < date('now', '-5 hours')
+    GROUP BY i.numero
+  `).all();
+  return Object.fromEntries(filas.map((f) => [f.numero, f.n]));
+}
+
 /** Todos los partidos con sus conteos (para el panel), próximos primero. */
 function listPartidos() {
   return db.prepare(`
@@ -977,7 +998,7 @@ module.exports = {
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
-  crearPartido, getPartido, actualizarPartido, cajaPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
+  crearPartido, getPartido, actualizarPartido, cajaPartido, partidosJugadosPorNumero, RECURRENTE_DESDE, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,

@@ -286,6 +286,42 @@ const srv = app.listen(0, async () => {
     check('un contacto sin historia lo dice, no muestra ceros sueltos', /Nunca pagó por acá/.test(virgen) && /Sin reserva/.test(virgen));
   }
 
+  console.log('== 4f · Recurrente = más de 5 partidos (regla de Clarck) ==');
+  {
+    const habitual = '51990000021', ocasional = '51990000022';
+    for (const n of [habitual, ocasional]) db.getOrCreateLead(n);
+    db.updateLead(habitual, { nombre: 'Hugo Habitual' });
+    db.updateLead(ocasional, { nombre: 'Otto Ocasional' });
+    // 6 partidos pasados para uno, 5 para el otro: el corte cae justo en medio.
+    for (let i = 1; i <= 6; i++) {
+      const p = db.crearPartido({ zona: 'brena', fecha: enDias(-i), cupo: 20 });
+      db.inscribir(p, habitual);
+      if (i <= 5) db.inscribir(p, ocasional);
+    }
+    const jug = db.partidosJugadosPorNumero();
+    check('cuenta 6 partidos jugados', jug[habitual] === 6, String(jug[habitual]));
+    check('y 5 para el otro', jug[ocasional] === 5, String(jug[ocasional]));
+
+    const rec = (await GET('/admin/leads?key=ux&vista=crm&filtro=recurrentes')).html;
+    check('con 6 partidos SÍ es recurrente', /Hugo Habitual/.test(rec));
+    check('con 5 exactos NO lo es ("más de 5")', !/Otto Ocasional/.test(rec));
+    check('la fila lo marca con sus partidos', /⭐ 6 partidos/.test(rec));
+
+    // Una reserva futura y un partido cancelado no cuentan como jugados.
+    const futuro = db.crearPartido({ zona: 'brena', fecha: enDias(9), cupo: 20 });
+    db.inscribir(futuro, ocasional);
+    const cancelado = db.crearPartido({ zona: 'brena', fecha: enDias(-9), cupo: 20 });
+    db.inscribir(cancelado, ocasional);
+    db.setEstadoPartido(cancelado, 'cancelado');
+    check('una reserva futura no suma como jugado', db.partidosJugadosPorNumero()[ocasional] === 5, String(db.partidosJugadosPorNumero()[ocasional]));
+
+    const fichaHab = (await GET(`/admin/leads?key=ux&numero=${habitual}`)).html;
+    check('la ficha del habitual lo dice', /recurrente/.test(fichaHab));
+
+    const nuevos = (await GET('/admin/leads?key=ux&vista=crm&filtro=nuevos')).html;
+    check('el chip Nuevos filtra por los de esta semana', /Hugo Habitual/.test(nuevos));
+  }
+
   console.log('== 5 · Sin key, nada existe ==');
   check('vista sin key → 404', (await GET('/admin/leads?vista=crm')).status === 404);
   check('export sin key → 404', (await GET('/admin/leads.csv')).status === 404);

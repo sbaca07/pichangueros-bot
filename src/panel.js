@@ -1077,6 +1077,7 @@ function paginaCRM(db, key, query) {
   const sinResp = (l) => sinResponder(roles, l);
   const hoy = hoyLima();
 
+  const jugadosPor = db.partidosJugadosPorNumero();
   const q = (query.q || '').trim().toLowerCase();
   // Las zonas se crean desde Ajustes: si el filtro solo aceptara las cinco
   // escritas a mano, un distrito nuevo (San Borja) se ignoraría en silencio y
@@ -1093,6 +1094,10 @@ function paginaCRM(db, key, query) {
   if (filtro === 'handoff') leads = leads.filter((l) => l.handoff);
   if (filtro === 'responder') leads = leads.filter(sinResp);
   if (filtro === 'hoy') leads = leads.filter((l) => l.proxima_accion && l.proxima_accion <= hoy);
+  // Recurrente = más de 5 partidos jugados (definición de Clarck). Nuevo = llegó
+  // esta semana, la misma ventana que usa "Esta semana" en el Resumen.
+  if (filtro === 'recurrentes') leads = leads.filter((l) => (jugadosPor[l.numero] || 0) >= db.RECURRENTE_DESDE);
+  if (filtro === 'nuevos') leads = leads.filter((l) => (l.creado_en || '').slice(0, 10) >= fechaLima(-6));
   // Filtro por día: TODOS los que escribieron ese día (no solo los nuevos),
   // distinguibles entre nuevos (se registraron ese día) y recurrentes.
   const tipo = dia && ['nuevos', 'recurrentes'].includes(query.tipo) ? query.tipo : '';
@@ -1155,8 +1160,10 @@ function paginaCRM(db, key, query) {
     const sub = l.handoff ? esc(l.handoff_motivo || 'derivado a Clarck')
       : ultima && ultima.rol === 'user' ? `"${esc((ultima.texto || '').slice(0, 40))}"`
       : [l.distrito ? esc(l.distrito) : null, l.edad ? `${l.edad} años` : null].filter(Boolean).join(' · ') || 'sin datos aún';
+    const nJug = jugadosPor[l.numero] || 0;
     const badge = l.handoff ? '<span class="badge b-hand">🔔 Clarck</span>'
       : sr ? '<span class="badge b-wait">sin responder</span>'
+      : nJug >= db.RECURRENTE_DESDE ? `<span class="badge b-done">⭐ ${nJug} partidos</span>`
       : l.estado === 'lista_espera' ? '<span class="badge b-new">en espera</span>'
       : l.estado && l.estado !== 'nuevo' ? `<span class="badge b-done">${esc(ESTADOS[l.estado] || l.estado)}</span>`
       : z ? `<span class="badge b-zona" style="background:${z.color}">${z.nombre}</span>` : '';
@@ -1212,6 +1219,8 @@ function paginaCRM(db, key, query) {
       </form>
       <div class="chips">
         <a class="fchip${!hayFiltro ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm">Todos</a>
+        ${chip('filtro', 'nuevos', '🌱 Nuevos')}
+        ${chip('filtro', 'recurrentes', '⭐ Recurrentes')}
         ${chip('filtro', 'responder', '📥 Sin responder', 'amber')}
         ${chip('filtro', 'handoff', '🔔 Clarck', 'red')}
         ${chip('filtro', 'hoy', '⏰ Para hoy', 'amber')}
@@ -1298,7 +1307,9 @@ function paginaFicha(db, key, numero) {
   const montoPagado = confirmados.reduce((a, p) => a + (Number(p.monto) || 0), 0);
   const historia = {
     primer: lead.creado_en ? `${db.fechaBonita(lead.creado_en.slice(0, 10))} · lo captó el bot` : '—',
-    partidos: jugados ? `${jugados} jugado${jugados === 1 ? '' : 's'}` : 'Ninguno todavía',
+    partidos: jugados
+      ? `${jugados} jugado${jugados === 1 ? '' : 's'}${jugados >= db.RECURRENTE_DESDE ? ' · ⭐ recurrente' : ''}`
+      : 'Ninguno todavía',
     hayProximo: Boolean(proximaInsc),
     proximo: proximaInsc
       ? `${db.fechaBonita(proximaInsc.fecha)}${proximaInsc.hora ? ` · ${proximaInsc.hora}` : ''} · ${proximaInsc.estado === 'pagado' ? 'pagado' : proximaInsc.estado}`
