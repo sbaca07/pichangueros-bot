@@ -33,6 +33,12 @@
  */
 var SECRET = 'PEGA_AQUI_EL_MISMO_SECRET_QUE_EN_RENDER';
 
+// Va en la respuesta de cada sync. Sin esto no hay forma de saber si el Web App
+// esta sirviendo el codigo que uno acaba de pegar o la version anterior: se
+// pega, se guarda, y si no se publica una version nueva sigue corriendo la
+// vieja en silencio. Subir esto en cada cambio.
+var VERSION = 'v3-formato';
+
 /**
  * "2026-08-12 21:45:02" o "2026-08-12" → Date real.
  *
@@ -92,12 +98,15 @@ function doPost(e) {
       var cuerpo = sh.getRange(2, 1, rect.length, ancho);
       cuerpo.setValues(rect);
 
-      // Borrón y cuenta nueva ANTES de formatear: clear() no se lleva el
+      // Borrón y cuenta nueva ANTES de formatear. clear() no se lleva el
       // formato numérico, así que si una columna cambia de sitio entre dos
-      // versiones, la nueva hereda el formato de la vieja. Pasó con Edad: una
-      // celda quedó con formato de fecha de un sync anterior y el 34 se mostró
-      // como 02/02/1900. Se ve mal y no se nota hasta que alguien lo mira.
-      cuerpo.setNumberFormat('General');
+      // versiones, la nueva hereda el formato de la vieja: la columna Edad
+      // quedó con formato de fecha de un sync anterior y el 34 se mostró como
+      // 02/02/1900. Se ve mal y no se nota hasta que alguien lo mira.
+      //
+      // Va clearFormat() y no setNumberFormat('General'): eso último no
+      // devuelve la celda a "automático" y la fecha heredada sobrevivía igual.
+      cuerpo.clearFormat();
 
       // Fechas: formato legible Y ordenables/filtrables como fecha.
       for (var d = 0; d < (h.fechas || []).length; d++) {
@@ -148,7 +157,7 @@ function doPost(e) {
     if (hoja.getLastRow() === 0 && hoja.getLastColumn() === 0) ss.deleteSheet(hoja);
   }
 
-  return out({ ok: true, hojas: escritas });
+  return out({ ok: true, version: VERSION, hojas: escritas });
 }
 
 function out(obj) {
