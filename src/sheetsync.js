@@ -36,6 +36,25 @@ const activo = () => Boolean(WEBHOOK_URL && SECRET);
 const soles = (n) => (n == null ? '' : Number(n));
 
 /**
+ * Columnas de Día y Mes al lado de cada fecha.
+ *
+ * Un timestamp con hora y minuto es único por fila, así que el filtro por
+ * valores de Sheets ofrece una lista de 296 opciones distintas y no sirve para
+ * nada: para preguntar "¿cuánto entró en agosto?" hay que armar una condición,
+ * y eso ya es pedirle demasiado a quien solo quiere tildar una casilla. Con
+ * estas dos columnas se tilda "Agosto" igual que se tilda "Comas".
+ *
+ * Van como TEXTO a propósito: lo que se busca es agrupar, y el orden
+ * cronológico lo sigue dando la columna de fecha de al lado. El mes arranca con
+ * el año-mes numérico para que ordene bien igual.
+ */
+const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Setiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+const partesFecha = (ts) => String(ts || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+const dia = (ts) => { const m = partesFecha(ts); return m ? `${m[3]}/${m[2]}/${m[1]}` : ''; };
+const mes = (ts) => { const m = partesFecha(ts); return m ? `${m[1]}-${m[2]} · ${MESES[+m[2] - 1]}` : ''; };
+
+/**
  * Las cuatro pestañas que se mandan en cada sync. Cada una es
  * {nombre, header, filas} más dos listas de índices de columna: `fechas` (las
  * convierte a fecha de verdad, si no Sheets las trata como texto y no se puede
@@ -53,41 +72,42 @@ function armarHojas(db) {
   const hojaLeads = {
     nombre: 'Leads',
     header: ['Número', 'Nombre', 'Edad', 'Distrito', 'Zona', 'Etapa', 'Handoff', 'Motivo',
-      'Etiquetas', 'Próxima acción', 'Nota seguimiento', 'Creado', 'Actualizado', 'WhatsApp'],
+      'Etiquetas', 'Próxima acción', 'Nota seguimiento', 'Creado', 'Mes de ingreso', 'Actualizado', 'WhatsApp'],
     filas: leads.map((l) => [
       l.numero, l.nombre || '', l.edad || '', l.distrito || '',
       l.zona ? db.nombreDeZona(l.zona) : '', ESTADOS[l.estado] || l.estado || '',
       l.handoff ? 'Sí' : '', l.handoff_motivo || '', l.etiquetas || '',
-      l.proxima_accion || '', l.proxima_nota || '', l.creado_en || '', l.actualizado_en || '',
-      `https://wa.me/${l.numero}`,
+      l.proxima_accion || '', l.proxima_nota || '', l.creado_en || '', mes(l.creado_en),
+      l.actualizado_en || '', `https://wa.me/${l.numero}`,
     ]),
-    fechas: [11, 12],
+    fechas: [11, 13],
   };
 
   const hojaPagos = {
     nombre: 'Pagos',
-    header: ['Fecha', 'Número', 'Nombre', 'Zona', 'Monto', 'Medio', 'Estado', 'Cupos',
-      'Titular del voucher', 'Nº operación', 'Motivo', 'WhatsApp'],
+    header: ['Fecha', 'Día', 'Mes', 'Número', 'Nombre', 'Zona', 'Monto', 'Medio', 'Estado',
+      'Cupos', 'Titular del voucher', 'Nº operación', 'Motivo', 'WhatsApp'],
     filas: pagos.map((p) => [
-      p.creado_en || '', p.numero, p.nombre || '', p.zona ? db.nombreDeZona(p.zona) : '',
+      p.creado_en || '', dia(p.creado_en), mes(p.creado_en),
+      p.numero, p.nombre || '', p.zona ? db.nombreDeZona(p.zona) : '',
       soles(p.monto), MEDIOS[p.medio] || p.medio || '', ESTADOS_PAGO[p.estado] || p.estado || '',
       p.cupos || 1, p.titular || '', p.numero_operacion || '', p.motivo || '',
       `https://wa.me/${p.numero}`,
     ]),
     fechas: [0],
-    moneda: [4],
+    moneda: [6],
   };
 
   const hojaPartidos = {
     nombre: 'Partidos',
-    header: ['Fecha', 'Hora', 'Zona', 'Sede', 'Estado', 'Cupo', 'Ocupados', 'Pagados', 'En espera', 'Precio'],
+    header: ['Fecha', 'Mes', 'Hora', 'Zona', 'Sede', 'Estado', 'Cupo', 'Ocupados', 'Pagados', 'En espera', 'Precio'],
     filas: partidos.map((p) => [
-      p.fecha || '', p.hora || '', p.zona ? db.nombreDeZona(p.zona) : '', p.sede || '',
+      p.fecha || '', mes(p.fecha), p.hora || '', p.zona ? db.nombreDeZona(p.zona) : '', p.sede || '',
       ESTADOS_PARTIDO[p.estado] || p.estado || '', p.cupo || 0,
       p.ocupados || 0, p.pagados || 0, p.en_espera || 0, soles(p.precio),
     ]),
     fechas: [0],
-    moneda: [9],
+    moneda: [10],
   };
 
   // Resumen: lo que Clarck quiere saber sin filtrar nada. Todo sale de la data
