@@ -16,7 +16,9 @@
 const WEBHOOK_URL = process.env.SHEET_WEBHOOK_URL || '';
 const SECRET = process.env.SHEET_SECRET || '';
 
-const ZONAS = { brena: 'Breña', comas: 'Comas', otra: 'Otra' };
+// Las zonas ya no son tres fijas: Clarck abrió Chorrillos y Rímac desde el
+// panel, y el mapa viejo (brena/comas/otra) las habría escrito en minúscula y
+// sin tilde en la hoja que él mira. El nombre sale de la config en vivo.
 const ESTADOS = {
   nuevo: 'Nuevo', datos_completos: 'Completo', invitado_grupo: 'En grupo',
   activo: 'Jugador', lista_espera: 'En espera', inactivo: 'Inactivo',
@@ -31,7 +33,7 @@ async function syncToSheet(db) {
     nombre: l.nombre || '',
     edad: l.edad || '',
     distrito: l.distrito || '',
-    zona: ZONAS[l.zona] || l.zona || '',
+    zona: l.zona ? db.nombreDeZona(l.zona) : '',
     estado: ESTADOS[l.estado] || l.estado || '',
     handoff: l.handoff ? 'Sí' : '',
     motivo: l.handoff_motivo || '',
