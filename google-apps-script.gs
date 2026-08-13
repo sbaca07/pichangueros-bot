@@ -115,6 +115,17 @@ function doPost(e) {
     if (filas.length) sh.getRange(1, 1, filas.length + 1, ancho).createFilter();
     sh.autoResizeColumns(1, ancho);
 
+    // Esta hoja es un ESPEJO: se reescribe entera en cada sync. Lo que alguien
+    // escriba acá se pierde en la próxima sin dejar rastro — y el que la abre
+    // no tiene por qué saberlo. La protección "solo aviso" no bloquea nada,
+    // pero muestra un cartel antes de editar. Se quitan las anteriores porque
+    // se acumulan sync tras sync.
+    var protecciones = sh.getProtections(SpreadsheetApp.ProtectionType.SHEET);
+    for (var p = 0; p < protecciones.length; p++) protecciones[p].remove();
+    sh.protect()
+      .setDescription('Espejo del bot: se reescribe cada 6 h. Para cambiar algo, entrá al panel.')
+      .setWarningOnly(true);
+
     escritas.push(h.nombre + ':' + filas.length);
   }
 

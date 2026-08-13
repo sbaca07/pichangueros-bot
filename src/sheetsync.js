@@ -102,6 +102,10 @@ function armarHojas(db) {
     nombre: 'Resumen',
     header: ['Indicador', 'Valor'],
     filas: [
+      // Primero de todo, porque es lo único que hay que saber para no perder
+      // trabajo: esta hoja se mira, no se edita.
+      ['⚠️ Esta hoja se reescribe sola cada 6 horas', 'Para cambiar algo entrá al panel — lo que escribas acá se pierde'],
+      ['', ''],
       ['Contactos totales', leads.length],
       ['Con datos completos', leads.filter((l) => l.nombre && l.edad && l.zona).length],
       ['Esperando a Clarck (handoff)', leads.filter((l) => l.handoff).length],
