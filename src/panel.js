@@ -505,7 +505,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .zrow{display:flex;align-items:center;gap:12px;padding:12px 15px;border-bottom:1px solid var(--sep)}
   .zrow:last-child{border-bottom:none}
   .zdot{width:11px;height:11px;border-radius:3px;flex:0 0 auto}
-  .zname{font-size:14.5px;font-weight:600;flex:0 0 96px}
+  .zname{font-size:14.5px;font-weight:600;flex:0 0 96px;white-space:nowrap}
   .ztrack{flex:1;height:7px;background:var(--inset);border-radius:999px;overflow:hidden}
   .ztrack i{display:block;height:100%;border-radius:999px}
   .zval{font-size:13px;font-weight:600;color:var(--muted);flex:0 0 auto;min-width:40px;text-align:right}
@@ -616,7 +616,8 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .snav a svg{width:22px;height:22px}
   .snav a.on{background:rgba(163,198,20,.12);color:var(--green-d)}
   .snav a:hover{background:var(--inset)}
-  .sbottom{margin-top:auto;display:flex;flex-direction:column;gap:2px}
+  .sbottom{margin-top:22px;padding-top:16px;border-top:1px solid var(--sep);display:flex;flex-direction:column;gap:2px}
+  .sbottom::before{content:'Herramientas';font-size:10.5px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);padding:0 13px 8px}
   .scsv{display:inline-flex;align-items:center;gap:7px;font-size:13.5px;color:var(--muted);padding:11px 13px;border-radius:12px}
   .scsv:hover{background:var(--inset)}
   .fcol-right .group{margin-bottom:0}
@@ -631,9 +632,30 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
     .tabbar{display:none}
     .ltitle{padding-left:2px;padding-right:2px}
     .grid2{grid-template-columns:repeat(4,1fr)}
-    .marcador{padding:22px 26px 20px}
-    .mnum{font-size:70px}
-    .bars{height:80px}
+    .marcador{padding:24px 28px 22px}
+    .mnum{font-size:76px}
+
+    /* El marcador con gráfico usaba el ancho como relleno: la cifra chica a la
+       izquierda y las barras apretadas contra el borde derecho. En escritorio
+       se reparte en dos columnas — el número manda, la actividad respira. */
+    .marcador:has(.bars){display:grid;grid-template-columns:minmax(0,290px) 1fr;column-gap:34px;align-items:center}
+    .marcador:has(.bars) > .mtop{grid-column:1 / -1}
+    .marcador:has(.bars) > .mnum{grid-column:1;grid-row:2;align-self:end}
+    .marcador:has(.bars) > .bars{grid-column:2;grid-row:2 / span 2;margin-top:0;height:132px}
+    .marcador:has(.bars) > .mfoot{grid-column:1;grid-row:3}
+    .bars .bd{font-size:9.5px}
+    .bars .bn{font-size:10px}
+
+    /* Dos columnas: a la izquierda lo accionable (la pichanga de hoy, los
+       avisos, los pendientes), a la derecha lo analítico (la comunidad, el
+       embudo, las zonas). Antes era UNA columna de cajas letterbox que usaba
+       el ancho como relleno. */
+    .dash{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 30px;align-items:start}
+    .dash .dcol{min-width:0}
+    .dash .dcol > .shdr:first-child{padding-top:4px}
+    .grid2{grid-template-columns:1fr 1fr}
+    .marcador:has(.bars){display:block}
+    .marcador:has(.bars) > .bars{height:96px;margin-top:12px}
     /* ficha en 2 columnas */
     .ficha-grid{display:grid;grid-template-columns:minmax(0,360px) 1fr;gap:26px;align-items:start}
     .fcol-right{position:sticky;top:24px}
@@ -874,6 +896,8 @@ function paginaResumen(db, key, query = {}) {
       ${alertaPagos}
       ${bannerSeguro}
 
+      <div class="dash">
+      <div class="dcol">
       <div class="shdr">Pendientes <small>· toca para actuar</small></div>
       <div class="grid2" style="margin-top:2px">
         <a class="stat green" href="/admin/leads?key=${key}&vista=crm">${delta ? `<span class="chip ${delta > 0 ? 'up' : 'wait'}">${delta > 0 ? '▲' : '▼'} ${Math.abs(delta)}%</span>` : ''}<div class="sn">${semana}</div><div class="sl">Esta semana</div></a>
@@ -881,29 +905,6 @@ function paginaResumen(db, key, query = {}) {
         <a class="stat amber" href="/admin/leads?key=${key}&vista=crm&filtro=responder">${colaResp ? '<span class="chip wait">pendiente</span>' : ''}<div class="sn">${colaResp}</div><div class="sl">${modoSeguro ? 'Testers sin responder' : 'Sin responder (48 h)'}</div></a>
         <a class="stat ${enHandoff ? 'red' : ''}" href="/admin/leads?key=${key}&vista=crm&filtro=handoff"><div class="sn">${enHandoff}</div><div class="sl">Para Clarck</div></a>
       </div>
-
-      <div class="shdr">La comunidad <small>· ${todos.length} contactos</small></div>
-      <div class="marcador">
-        <div class="mtop"><span class="mlabel">Contactos captados</span>
-          <span class="mdelta">▲ +${semana} esta semana</span></div>
-        <div class="mnum">${todos.length}</div>
-        <div style="font-size:13px;font-weight:700;margin-top:4px">
-          <span style="color:#C6E34E">Hoy: ${dias[dias.length - 1].nuevos} nuevo${dias[dias.length - 1].nuevos === 1 ? '' : 's'}</span>
-          <span style="color:#8fb3e0"> · ${dias[dias.length - 1].rec} recurrente${dias[dias.length - 1].rec === 1 ? '' : 's'} (ya registrados, volvieron a escribir)</span>
-        </div>
-        <div class="bars">${barras}</div>
-        <div class="mfoot"><span style="color:#C6E34E">■ Nuevos</span> (escriben por 1.ª vez) · <span style="color:#8fb3e0">■ Recurrentes</span> (ya registrados, volvieron a escribir) — solo chats directos, los grupos no cuentan. Toca una barra para ver a todos los de ese día, separados en nuevos y recurrentes.</div>
-      </div>
-
-      <div class="shdr">Pipeline · del primer mensaje al pago <small>· toca para ver quiénes</small></div>
-      <div class="zlist">
-        ${frow('Escribieron al número', todos.length, '#0a84ff', '', '')}
-        ${frow('Dejaron sus datos', conDatos, '#5e5ce6', 'nombre · edad · distrito', '&estado=con_datos')}
-        ${frow('Invitados al grupo', invitados, '#A3C614', 'Breña / Comas', '&estado=invitado_grupo')}
-        ${frow('Lista de espera', enEspera, '#ff9f0a', 'otras zonas', '&estado=lista_espera')}
-        ${frow('Pagaron por Yape', nPagadores, '#55770B', '', '&estado=pago')}
-      </div>
-      <div class="foot" style="padding:8px 2px 0">"Escribieron" cuenta a <b>todos</b> los que chatean al número (también conocidos y jugadores antiguos), no solo interesados nuevos.</div>
 
       <div class="shdr">Por zona <small>· toca para ver quiénes son</small></div>
       <div class="zlist">
@@ -921,9 +922,36 @@ function paginaResumen(db, key, query = {}) {
       <div class="zlist">${distritos.map(drow).join('')}</div>
       <div class="foot" style="padding:8px 2px 0">Referencia: ${UMBRAL_PILOTO}+ interesados ≈ 2 pichangas llenas → 🔥 candidato a piloto.</div>` : ''}
 
+      </div>
+      <div class="dcol">
+      <div class="shdr">La comunidad <small>· ${todos.length} contactos</small></div>
+      <div class="marcador">
+        <div class="mtop"><span class="mlabel">Contactos captados</span>
+          <span class="mdelta">▲ +${semana} esta semana</span></div>
+        <div class="mnum">${todos.length}</div>
+        <div style="font-size:13px;font-weight:700;margin-top:4px">
+          <span style="color:#C6E34E">Hoy: ${dias[dias.length - 1].nuevos} nuevo${dias[dias.length - 1].nuevos === 1 ? '' : 's'}</span>
+          <span style="color:#8fb3e0"> · ${dias[dias.length - 1].rec} recurrente${dias[dias.length - 1].rec === 1 ? '' : 's'} (ya registrados, volvieron a escribir)</span>
+        </div>
+        <div class="bars">${barras}</div>
+        <div class="mfoot"><span style="color:#C6E34E">■ Nuevos</span> · <span style="color:#8fb3e0">■ Recurrentes</span> — toca una barra para ver ese día. Solo chats directos.</div>
+      </div>
+
+      <div class="shdr">Pipeline · del primer mensaje al pago <small>· toca para ver quiénes</small></div>
+      <div class="zlist">
+        ${frow('Escribieron al número', todos.length, '#0a84ff', '', '')}
+        ${frow('Dejaron sus datos', conDatos, '#5e5ce6', 'nombre · edad · distrito', '&estado=con_datos')}
+        ${frow('Invitados al grupo', invitados, '#A3C614', 'Breña / Comas', '&estado=invitado_grupo')}
+        ${frow('Lista de espera', enEspera, '#ff9f0a', 'otras zonas', '&estado=lista_espera')}
+        ${frow('Pagaron por Yape', nPagadores, '#55770B', '', '&estado=pago')}
+      </div>
+      <div class="foot" style="padding:8px 2px 0">"Escribieron" cuenta a <b>todos</b> los que chatean al número (también conocidos y jugadores antiguos), no solo interesados nuevos.</div>
+
       ${paraHoy ? `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=hoy" style="margin-top:12px;text-decoration:none"><div class="bic">⏰</div><div class="btxt"><b>${paraHoy} seguimiento${paraHoy === 1 ? '' : 's'} para hoy.</b> Toca para verlos.</div></a>` : ''}
 
 
+      </div>
+      </div>
       <div class="foot">Se actualiza solo cada 90 s · <a href="/admin/leads.csv?key=${key}" style="color:var(--green-d)">⬇ exportar CSV</a></div>
     </div>
   `, { refresh: true, activo: 'resumen', key });
