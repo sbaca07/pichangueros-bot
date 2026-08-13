@@ -419,12 +419,17 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders:ital,wght@0,700;0,800;1,700;1,800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  /* Sistema de diseño Pichangueros (2026-08-11): navy + lima del logo, trazo
-     "sticker" de la mascota (borde grueso + sombra dura), números de marcador
-     en Big Shoulders itálica. Reemplaza a la estética iOS genérica. */
+  /* Sistema de diseño Pichangueros v2 (2026-08-12, sobre la propuesta de Figma):
+     la limpieza del mockup —hairline, sombra difusa, títulos en peso, no en
+     mayúsculas— con la identidad encima: lima del logo, marcador navy y los
+     NÚMEROS en Big Shoulders itálica. El carácter vive en el color y en las
+     cifras; la estructura se calla para que se lea el dato.
+     Antes: borde negro de 2.5px y sombra dura tipo sticker en cada tarjeta. */
   :root{
-    --bg:#F2F4EC; --card:#fff; --ink:#1C2B3A; --muted:#5D6B7A; --faint:#8C99A6;
-    --sep:#E2E5DC; --inset:#F4F6EF; --trazo:#2E3A45;
+    --bg:#F4F6F9; --card:#fff; --ink:#101B2B; --muted:#5A6A7D; --faint:#8B98A8;
+    --sep:#E4E9F0; --inset:#F7F9FC; --trazo:#E4E9F0;
+    --sombra:0 1px 2px rgba(16,24,40,.04), 0 6px 16px rgba(16,24,40,.05);
+    --sombra-alta:0 2px 4px rgba(16,24,40,.05), 0 12px 28px rgba(16,24,40,.09);
     --green:#A3C614; --green-d:#55770B; --navy:#16385F; --navy2:#1E4470;
     --amber:#E8930C; --amber-d:#9A5B00; --red:#D14538; --blue:#16385F; --lime:#A3C614;
   }
@@ -439,7 +444,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   /* large title */
   .ltitle{padding:6px 18px 10px;display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
   .ltitle .eyebrow{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--green-d);margin-bottom:2px}
-  .ltitle h2{font-family:'Big Shoulders',sans-serif;font-style:italic;text-transform:uppercase;font-size:34px;font-weight:800;letter-spacing:.01em;line-height:1;color:var(--navy)}
+  .ltitle h2{font-size:29px;font-weight:800;letter-spacing:-.02em;line-height:1.1;color:var(--ink)}
   .live{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--green-d);
     background:rgba(163,198,20,.12);padding:5px 11px;border-radius:999px;white-space:nowrap}
   .live i{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
@@ -447,8 +452,8 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .csv{font-size:13px;color:var(--muted);border:1px solid var(--sep);background:var(--card);padding:6px 12px;border-radius:999px;white-space:nowrap}
 
   /* scoreboard hero */
-  .marcador{background:linear-gradient(160deg,#1E4470,#0E2542);border:2.5px solid var(--trazo);border-radius:18px;padding:18px 20px 16px;
-    color:#fff;position:relative;overflow:hidden;box-shadow:4px 4px 0 rgba(46,58,69,.25);margin:2px 0 0}
+  .marcador{background:linear-gradient(160deg,#1E4470,#0E2542);border:none;border-radius:18px;padding:19px 20px 17px;
+    color:#fff;position:relative;overflow:hidden;box-shadow:0 4px 10px rgba(14,37,66,.16), 0 16px 32px rgba(14,37,66,.14);margin:2px 0 0}
   .marcador::before{content:"";position:absolute;inset:0;
     background:repeating-linear-gradient(90deg,transparent 0 30px,rgba(255,255,255,.025) 30px 60px)}
   .marcador>*{position:relative}
@@ -469,7 +474,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .mfoot{font-size:9.5px;color:#7e97b8;margin-top:8px;line-height:1.35}
 
   /* banner */
-  .banner{display:flex;gap:12px;align-items:center;background:#fff7e8;border:2px solid var(--trazo);border-radius:16px;padding:13px 15px;margin-top:14px;box-shadow:3px 3px 0 rgba(46,58,69,.12)}
+  .banner{display:flex;gap:12px;align-items:center;background:#fff7e8;border:1px solid var(--sep);border-radius:16px;padding:13px 15px;margin-top:14px;box-shadow:var(--sombra)}
   .banner.ok{background:#eafaf0;border-color:#b7ebca}
   .bic{flex:0 0 auto;width:34px;height:34px;border-radius:10px;background:var(--amber);display:grid;place-items:center;font-size:18px}
   .banner.ok .bic{background:var(--green)}
@@ -479,25 +484,24 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
 
   /* stat grid */
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-top:14px}
-  .stat{background:var(--card);border:2px solid var(--trazo);border-radius:16px;padding:14px 15px;box-shadow:3px 3px 0 rgba(46,58,69,.14);display:block}
+  .stat{background:var(--card);border:1px solid var(--sep);border-radius:16px;padding:14px 15px;box-shadow:var(--sombra);display:block}
   .stat .sn{font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:34px;line-height:1;font-variant-numeric:tabular-nums}
   .stat .sl{font-size:12px;color:var(--muted);font-weight:500;margin-top:3px}
   .stat.amber .sn{color:var(--amber)} .stat.green .sn{color:var(--green-d)} .stat.navy .sn{color:var(--navy2)} .stat.red .sn{color:var(--red)}
   /* Tarjeta-filtro activa: se ve que ESA es la que está aplicada. */
-  .stat.sel{background:var(--navy);box-shadow:3px 3px 0 rgba(46,58,69,.3)}
+  .stat.sel{background:var(--navy);box-shadow:var(--sombra)}
   .stat.sel .sn,.stat.sel .sl{color:#fff}
-  a.stat:hover{transform:translate(-1px,-1px);box-shadow:4px 4px 0 rgba(46,58,69,.2)}
+  a.stat:hover{transform:translateY(-1px);box-shadow:var(--sombra-alta)}
   .stat .chip{float:right;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px}
   .chip.up{background:rgba(163,198,20,.14);color:var(--green-d)}
   .chip.wait{background:rgba(255,149,0,.14);color:var(--amber-d)}
 
   /* section header */
-  .shdr{font-family:'Big Shoulders',sans-serif;font-style:italic;font-size:15px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--navy);padding:18px 6px 8px;display:flex;align-items:center;gap:8px}
-  .shdr::after{content:'';flex:1;height:3px;background:var(--lime);border-radius:2px;transform:skewX(-20deg);opacity:.75}
-  .shdr small{font-family:'Inter',sans-serif;font-style:normal;text-transform:none;letter-spacing:0;font-weight:500;font-size:11.5px;color:var(--faint)}
+  .shdr{font-size:11.5px;font-weight:800;letter-spacing:.11em;text-transform:uppercase;color:var(--faint);padding:22px 6px 9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .shdr small{text-transform:none;letter-spacing:0;font-weight:500;font-size:11.5px;color:var(--faint);opacity:.85}
 
   /* zona rows */
-  .zlist{background:var(--card);border:2px solid var(--trazo);border-radius:16px;overflow:hidden;box-shadow:3px 3px 0 rgba(46,58,69,.14)}
+  .zlist{background:var(--card);border:1px solid var(--sep);border-radius:16px;overflow:hidden;box-shadow:var(--sombra)}
   .zrow{display:flex;align-items:center;gap:12px;padding:12px 15px;border-bottom:1px solid var(--sep)}
   .zrow:last-child{border-bottom:none}
   .zdot{width:11px;height:11px;border-radius:3px;flex:0 0 auto}
@@ -511,7 +515,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .search svg{flex:0 0 auto;color:var(--faint)}
   .search input{flex:1;border:none;background:transparent;outline:none;font:inherit;font-size:15px;padding:10px 0;color:var(--ink)}
   .search input::placeholder{color:var(--faint)}
-  .search button{border:2px solid var(--trazo);background:var(--lime);color:var(--navy);font:inherit;font-weight:800;font-size:13px;padding:6px 14px;border-radius:9px;margin:5px 0;cursor:pointer}
+  .search button{border:1px solid var(--sep);background:var(--lime);color:var(--navy);font:inherit;font-weight:800;font-size:13px;padding:6px 14px;border-radius:9px;margin:5px 0;cursor:pointer}
   .chips{display:flex;gap:7px;padding:8px 2px 4px;flex-wrap:wrap}
   .fchip{font-size:12.5px;font-weight:600;color:var(--muted);background:var(--card);border:1px solid var(--sep);padding:7px 13px;border-radius:999px;white-space:nowrap}
   .fchip.on{background:var(--navy2);color:#fff;border-color:var(--navy2)}
@@ -527,7 +531,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
     background-repeat:no-repeat;background-position:right 11px center;padding-right:26px}
 
   /* lead list */
-  .llist{background:var(--card);border:2px solid var(--trazo);border-radius:16px;overflow:hidden;box-shadow:3px 3px 0 rgba(46,58,69,.14)}
+  .llist{background:var(--card);border:1px solid var(--sep);border-radius:16px;overflow:hidden;box-shadow:var(--sombra)}
   .lrow{display:flex;align-items:center;gap:13px;padding:12px 14px;border-bottom:1px solid var(--sep);position:relative}
   .lrow:last-child{border-bottom:none}
   .lrow:active{background:var(--inset)}
@@ -559,7 +563,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .fpills{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap;justify-content:center}
   .pz{font-size:11.5px;font-weight:700;padding:5px 12px;border-radius:999px;color:#fff}
 
-  .group{background:var(--card);border:2px solid var(--trazo);border-radius:16px;overflow:hidden;box-shadow:3px 3px 0 rgba(46,58,69,.14)}
+  .group{background:var(--card);border:1px solid var(--sep);border-radius:16px;overflow:hidden;box-shadow:var(--sombra)}
   .grow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 15px;border-bottom:1px solid var(--sep);font-size:14.5px}
   .grow:last-child{border-bottom:none}
   .grow .k{color:var(--muted)} .grow .v{font-weight:600;text-align:right}
@@ -569,8 +573,8 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   form.inline{display:flex;gap:8px;flex-wrap:wrap;padding:12px 14px}
   form.inline input{flex:1;min-width:130px;background:var(--inset);border:1px solid var(--sep);border-radius:11px;padding:10px 13px;color:var(--ink);font:inherit;font-size:14px;outline:none}
   form.inline textarea{flex-basis:100%;background:var(--inset);border:1px solid var(--sep);border-radius:11px;padding:10px 13px;color:var(--ink);font:inherit;font-size:14px;outline:none;resize:vertical;min-height:64px}
-  form.inline button{background:var(--lime);color:var(--navy);border:2px solid var(--trazo);border-radius:11px;padding:9px 16px;font:inherit;font-weight:800;box-shadow:2px 2px 0 rgba(46,58,69,.25);cursor:pointer}
-  form.inline button:active{transform:translate(1px,1px);box-shadow:1px 1px 0 rgba(46,58,69,.25)}
+  form.inline button{background:var(--lime);color:var(--navy);border:1px solid var(--sep);border-radius:11px;padding:9px 16px;font:inherit;font-weight:800;box-shadow:var(--sombra);cursor:pointer}
+  form.inline button:active{transform:translate(1px,1px);box-shadow:var(--sombra)}
   form.inline label{flex-basis:100%;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:-4px}
   .config-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 14px;border-bottom:1px solid var(--sep)}
   .config-row:last-child{border-bottom:none}
@@ -590,19 +594,23 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .foot{color:var(--faint);font-size:12px;text-align:center;padding:22px 16px 6px}
 
   /* tab bar */
+  /* Barra clara como la propuesta v2: la navegación no compite con el
+     contenido. Estaba en navy con borde negro de 3px — pesaba más que la
+     pantalla que uno viene a mirar. */
   .tabbar{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;
-    height:calc(64px + env(safe-area-inset-bottom));background:var(--navy);
-    border-top:3px solid var(--trazo);display:flex;padding:8px 0 env(safe-area-inset-bottom);z-index:50}
-  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;color:#8FA3BC;
-    font-family:'Big Shoulders',sans-serif;font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
-  .tab svg{width:25px;height:25px}
-  .tab.on{color:var(--lime)}
+    height:calc(62px + env(safe-area-inset-bottom));background:rgba(255,255,255,.92);
+    backdrop-filter:saturate(180%) blur(12px);-webkit-backdrop-filter:saturate(180%) blur(12px);
+    border-top:1px solid var(--sep);display:flex;padding:7px 0 env(safe-area-inset-bottom);z-index:50}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--faint);
+    font-size:10.5px;font-weight:600;letter-spacing:.01em}
+  .tab svg{width:23px;height:23px}
+  .tab.on{color:var(--navy);font-weight:700}
 
   /* sidebar (solo escritorio) */
   .shell{min-height:100vh}
   .sidebar{display:none}
   .sidebar .brand{display:flex;align-items:center;gap:11px;font-family:'Big Shoulders',sans-serif;font-style:italic;text-transform:uppercase;font-weight:800;font-size:22px;color:var(--navy);letter-spacing:.02em;margin-bottom:26px}
-  .sidebar .brand .iso{width:36px;height:36px;border-radius:11px;border:2px solid var(--trazo);background:var(--lime);display:grid;place-items:center;font-size:19px;box-shadow:2px 2px 0 rgba(46,58,69,.2)}
+  .sidebar .brand .iso{width:36px;height:36px;border-radius:11px;border:1px solid var(--sep);background:var(--lime);display:grid;place-items:center;font-size:19px;box-shadow:var(--sombra)}
   .snav{display:flex;flex-direction:column;gap:4px}
   .snav a{display:flex;align-items:center;gap:12px;padding:11px 13px;border-radius:12px;font-weight:600;font-size:15px;color:var(--muted)}
   .snav a svg{width:22px;height:22px}
@@ -855,9 +863,9 @@ function paginaResumen(db, key, query = {}) {
     : `<a class="banner px" href="/admin/leads?key=${key}&vista=partidos" style="margin:0 0 14px;text-decoration:none"><div class="bic">⚽</div>
         <div class="btxt"><b>No hay partidos con inscripción abierta.</b> Abre uno y el bot empieza a llenar la lista solo.</div></a>`;
 
-  return baseHtml('Pichangueros — Hoy', `
+  return baseHtml('Pichangueros — Resumen', `
     <div class="ltitle">
-      <div><div class="eyebrow">Pichangueros · Tu equipo está aquí</div><h2>Hoy</h2></div>
+      <div><div class="eyebrow">Pichangueros · Tu equipo está aquí</div><h2>Resumen</h2></div>
       <span class="live"><i></i> En vivo</span>
     </div>
     <div class="px">
@@ -923,6 +931,17 @@ function paginaResumen(db, key, query = {}) {
 
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const mesCorto = (yyyymmdd) => MESES[Number((yyyymmdd || '').slice(5, 7)) - 1] || '';
+
+// "2026-08-13" → "13 ago 2026". fechaBonita() escribe para el chat ("MAÑANA
+// jueves 13 de agosto"), que en una celda de tabla se parte en dos líneas y
+// empuja el dato fuera de la vista.
+const DIAS_CORTOS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+const fechaCompacta = (f, conDia = false, conAnio = true) => {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(f || '')) return f || '—';
+  const [y, , d] = f.slice(0, 10).split('-');
+  const dia = conDia ? `${DIAS_CORTOS[new Date(`${f.slice(0, 10)}T12:00:00`).getDay()]} ` : '';
+  return `${dia}${Number(d)} ${mesCorto(f)}${conAnio ? ` ${y}` : ''}`;
+};
 
 // ==============================================================================
 //  Vista · PAGOS (finanzas: todos los cobros, medio, operación, estado)
@@ -1205,7 +1224,7 @@ function paginaCRM(db, key, query) {
           : 'Todavía no hay pichangueros registrados ⚽<br>Cuando alguien escriba al número, aparece acá.'}</p>`);
 
   return baseHtml('Pichangueros — CRM', `
-    <div class="ltitle"><div><div class="eyebrow">${hayFiltro ? `${leads.length} de ${todos.length}` : todos.length} contactos</div><h2>CRM</h2></div>
+    <div class="ltitle"><div><div class="eyebrow">${hayFiltro ? `${leads.length} de ${todos.length}` : todos.length} contactos</div><h2>Jugadores</h2></div>
       <div style="display:flex;gap:8px">
         <a class="csv" href="/admin/leads.csv?key=${key}">⬇ CSV</a>
         <a class="csv" href="/admin/leads.xlsx?key=${key}">📊 Excel</a>
@@ -1229,7 +1248,7 @@ function paginaCRM(db, key, query) {
         ${chip('zona', 'otra', 'Otras')}
       </div>
       <div class="chips" style="padding-top:0">
-        ${chip('estado', 'nuevo', 'Nuevos')}
+        ${chip('estado', 'nuevo', 'Sin datos aún')}
         ${chip('estado', 'datos_completos', 'Con datos')}
         ${chip('estado', 'invitado_grupo', 'En grupo')}
         ${chip('estado', 'lista_espera', 'En espera')}
@@ -1306,13 +1325,13 @@ function paginaFicha(db, key, numero) {
   const confirmados = pagosLead.filter((p) => p.estado === 'confirmado');
   const montoPagado = confirmados.reduce((a, p) => a + (Number(p.monto) || 0), 0);
   const historia = {
-    primer: lead.creado_en ? `${db.fechaBonita(lead.creado_en.slice(0, 10))} · lo captó el bot` : '—',
+    primer: lead.creado_en ? `${fechaCompacta(lead.creado_en)} · lo captó el bot` : '—',
     partidos: jugados
       ? `${jugados} jugado${jugados === 1 ? '' : 's'}${jugados >= db.RECURRENTE_DESDE ? ' · ⭐ recurrente' : ''}`
       : 'Ninguno todavía',
     hayProximo: Boolean(proximaInsc),
     proximo: proximaInsc
-      ? `${db.fechaBonita(proximaInsc.fecha)}${proximaInsc.hora ? ` · ${proximaInsc.hora}` : ''} · ${proximaInsc.estado === 'pagado' ? 'pagado' : proximaInsc.estado}`
+      ? `${fechaCompacta(proximaInsc.fecha, true)}${proximaInsc.hora ? ` · ${proximaInsc.hora}` : ''} · ${proximaInsc.estado === 'pagado' ? 'pagado' : proximaInsc.estado}`
       : 'Sin reserva',
     montoPagado,
     pagado: montoPagado > 0
@@ -1323,7 +1342,7 @@ function paginaFicha(db, key, numero) {
   return baseHtml(`Ficha · ${lead.nombre || numero}`, `
     <div class="px">
       <div class="navbar">
-        <a class="navback" href="/admin/leads?key=${key}&vista=crm">${SVG.back} CRM</a>
+        <a class="navback" href="/admin/leads?key=${key}&vista=crm">${SVG.back} Jugadores</a>
         <a class="wabtn" href="https://wa.me/${esc(numero)}" target="_blank" rel="noopener">${SVG.wa} WhatsApp</a>
       </div>
       <div class="ficha-grid">
@@ -1626,12 +1645,12 @@ function paginaPartidos(db, key, query = {}) {
 
       <div class="shdr">Abrir partido nuevo <small>· 3 toques: zona, día y listo</small></div>
       <style>
-        .zbtn{flex:1;text-align:center;padding:11px;border:2px solid var(--trazo);border-radius:12px;background:#fff;
+        .zbtn{flex:1;text-align:center;padding:11px;border:1px solid var(--sep);border-radius:12px;background:#fff;
           font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:16px;letter-spacing:.06em;
           text-transform:uppercase;color:var(--muted);cursor:pointer}
-        .zbtn:has(input:checked){background:var(--navy);color:#fff;box-shadow:2px 2px 0 rgba(46,58,69,.25)}
+        .zbtn:has(input:checked){background:var(--navy);color:#fff;box-shadow:var(--sombra)}
         .zbtn input{display:none}
-        .qd{padding:10px 14px;border:2px solid var(--trazo);border-radius:12px;background:#fff;font:inherit;font-weight:700;font-size:13px;cursor:pointer}
+        .qd{padding:10px 14px;border:1px solid var(--sep);border-radius:12px;background:#fff;font:inherit;font-weight:700;font-size:13px;cursor:pointer}
         .qd.on{background:var(--lime);color:var(--navy)}
       </style>
       <div class="group">
@@ -1788,7 +1807,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   const editor = `
     <details class="editor" ${esError ? 'open' : ''} style="margin-bottom:14px">
       <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:14px;
-        border:2px solid var(--trazo);border-radius:14px;background:#fff;font-weight:700;font-size:15px">
+        border:1px solid var(--sep);border-radius:14px;background:#fff;font-weight:700;font-size:15px">
         <span style="font-size:18px">✏️</span>
         <span style="flex:1">Editar este partido</span>
         <span style="font-size:12.5px;color:var(--faint);font-weight:600">hora · sede · cupo · precio · fecha</span>
@@ -1850,10 +1869,14 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
     <div class="px">
       <div class="ltitle">
         <div>
-          <div class="eyebrow"><a href="/admin/leads?key=${key}&vista=partidos" style="color:inherit">← Partidos</a></div>
-          <h2>${z ? z.nombre : esc(p.zona)} · ${esc(db.fechaBonita(p.fecha))}${p.hora ? ` · ${esc(p.hora)}` : ''}</h2>
+          <div class="eyebrow"><a href="/admin/leads?key=${key}&vista=partidos" style="color:inherit">← Partidos</a> · ${z ? z.nombre : esc(p.zona)}</div>
+          <h2>${esc(fechaCompacta(p.fecha, true, false))}</h2>
         </div>
-        <span class="badge b-zona" style="background:${p.estado === 'abierto' ? 'var(--green)' : 'var(--faint)'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
+        <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+          ${p.fecha === hoyLima() ? '<span class="badge" style="background:var(--amber);color:#fff">HOY</span>'
+            : p.fecha === fechaLima(1) ? '<span class="badge" style="background:var(--navy);color:#fff">MAÑANA</span>' : ''}
+          <span class="badge b-zona" style="background:${p.estado === 'abierto' ? 'var(--green)' : 'var(--faint)'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
+        </span>
       </div>
       ${caja}
 
