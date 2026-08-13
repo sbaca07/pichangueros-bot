@@ -140,14 +140,14 @@ const enDias = (n) => new Date(Date.now() - 5 * 3600e3 + n * 86400e3).toISOStrin
   check('una reserva normal tampoco avisa por WhatsApp', !enviadosA(process.env.NOTIFY_NUMBER).some((e) => e.texto.includes('inscribió')));
 
   console.log('== 4 · Yape → cupo pagado ==');
-  lecturas.push({ es_voucher_yape: true, medio: 'yape', monto: 15, nombre_remitente: 'Diego Sim', numero_operacion: 'SIM-001', confianza: 'alta' });
+  lecturas.push({ es_comprobante_pago: true, medio: 'yape', monto: 15, nombre_remitente: 'Diego Sim', numero_operacion: 'SIM-001', confianza: 'alta' });
   await escribe(A, { type: 'image', image: { id: 'media-sim-1' } });
   await esperar(() => db.inscripcionActiva(p1, A)?.estado === 'pagado', 'pago vinculado');
   check('el cupo pasó a pagado y quedó vinculado', db.inscripcionActiva(p1, A)?.estado === 'pagado' && db.inscripcionActiva(p1, A)?.pago_id > 0);
   check('la respuesta confirma la lista', await esperar(() => enviadosA(A).some((e) => e.texto.includes('lista del')), 'respuesta con lista'));
 
   console.log('== 5 · Voucher repetido → revisar + handoff ==');
-  lecturas.push({ es_voucher_yape: true, medio: 'yape', monto: 15, nombre_remitente: 'Diego Sim', numero_operacion: 'SIM-001', confianza: 'alta' });
+  lecturas.push({ es_comprobante_pago: true, medio: 'yape', monto: 15, nombre_remitente: 'Diego Sim', numero_operacion: 'SIM-001', confianza: 'alta' });
   await escribe(A, { type: 'image', image: { id: 'media-sim-2' } });
   await esperar(() => db.getLead(A)?.handoff === 1, 'handoff por repetido');
   check('el lead quedó en handoff', db.getLead(A)?.handoff === 1);

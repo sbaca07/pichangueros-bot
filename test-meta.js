@@ -114,6 +114,38 @@ async function main() {
     check('conserva el id de Meta', msg?.key?.id === 'wamid.1');
   }
 
+  console.log('\n== Mensajes sin número de contacto (11 y 12 de agosto) ==');
+  {
+    // 68 mensajes el 12-ago y 48 el 11 se loguearon como "DM de  (…)": el
+    // payload llegó sin `from` y se armaba el jid "@s.whatsapp.net", así que
+    // conversaciones de gente distinta se apilaban en UN lead de clave vacía.
+    recibidos.length = 0;
+    await postWebhook(sobre({ messages: [{ id: 'sin-from-1', type: 'text', text: { body: 'Separame' } }] }));
+    await new Promise((r) => setTimeout(r, 20));
+    check('un mensaje sin `from` NO llega al cerebro', recibidos.length === 0, `recibidos=${recibidos.length}`);
+
+    // Pero antes de descartarlo se busca el número donde Meta también lo manda.
+    recibidos.length = 0;
+    await postWebhook(sobre({
+      contacts: [{ wa_id: '51955508975', profile: { name: 'Jugador' } }],
+      messages: [{ id: 'sin-from-2', type: 'text', text: { body: 'Ahora te yapeo' } }],
+    }));
+    await new Promise((r) => setTimeout(r, 20));
+    check('sin `from`, el número sale de contacts[].wa_id', recibidos[0]?.msg?.key?.remoteJid === '51955508975@s.whatsapp.net', recibidos[0]?.msg?.key?.remoteJid);
+
+    echoes.length = 0;
+    await postWebhook(sobre({
+      contacts: [{ wa_id: '51955508975' }],
+      message_echoes: [{ id: 'sin-to-1', from: '51915395067', type: 'text', text: { body: 'ya te agrego' } }],
+    }));
+    await new Promise((r) => setTimeout(r, 20));
+    check('un echo sin `to` también recupera el número', echoes[0]?.key?.remoteJid === '51955508975@s.whatsapp.net', echoes[0]?.key?.remoteJid);
+
+    // Y nunca se fabrica un jid vacío, pase lo que pase.
+    check('aMensajeBaileys sin número devuelve null', meta.aMensajeBaileys({ id: 'x', type: 'text', text: { body: 'hola' } }, false) === null);
+    check('`from` sin dígitos tampoco pasa', meta.aMensajeBaileys({ id: 'x', from: '+++', type: 'text', text: { body: 'hola' } }, false) === null);
+  }
+
   console.log('\n== Imagen (voucher de Yape) ==');
   {
     recibidos.length = 0;

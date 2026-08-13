@@ -103,7 +103,7 @@ db.getOrCreateLead('51900000020');
 db.updateLead('51900000020', { zona: 'brena' });
 db.inscribir(p3, '51900000020');
 check('partidoReservadoDe encuentra la reserva activa', db.partidoReservadoDe('51900000020')?.id === p3);
-const lecturaBase = { es_voucher_yape: true, medio: 'yape', monto: 20, nombre_remitente: 'Test', numero_operacion: 'OP-P3', confianza: 'alta' };
+const lecturaBase = { es_comprobante_pago: true, medio: 'yape', monto: 20, nombre_remitente: 'Test', numero_operacion: 'OP-P3', confianza: 'alta' };
 check('S/20 del partido custom pasa aunque su zona cueste distinto',
   pagos.evaluarVoucher('51900000020', 'brena', lecturaBase).estado === 'confirmado');
 check('el precio de su zona ya NO calza — la reserva de S/20 manda',
@@ -152,7 +152,7 @@ console.log('== Anti-fraude: el pago tiene que ser AL Yape del negocio ==');
 const pagosMod = require('./src/pagos');
 db.setConfig({ yape_numero: '915395067', yape_titular: 'Clarck Valentin' });
 db.getOrCreateLead('51900000070'); db.updateLead('51900000070', { zona: 'brena' });
-const vBase = { es_voucher_yape: true, medio: 'yape', monto: 15, nombre_remitente: 'X', confianza: 'alta' };
+const vBase = { es_comprobante_pago: true, medio: 'yape', monto: 15, nombre_remitente: 'X', confianza: 'alta' };
 const ajeno = pagosMod.evaluarVoucher('51900000070', 'brena', { ...vBase, numero_operacion: 'AF-1', destinatario: 'Amaretti Import Sac', destino_ultimos_digitos: '867' });
 check('un comprobante a otro destinatario NO se confirma', ajeno.estado === 'revisar' && /OTRO destinatario/.test(ajeno.motivo));
 check('…y no molesta a Clarck (el jugador lo corrige solo)', ajeno.handoff === false);
@@ -161,6 +161,24 @@ check('el pago al Yape correcto sí se confirma',
   pagosMod.evaluarVoucher('51900000070', 'brena', { ...vBase, numero_operacion: 'AF-2', destinatario: 'Clarck V.', destino_ultimos_digitos: '067' }).estado === 'confirmado');
 check('sin datos de destino visibles NO se rechaza (evita falsos positivos)',
   pagosMod.evaluarVoucher('51900000070', 'brena', { ...vBase, numero_operacion: 'AF-3', destinatario: null, destino_ultimos_digitos: null }).estado === 'confirmado');
+
+console.log('== La captura viaja con su formato real (Plin del 12-ago) ==');
+{
+  // Todo se mandaba como `data:image/jpeg`. Una captura compartida directo
+  // desde la app de pagos llega en PNG y, mal etiquetada, el modelo respondía
+  // como si no hubiera visto nada (medio=otro, monto=null, confianza=alta).
+  const png = Buffer.concat([Buffer.from([0x89]), Buffer.from('PNG\r\n\x1a\n', 'binary'), Buffer.alloc(16)]);
+  const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16)]);
+  const webp = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP'), Buffer.alloc(8)]);
+  const heic = Buffer.concat([Buffer.alloc(4), Buffer.from('ftypheic'), Buffer.alloc(8)]);
+  check('un PNG se declara PNG', pagosMod.mimeDeImagen(png) === 'image/png', pagosMod.mimeDeImagen(png));
+  check('un JPEG se declara JPEG', pagosMod.mimeDeImagen(jpg) === 'image/jpeg', pagosMod.mimeDeImagen(jpg));
+  check('un WebP se declara WebP', pagosMod.mimeDeImagen(webp) === 'image/webp', pagosMod.mimeDeImagen(webp));
+  check('un HEIC de iPhone se declara HEIC', pagosMod.mimeDeImagen(heic) === 'image/heic', pagosMod.mimeDeImagen(heic));
+  check('un buffer irreconocible cae a JPEG y no rompe', pagosMod.mimeDeImagen(Buffer.alloc(40)) === 'image/jpeg');
+  check('un buffer vacío tampoco rompe', pagosMod.mimeDeImagen(Buffer.alloc(0)) === 'image/jpeg');
+  check('sin buffer tampoco rompe', pagosMod.mimeDeImagen(null) === 'image/jpeg');
+}
 
 console.log('== Multi-reserva: el pago va a la reserva cuyo precio calza ==');
 const pA = db.crearPartido({ zona: 'brena', fecha: enUnosDias(10), cupo: 10, precio: 15 });

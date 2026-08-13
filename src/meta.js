@@ -189,9 +189,29 @@ const sockAdapter = {
 
 // --- Entrada ------------------------------------------------------------------
 
+/**
+ * Con quién es la conversación: el cliente, venga el mensaje de él (`from`) o
+ * del negocio (echo de Clarck → `to`). `contactos` es el `value.contacts` del
+ * change, que trae el `wa_id` del cliente: se usa como red cuando el mensaje
+ * llega sin `from`/`to`.
+ */
+function numeroDelPayload(m, fromMe, contactos = '') {
+  return String((fromMe ? m.to : m.from) || contactos || '').replace(/\D/g, '');
+}
+
 /** Convierte un mensaje del webhook de Meta a la forma Baileys que espera index.js. */
-function aMensajeBaileys(m, fromMe = false) {
-  const numero = (fromMe ? m.to || '' : m.from || '').replace(/\D/g, '');
+function aMensajeBaileys(m, fromMe = false, contactos = '') {
+  const numero = numeroDelPayload(m, fromMe, contactos);
+  // Sin número no hay contacto: antes se armaba "@s.whatsapp.net" y TODOS esos
+  // mensajes caían en un mismo lead de clave vacía — conversaciones de gente
+  // distinta mezcladas en un solo registro del CRM (68 el 12-ago, 48 el 11).
+  // Se descarta y se deja constancia de qué campos SÍ traía el payload, que es
+  // lo único que falta para arreglar el origen.
+  if (!numero) {
+    console.error('[meta] Mensaje SIN número de contacto — descartado para no ensuciar el CRM.'
+      + ` id=${m.id || '?'} type=${m.type || '?'} fromMe=${fromMe} campos=[${Object.keys(m).join(',')}]`);
+    return null;
+  }
   const msg = {
     key: { remoteJid: `${numero}@s.whatsapp.net`, fromMe, id: m.id },
     message: {},
@@ -367,18 +387,22 @@ function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
             continue;
           }
 
+          // `contacts` trae el wa_id del cliente del change: sirve de respaldo
+          // cuando el mensaje viene sin `from`/`to`.
+          const contactos = (v.contacts && v.contacts[0] && v.contacts[0].wa_id) || '';
+
           // Mensajes entrantes de clientes.
           for (const m of v.messages || []) {
             if (yaVisto(m.id)) { console.log(`[meta] Mensaje repetido ${m.id} — ignorado (reintento de Meta).`); continue; }
-            recordarEntrante((m.from || '').replace(/\D/g, ''), m.id);
-            const msg = aMensajeBaileys(m, false);
+            recordarEntrante(numeroDelPayload(m, false, contactos), m.id);
+            const msg = aMensajeBaileys(m, false, contactos);
             if (msg) Promise.resolve(onMensaje(sockAdapter, msg)).catch((e) => console.error('[meta] Error manejando mensaje:', e.message));
           }
 
           // Echoes: lo que el negocio (Clarck desde su app) envió a mano.
           for (const m of v.message_echoes || []) {
             if (yaVisto(m.id)) continue;
-            const msg = aMensajeBaileys(m, true);
+            const msg = aMensajeBaileys(m, true, contactos);
             if (msg) { try { onEcho(msg); } catch (e) { console.error('[meta] Error registrando echo:', e.message); } }
           }
 

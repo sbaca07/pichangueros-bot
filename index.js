@@ -238,6 +238,15 @@ async function manejarMensaje(sock, msg) {
   if (!body) return;
   const numero = numeroDe(msg); // resuelve LID → número real cuando se puede
 
+  // Sin número no hay contacto. Seguir de largo creaba un lead de clave vacía
+  // donde se apilaban las conversaciones de TODOS los que llegaran así (pasó
+  // con el transporte de Meta el 11 y 12 de agosto). Vale más perder el mensaje
+  // que mezclar gente distinta en un mismo registro del CRM.
+  if (!numero) {
+    console.error(`[bot] Mensaje sin número identificable (jid=${from}) — ignorado para no mezclar contactos.`);
+    return;
+  }
+
   // A DÓNDE responder: SIEMPRE al mismo JID por el que llegó el mensaje (from),
   // sea un número normal o un LID anónimo (xxx@lid). Baileys >=6.7.10 mapea la
   // sesión de cifrado del LID internamente. Reescribir el destino a mano

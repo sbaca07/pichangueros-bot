@@ -1,8 +1,9 @@
 /**
- * Pagos por Yape (voucher + IA) — Semana 4.
+ * Pagos por app (comprobante + IA) — Semana 4.
  *
- * El jugador manda la captura de su Yape; una sola llamada a OpenAI (visión)
- * lee monto, nombre del remitente y número de operación. Con eso:
+ * El jugador manda la captura de su pago — Yape, Plin, o el app de su banco:
+ * los tres valen igual — y una sola llamada a la visión lee monto, nombre del
+ * remitente y número de operación. Con eso:
  *   1. Anti-reenvío: si ese número de operación ya fue confirmado antes, se
  *      marca "revisar" (posible reenvío del mismo comprobante).
  *   2. Si el monto no coincide con el precio de la zona del contacto (config
@@ -31,17 +32,22 @@ function getClient() {
 }
 
 const RESPONSE_SCHEMA = {
-  name: 'lectura_voucher_yape',
+  name: 'lectura_comprobante_pago',
   strict: true,
   schema: {
     type: 'object',
     additionalProperties: false,
     properties: {
-      es_voucher_yape: { type: 'boolean', description: 'true si la imagen es un comprobante de pago de Yape (u otra app de pagos peruana similar).' },
+      // Se llamaba `es_voucher_yape` y el nombre sesgaba al modelo: un
+      // comprobante de PLIN legítimo volvía con false/otro/monto null y
+      // confianza alta — "no es un voucher de Yape", literal. La pichanga se
+      // paga por cualquier app peruana, así que el campo pregunta por el pago,
+      // no por la marca.
+      es_comprobante_pago: { type: 'boolean', description: 'true si la imagen es un comprobante de un pago ya realizado, de CUALQUIER app o banco peruano (Yape, Plin, BCP, Interbank, BBVA, Scotiabank, etc.).' },
       medio: {
         type: 'string',
-        enum: ['yape', 'plin', 'bcp', 'interbank', 'otro'],
-        description: 'De qué app o banco es el comprobante (por logo/colores/diseño). Si no es un voucher o no se distingue: otro.',
+        enum: ['yape', 'plin', 'bcp', 'interbank', 'bbva', 'scotiabank', 'otro'],
+        description: 'De qué app o banco es el comprobante (por logo/colores/diseño). Solo "otro" si no se distingue la marca.',
       },
       monto: { type: ['number', 'null'], description: 'Monto pagado en soles, ej. 15.00' },
       nombre_remitente: { type: ['string', 'null'], description: 'Nombre de quien envió el pago, tal como aparece en el voucher.' },
@@ -50,9 +56,26 @@ const RESPONSE_SCHEMA = {
       destino_ultimos_digitos: { type: ['string', 'null'], description: 'Los últimos dígitos visibles del número/cuenta de DESTINO (ej. de "*** *** 172" devuelve "172"). null si no se ve.' },
       confianza: { type: 'string', enum: ['alta', 'media', 'baja'], description: 'Qué tan seguro estás de la lectura (borrosa, cortada, etc. → baja).' },
     },
-    required: ['es_voucher_yape', 'medio', 'monto', 'nombre_remitente', 'numero_operacion', 'destinatario', 'destino_ultimos_digitos', 'confianza'],
+    required: ['es_comprobante_pago', 'medio', 'monto', 'nombre_remitente', 'numero_operacion', 'destinatario', 'destino_ultimos_digitos', 'confianza'],
   },
 };
+
+/**
+ * Tipo real de la imagen, leído de los bytes. Antes se mandaba TODO como
+ * `data:image/jpeg`: una captura PNG (compartida directo desde la app de pagos,
+ * sin pasar por la cámara) viajaba mal etiquetada y el modelo respondía como si
+ * no hubiera visto nada. Se sniffea el buffer en vez de confiar en lo que
+ * declara el transporte, que no siempre lo trae.
+ */
+function mimeDeImagen(buf) {
+  if (!buf || buf.length < 12) return 'image/jpeg';
+  if (buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf.toString('ascii', 1, 4) === 'PNG') return 'image/png';
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  // HEIC/HEIF de iPhone: caja `ftyp` en el offset 4, marca en el 8.
+  if (buf.toString('ascii', 4, 8) === 'ftyp' && /^(heic|heix|heim|heis|hevc|mif1|msf1)/.test(buf.toString('ascii', 8, 12))) return 'image/heic';
+  return 'image/jpeg'; // lo más probable en WhatsApp; mejor intentar que abortar
+}
 
 /** @returns {Promise<null|object>} null si el cerebro está apagado o la llamada falló. */
 async function leerVoucher(imageBuffer) {
@@ -60,12 +83,12 @@ async function leerVoucher(imageBuffer) {
   if (!openai) return null;
   const params = {
     messages: [
-      { role: 'system', content: 'Lees comprobantes de pago móvil peruanos (Yape, Plin, BCP, Interbank). Extrae los datos exactos, sin inventar nada. Sé GENEROSO al reconocer: una captura de pantalla de la app con un monto y un destinatario ES un comprobante, aunque esté recortada, con brillo raro o le falte algún dato. Solo marca es_voucher_yape=false si claramente NO es un pago (una foto de una cancha, un meme, una persona).' },
+      { role: 'system', content: 'Lees comprobantes de pago móvil peruanos. Cuenta como comprobante el de CUALQUIER app o banco — Yape, Plin, BCP, Interbank, BBVA, Scotiabank, Banco de la Nación — no solo Yape: para el negocio valen todos igual. Extrae los datos exactos, sin inventar nada. Sé GENEROSO al reconocer: una captura de pantalla de la app con un monto y un destinatario ES un comprobante, aunque esté recortada, con brillo raro o le falte algún dato. Solo marca es_comprobante_pago=false si claramente NO es un pago (una foto de una cancha, un meme, una persona).' },
       {
         role: 'user',
         content: [
           { type: 'text', text: '¿Es un comprobante de pago? Si lo es, extrae monto, nombre del remitente y número de operación.' },
-          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}` } },
+          { type: 'image_url', image_url: { url: `data:${mimeDeImagen(imageBuffer)};base64,${imageBuffer.toString('base64')}` } },
         ],
       },
     ],
@@ -189,13 +212,15 @@ async function procesarVoucher(numero, zona, imageBuffer) {
   // Vía module.exports (no la referencia interna) para que los tests puedan
   // inyectar lecturas simuladas sin llamar a OpenAI.
   const lectura = await module.exports.leerVoucher(imageBuffer);
-  if (!lectura || !lectura.es_voucher_yape) {
+  if (!lectura || !lectura.es_comprobante_pago) {
     // Sin este log, una imagen que la visión no reconoce desaparecía sin
     // rastro: el jugador dice "ya te yapeé" y no había forma de saber si
     // falló la descarga, el modelo o si de verdad no era un comprobante.
+    // El formato va en el log porque un PNG mal etiquetado ya nos costó cuatro
+    // comprobantes el 12-ago: si vuelve a pasar, se ve en la misma línea.
     console.warn(`[pagos] ${numero}: la imagen NO se reconoció como comprobante`
       + (lectura ? ` (medio=${lectura.medio}, confianza=${lectura.confianza}, monto=${lectura.monto})` : ' (la lectura falló o volvió vacía)')
-      + ` — ${imageBuffer?.length || 0} bytes.`);
+      + ` — ${imageBuffer?.length || 0} bytes, ${mimeDeImagen(imageBuffer)}.`);
     return null;
   }
 
@@ -229,4 +254,4 @@ async function procesarVoucher(numero, zona, imageBuffer) {
   return { respuesta, handoff: r.handoff, motivoHandoff: r.motivoHandoff };
 }
 
-module.exports = { leerVoucher, evaluarVoucher, procesarVoucher, cerebroActivo: () => Boolean(process.env.OPENAI_API_KEY) };
+module.exports = { leerVoucher, evaluarVoucher, procesarVoucher, mimeDeImagen, cerebroActivo: () => Boolean(process.env.OPENAI_API_KEY) };
