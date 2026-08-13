@@ -164,6 +164,12 @@ if (!colsLeads.includes('etiquetas')) db.exec('ALTER TABLE leads ADD COLUMN etiq
 if (!colsLeads.includes('proxima_accion')) db.exec('ALTER TABLE leads ADD COLUMN proxima_accion TEXT'); // fecha YYYY-MM-DD
 if (!colsLeads.includes('proxima_nota')) db.exec('ALTER TABLE leads ADD COLUMN proxima_nota TEXT');
 
+// Costo de la cancha (2026-08-12): sin esto el panel muestra lo que ENTRA pero
+// no lo que queda. El negocio de Clarck es S/15 por jugador menos S/150 de
+// cancha; sin el costo, la pantalla del partido cuenta media historia.
+const colsSedes = db.prepare('PRAGMA table_info(sedes)').all().map((c) => c.name);
+if (!colsSedes.includes('costo')) db.exec('ALTER TABLE sedes ADD COLUMN costo REAL');
+
 // Migración vista Pagos (2026-07-15): medio de pago (yape/plin/bcp/interbank/otro).
 // Los pagos anteriores a esta columna eran todos leídos como Yape.
 const colsPagos = db.prepare('PRAGMA table_info(pagos)').all().map((c) => c.name);
@@ -426,13 +432,13 @@ function listSedes(zona) {
 
 function addSede(campos) {
   db.prepare(
-    'INSERT INTO sedes (zona, nombre, cancha, cupo, ubicacion, horario, estacionamiento, orden) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(campos.zona, campos.nombre, campos.cancha || null, campos.cupo || null, campos.ubicacion || null, campos.horario || null, campos.estacionamiento || null, campos.orden || 0);
+    'INSERT INTO sedes (zona, nombre, cancha, cupo, ubicacion, horario, estacionamiento, orden, costo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(campos.zona, campos.nombre, campos.cancha || null, campos.cupo || null, campos.ubicacion || null, campos.horario || null, campos.estacionamiento || null, campos.orden || 0, campos.costo ?? null);
 }
 
 function updateSede(id, campos) {
-  db.prepare('UPDATE sedes SET zona=?, nombre=?, cancha=?, cupo=?, ubicacion=?, horario=?, estacionamiento=? WHERE id=?')
-    .run(campos.zona, campos.nombre, campos.cancha || null, campos.cupo || null, campos.ubicacion || null, campos.horario || null, campos.estacionamiento || null, id);
+  db.prepare('UPDATE sedes SET zona=?, nombre=?, cancha=?, cupo=?, ubicacion=?, horario=?, estacionamiento=?, costo=? WHERE id=?')
+    .run(campos.zona, campos.nombre, campos.cancha || null, campos.cupo || null, campos.ubicacion || null, campos.horario || null, campos.estacionamiento || null, campos.costo ?? null, id);
 }
 
 function deleteSede(id) {
@@ -658,6 +664,44 @@ function eliminarPartido(id) {
 function setEstadoPartido(id, estado) {
   if (!['abierto', 'cerrado', 'jugado', 'cancelado'].includes(estado)) return;
   db.prepare('UPDATE partidos SET estado = ? WHERE id = ?').run(estado, id);
+}
+
+/**
+ * La caja de UN partido: lo cobrado, lo que falta cobrar y lo que cuesta la
+ * cancha. Es la cuenta que Clarck hace de memoria antes de cada pichanga
+ * (S/15 por jugador menos S/150 de cancha ≈ S/60 de ganancia) y que hasta ahora
+ * el panel no mostraba: se veía cuánta gente hay, no si el partido deja algo.
+ *
+ * Los pagos se suman con DISTINCT: un solo Yape puede cubrir varios cupos y
+ * queda enganchado a varias inscripciones — sin eso, pagar por dos amigos
+ * inflaba la caja al doble.
+ */
+function cajaPartido(id) {
+  const p = getPartido(id);
+  if (!p) return null;
+  const precio = p.precio ?? Number(getConfigMap()[`precio_${p.zona}`]) ?? 0;
+
+  const cobrado = db.prepare(`
+    SELECT COALESCE(SUM(monto), 0) AS s FROM pagos WHERE estado = 'confirmado' AND id IN (
+      SELECT DISTINCT pago_id FROM inscripciones WHERE partido_id = ? AND pago_id IS NOT NULL
+    )`).get(id).s;
+
+  const porPagar = db.prepare(
+    "SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ? AND estado = 'reservado'"
+  ).get(id).n;
+
+  // El costo va por sede (una cancha de Comas no cuesta lo que una de Breña).
+  const sede = p.sede
+    ? db.prepare('SELECT costo FROM sedes WHERE zona = ? AND nombre = ?').get(p.zona, p.sede)
+    : null;
+
+  return {
+    precio,
+    cobrado,
+    porCobrar: porPagar * (Number(precio) || 0),
+    porPagar,
+    costoCancha: sede && sede.costo != null ? Number(sede.costo) : null,
+  };
 }
 
 /** Todos los partidos con sus conteos (para el panel), próximos primero. */
@@ -933,7 +977,7 @@ module.exports = {
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
-  crearPartido, getPartido, actualizarPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
+  crearPartido, getPartido, actualizarPartido, cajaPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,

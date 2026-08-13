@@ -195,6 +195,54 @@ const srv = app.listen(0, async () => {
     check('guardar sin cambios avisa en vez de mentir', db.actualizarPartido(partido, {}).ok === false);
   }
 
+  console.log('== 4c · Cinco pestañas con sentido, no seis ==');
+  {
+    // "Conexión" mostraba el QR de Baileys. Con el canal oficial qr() devuelve
+    // null SIEMPRE, así que era una pantalla que se autorefrescaba cada 6 s
+    // esperando un código que no llega. Se fue; su dato vivo está en Ajustes.
+    const home = (await GET('/admin/leads?key=ux')).html;
+    const tabs = [...home.matchAll(/class="tab [^"]*"[^>]*>(?:<svg[\s\S]*?<\/svg>)?([^<]+)</g)].map((m) => m[1].trim());
+    check(`la barra tiene 5 pestañas: ${tabs.join(' · ')}`, tabs.length === 5, `(${tabs.length})`);
+    check('y son las de la propuesta v2', tabs.join(',') === 'Resumen,Partidos,Jugadores,Pagos,Ajustes', tabs.join(','));
+    check('ya no hay pestaña Conexión', !/vista=conexion/.test(home));
+
+    const viejo = await fetch(`${B}/admin/leads?key=ux&vista=conexion`, { redirect: 'manual' });
+    check('un link viejo a Conexión redirige, no muere en 404', viejo.status === 302, `HTTP ${viejo.status}`);
+    const ajustes = (await GET('/admin/leads?key=ux&vista=config')).html;
+    check('Ajustes dice qué número está atendiendo', /Canal de WhatsApp/.test(ajustes) && /51967870413/.test(ajustes));
+    check('…y explica que con canal oficial no hay QR', /no se enlaza por QR/.test(ajustes));
+  }
+
+  console.log('== 4d · La caja del partido: no solo cuánta gente, cuánta plata ==');
+  {
+    const conCaja = db.crearPartido({ zona: 'brena', fecha: enDias(5), hora: '8-9pm', sede: 'Cancha Caja', cupo: 10, precio: 15 });
+    db.addSede({ zona: 'brena', nombre: 'Cancha Caja', cupo: 10, costo: 150 });
+    db.inscribir(conCaja, '51980000001');
+    db.inscribir(conCaja, '51980000002');
+    const pg = db.registrarPago({ numero: '51980000001', monto: 15, numero_operacion: 'CJ-UX', estado: 'confirmado' });
+    db.vincularPago('51980000001', pg, 1, 'brena', 15);
+
+    const k = db.cajaPartido(conCaja);
+    check('cobrado sale de los pagos confirmados enganchados', k.cobrado === 15, JSON.stringify(k));
+    check('por cobrar = reservados sin pagar × precio', k.porCobrar === 15, JSON.stringify(k));
+    check('el costo de la cancha sale de la sede', k.costoCancha === 150, JSON.stringify(k));
+
+    const html = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${conCaja}`)).html;
+    check('la pantalla muestra Cobrado y Por cobrar', /Cobrado/.test(html) && /Por cobrar/.test(html));
+    check('…y cuánto falta para cubrir la cancha', /Faltan S\/ 135/.test(html), 'sin el resultado de la cancha');
+
+    // Un solo Yape que paga por varios NO puede contarse dos veces.
+    const dobles = db.crearPartido({ zona: 'brena', fecha: enDias(6), cupo: 10, precio: 15 });
+    db.inscribir(dobles, '51980000003');
+    const pgDoble = db.registrarPago({ numero: '51980000003', monto: 30, numero_operacion: 'CJ-DOB', estado: 'confirmado', cupos: 2 });
+    db.vincularPago('51980000003', pgDoble, 2, 'brena', 30);
+    check('un Yape por 2 cupos suma una sola vez', db.cajaPartido(dobles).cobrado === 30, JSON.stringify(db.cajaPartido(dobles)));
+
+    const sinCosto = db.crearPartido({ zona: 'comas', fecha: enDias(7), cupo: 10 });
+    const htmlSin = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${sinCosto}`)).html;
+    check('sin costo cargado, invita a ponerlo en vez de mentir', /Poner costo/.test(htmlSin));
+  }
+
   console.log('== 5 · Sin key, nada existe ==');
   check('vista sin key → 404', (await GET('/admin/leads?vista=crm')).status === 404);
   check('export sin key → 404', (await GET('/admin/leads.csv')).status === 404);

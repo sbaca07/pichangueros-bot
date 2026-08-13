@@ -210,6 +210,9 @@ function registrarPanel(app, db, conexion = null) {
       ubicacion: (req.body.ubicacion || '').trim(),
       horario: (req.body.horario || '').trim(),
       estacionamiento: (req.body.estacionamiento || '').trim(),
+      // Lo que cuesta alquilar esta cancha por turno: sin este dato el panel
+      // muestra lo que ENTRA pero no lo que queda.
+      costo: req.body.costo === '' || req.body.costo == null ? null : Number(req.body.costo),
     };
     if (campos.nombre) {
       if (req.body.id) db.updateSede(Number(req.body.id), campos);
@@ -396,8 +399,11 @@ function registrarPanel(app, db, conexion = null) {
     if (req.query.vista === 'crm') return res.send(paginaCRM(db, key, req.query));
     if (req.query.vista === 'pagos') return res.send(paginaPagos(db, key, req.query));
     if (req.query.vista === 'partidos') return res.send(paginaPartidos(db, key, req.query));
-    if (req.query.vista === 'config') return res.send(paginaConfig(db, key));
-    if (req.query.vista === 'conexion') return res.send(paginaConexion(key, conexion));
+    if (req.query.vista === 'config') return res.send(paginaConfig(db, key, conexion));
+    // La vista de conexión dejó de existir (era el QR de Baileys, que con el
+    // canal oficial no llega nunca). Se redirige en vez de 404: hay links
+    // viejos en el historial de Clarck y en mensajes que ya le mandamos.
+    if (req.query.vista === 'conexion') return res.redirect(`/admin/leads?key=${key}&vista=config`);
     res.send(paginaResumen(db, key, req.query));
   });
 }
@@ -650,24 +656,26 @@ const SVG = {
   iPartidos: '<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M3 9.5h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="15.2" r="2.6" stroke="currentColor" stroke-width="1.6"/></svg>',
 };
 
+// Cinco pestañas, como la propuesta v2. Eran seis: "Conexión" mostraba un QR
+// que con el canal oficial NO llega nunca (index.js: qr() devuelve null), y se
+// autorefrescaba cada 6 s esperándolo — una pestaña muerta desde la migración.
+// Su contenido vivo (qué número está enlazado) es una línea dentro de Ajustes.
 const tabbar = (key, activo) => `<nav class="tabbar">
-  <a class="tab ${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen}Hoy</a>
+  <a class="tab ${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen}Resumen</a>
   <a class="tab ${activo === 'partidos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=partidos">${SVG.iPartidos}Partidos</a>
   <a class="tab ${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm}Jugadores</a>
-  <a class="tab ${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos}La plata</a>
-  <a class="tab ${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig}Config</a>
-  <a class="tab ${activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=conexion">${SVG.iConexion}Conexión</a>
+  <a class="tab ${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos}Pagos</a>
+  <a class="tab ${activo === 'config' || activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig}Ajustes</a>
 </nav>`;
 
 const sidebar = (key, activo) => `<aside class="sidebar">
   <div class="brand"><span class="iso">⚽</span> Pichangueros</div>
   <nav class="snav">
-    <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Hoy</a>
+    <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Resumen</a>
     <a class="${activo === 'partidos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=partidos">${SVG.iPartidos} Partidos</a>
     <a class="${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm} Jugadores</a>
-    <a class="${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos} La plata</a>
-    <a class="${activo === 'config' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig} Config</a>
-    <a class="${activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=conexion">${SVG.iConexion} Conexión</a>
+    <a class="${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos} Pagos</a>
+    <a class="${activo === 'config' || activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig} Ajustes</a>
   </nav>
   <div class="sbottom">
     ${sheetsync.activo() ? `<a class="scsv" href="/admin/sync-sheet?key=${key}">☁ Respaldar a Sheet</a>` : ''}
@@ -1338,7 +1346,7 @@ function paginaFicha(db, key, numero) {
 // ==============================================================================
 //  Config — sedes, precios y textos del negocio (editable, sin tocar código)
 // ==============================================================================
-function paginaConfig(db, key) {
+function paginaConfig(db, key, conexion = null) {
   const keyRaw = decodeURIComponent(key);
   const c = db.getConfigMap();
   // Zonas dinámicas: las mismas que ve el bot (siguen a las sedes).
@@ -1353,6 +1361,7 @@ function paginaConfig(db, key) {
       <input name="nombre" value="${esc(s?.nombre || '')}" placeholder="Nombre de la sede" required>
       <input name="cancha" value="${esc(s?.cancha || '')}" placeholder="Cancha (opcional)">
       <input name="cupo" type="number" min="1" value="${esc(s?.cupo ?? '')}" placeholder="Cupo" style="max-width:90px">
+      <input name="costo" type="number" min="0" step="0.5" value="${esc(s?.costo ?? '')}" placeholder="S/ cancha" title="Lo que te cuesta alquilar esta cancha por turno" style="max-width:110px">
       <input name="ubicacion" value="${esc(s?.ubicacion || '')}" placeholder="Link de ubicación">
       <input name="horario" value="${esc(s?.horario || '')}" placeholder="Horario">
       <input name="estacionamiento" value="${esc(s?.estacionamiento || '')}" placeholder="Estacionamiento (opcional)">
@@ -1417,9 +1426,33 @@ function paginaConfig(db, key) {
       </form>
     </div>`;
 
-  return baseHtml('Config · Pichangueros', `
+  // Lo único vivo que quedaba en la pestaña "Conexión": qué número está
+  // atendiendo. Ya no merece una pestaña propia — con el canal oficial no hay
+  // QR que escanear ni sesión que reenlazar, así que es una línea de estado.
+  const estadoCanal = conexion ? conexion.estado() : 'desconocido';
+  const numeroCanal = conexion ? conexion.numero() : null;
+  const enLinea = estadoCanal === 'ready';
+  const bloqueCanal = `
+    <div class="shdr">Canal de WhatsApp</div>
+    <div class="group" style="display:flex;align-items:center;gap:13px;padding:15px">
+      <span style="flex:0 0 auto;width:11px;height:11px;border-radius:50%;background:${enLinea ? 'var(--green)' : 'var(--amber)'}"></span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:15px">${enLinea ? 'Bot en línea' : `Canal ${esc(estadoCanal)}`}</div>
+        <div style="font-size:13px;color:var(--muted)">
+          ${numeroCanal ? `Atendiendo desde +${esc(numeroCanal)}` : 'Sin número enlazado'} · canal oficial de Meta
+        </div>
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--faint);margin:8px 2px 20px;line-height:1.5">
+      Con el canal oficial el número no se enlaza por QR: se administra desde la cuenta de Meta.
+      Clarck sigue usando su WhatsApp normal en el celular sobre el mismo número.
+    </p>`;
+
+  return baseHtml('Ajustes · Pichangueros', `
     <div class="px">
       <div class="ltitle"><div><div class="eyebrow">Ajustes</div><h2>Configuración</h2></div></div>
+
+      ${bloqueCanal}
 
       <div class="shdr">General <small>(no requiere redesplegar)</small></div>
       <div class="group">
@@ -1612,6 +1645,47 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
       <button style="border:none;border-radius:11px;padding:9px 14px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;${clase}">${etiqueta}</button>
     </form>`;
 
+  // La caja del partido (propuesta v2): la pantalla mostraba cuánta gente hay,
+  // no si el partido deja algo. La cuenta que Clarck hace de memoria antes de
+  // cada pichanga —cobrado, lo que falta, la cancha— ahora está a la vista.
+  const k = db.cajaPartido(partidoId) || { cobrado: 0, porCobrar: 0, porPagar: 0, costoCancha: null, precio: 0 };
+  const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 })}`;
+  const pct = p.cupo ? Math.min(100, Math.round((ocupados / p.cupo) * 100)) : 0;
+  const queda = k.costoCancha != null ? k.cobrado - k.costoCancha : null;
+
+  const dato = (rot, val, color = '#fff') => `
+    <div style="flex:1;min-width:96px;padding:11px 12px;background:rgba(255,255,255,.07);border-radius:12px">
+      <div style="font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:rgba(255,255,255,.62);font-weight:700">${rot}</div>
+      <div style="font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:26px;line-height:1.1;color:${color};font-variant-numeric:tabular-nums">${val}</div>
+    </div>`;
+
+  const caja = `
+    <div class="marcador" style="margin:-2px 0 14px">
+      <div style="font-size:12.5px;color:rgba(255,255,255,.72);font-weight:600">
+        ${esc(p.sede || 'Sede por definir')} · ${esc(p.hora || 'hora por definir')} · ${soles(k.precio)} por jugador
+      </div>
+      <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px">
+        <div style="font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:40px;line-height:1;color:#fff;font-variant-numeric:tabular-nums">${ocupados}/${p.cupo}</div>
+        <div style="font-size:12.5px;color:rgba(255,255,255,.7);font-weight:600">cupos ocupados${activas.length - ocupados > 0 ? ` · ${activas.length - ocupados} en espera` : ''}</div>
+      </div>
+      <div style="height:9px;border-radius:999px;background:rgba(255,255,255,.16);margin:10px 0 14px;overflow:hidden">
+        <div style="height:100%;width:${pct}%;border-radius:999px;background:${pct >= 100 ? 'var(--amber)' : 'var(--lime)'}"></div>
+      </div>
+      <div style="display:flex;gap:9px;flex-wrap:wrap">
+        ${dato('Cobrado', soles(k.cobrado), 'var(--lime)')}
+        ${dato('Por cobrar', soles(k.porCobrar), k.porCobrar > 0 ? 'var(--amber)' : '#fff')}
+        ${k.costoCancha != null
+          ? dato('Cancha', soles(k.costoCancha))
+          : `<a href="/admin/leads?key=${key}&vista=config" style="flex:1;min-width:96px;padding:11px 12px;background:rgba(255,255,255,.07);border-radius:12px;text-decoration:none;display:block">
+              <div style="font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:rgba(255,255,255,.62);font-weight:700">Cancha</div>
+              <div style="font-size:13px;color:rgba(255,255,255,.85);font-weight:700;margin-top:5px">Poner costo ›</div>
+            </a>`}
+      </div>
+      ${queda != null ? `<div style="margin-top:11px;font-size:13px;font-weight:700;color:${queda >= 0 ? 'var(--lime)' : 'var(--amber)'}">
+        ${queda >= 0 ? `Queda ${soles(queda)} después de pagar la cancha` : `Faltan ${soles(-queda)} para cubrir la cancha`}
+      </div>` : ''}
+    </div>`;
+
   // Resultado de la última edición. Un guardado que falla en silencio es peor
   // que no tener el botón: uno se va creyendo que cambió el dato.
   const textoAviso = (query.aviso || '').toString().slice(0, 200);
@@ -1693,7 +1767,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
         </div>
         <span class="badge b-zona" style="background:${p.estado === 'abierto' ? 'var(--green)' : 'var(--faint)'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
       </div>
-      <p style="color:var(--muted);font-size:13.5px;margin:-6px 0 14px">${esc(p.sede || 'Sede por definir')} · S/ ${esc(p.precio ?? neg.zonas[p.zona]?.precio ?? '?')} · <b style="color:${ocupados >= p.cupo ? 'var(--amber-d)' : 'var(--green-d)'}">${ocupados}/${p.cupo} cupos</b></p>
+      ${caja}
 
       ${aviso}
 
