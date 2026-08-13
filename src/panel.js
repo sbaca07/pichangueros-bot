@@ -744,11 +744,22 @@ function paginaResumen(db, key, query = {}) {
   const pagosRevisar = db.pagosPorRevisar();
 
   // Por zona (las clasificadas + las que faltan).
-  const zc = { brena: 0, comas: 0, otra: 0 };
+  // Las zonas salen de la config en vivo, no de una lista escrita a mano.
+  // Rímac y Chorrillos ya tenían leads, sedes y partidos, y aun así no
+  // aparecían acá: contaban como "clasificadas" y después nadie las dibujaba,
+  // así que 21 contactos se evaporaban del desglose sin dejar rastro.
+  const zc = {};
   let clasificadas = 0;
-  for (const l of todos) if (ZONAS[l.zona]) { zc[l.zona] = (zc[l.zona] || 0) + 1; clasificadas++; }
+  for (const l of todos) if (l.zona) { zc[l.zona] = (zc[l.zona] || 0) + 1; clasificadas++; }
   const sinClasificar = todos.length - clasificadas;
-  const maxZ = Math.max(1, zc.brena, zc.comas, zc.otra, sinClasificar);
+  const maxZ = Math.max(1, ...Object.values(zc), sinClasificar);
+  // Con sede primero (donde se juega), después las de demanda sin cancha.
+  const zonasConSede = db.zonasOperativas();
+  const ordenZonas = Object.keys(zc).sort((a, b) => {
+    const sedeA = zonasConSede.includes(a) ? 0 : 1;
+    const sedeB = zonasConSede.includes(b) ? 0 : 1;
+    return sedeA - sedeB || zc[b] - zc[a];
+  });
   // Cada fila es un link al CRM ya filtrado (todo el Resumen es navegable).
   const zrow = (nombre, n, color, filtroUrl) => {
     const inner = `<span class="zdot" style="background:${color}"></span><span class="zname">${nombre}</span>
@@ -823,6 +834,15 @@ function paginaResumen(db, key, query = {}) {
 
   // Acción primero: la pichanga más próxima como marcador, antes que cualquier
   // métrica. Si no hay partido abierto, invita a abrir uno.
+  // Los pagos por revisar son plata parada: iban al final de la página y ahora
+  // van arriba, con el link a la lista ya filtrada en vez de "entra a la ficha".
+  const alertaPagos = pagosRevisar
+    ? `<a class="banner px" href="/admin/leads?key=${key}&vista=pagos&estado=rev" style="margin:0 0 14px;text-decoration:none">
+        <div class="bic">💸</div>
+        <div class="btxt"><b>${pagosRevisar} pago${pagosRevisar === 1 ? '' : 's'} por revisar.</b>
+          Monto que no calza, comprobante repetido o ilegible — tócalo para verlos.</div></a>`
+    : '';
+
   const abiertos = db.partidosAbiertos();
   const prox = abiertos[0] || null;
   const heroPartido = prox
@@ -843,6 +863,7 @@ function paginaResumen(db, key, query = {}) {
     <div class="px">
       ${query.sync ? `<div class="banner ${query.sync === 'err' ? '' : 'ok'}" style="margin:0 0 12px"><div class="bic">☁</div><div class="btxt">${query.sync === 'err' ? 'No se pudo respaldar al Sheet — revisá SHEET_WEBHOOK_URL/SHEET_SECRET.' : `<b>Respaldado al Google Sheet</b> · ${esc(query.sync)} leads.`}</div></div>` : ''}
       ${heroPartido}
+      ${alertaPagos}
       ${bannerSeguro}
 
       <div class="shdr">Pendientes <small>· toca para actuar</small></div>
@@ -878,9 +899,12 @@ function paginaResumen(db, key, query = {}) {
 
       <div class="shdr">Por zona <small>· toca para ver quiénes son</small></div>
       <div class="zlist">
-        ${zrow('Breña', zc.brena, ZONAS.brena.color, '&zona=brena')}
-        ${zrow('Comas', zc.comas, ZONAS.comas.color, '&zona=comas')}
-        ${zc.otra ? zrow('Otras zonas', zc.otra, ZONAS.otra.color, '&zona=otra') : ''}
+        ${ordenZonas.map((z) => zrow(
+          z === 'otra' ? 'Sin sede cerca' : esc(db.nombreDeZona(z)),
+          zc[z],
+          ZONAS[z]?.color || '#64748b',
+          `&zona=${encodeURIComponent(z)}`
+        )).join('')}
         ${sinClasificar ? zrow('Por clasificar', sinClasificar, 'var(--faint)', null) : ''}
       </div>
 
@@ -890,7 +914,7 @@ function paginaResumen(db, key, query = {}) {
       <div class="foot" style="padding:8px 2px 0">Referencia: ${UMBRAL_PILOTO}+ interesados ≈ 2 pichangas llenas → 🔥 candidato a piloto.</div>` : ''}
 
       ${paraHoy ? `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=hoy" style="margin-top:12px;text-decoration:none"><div class="bic">⏰</div><div class="btxt"><b>${paraHoy} seguimiento${paraHoy === 1 ? '' : 's'} para hoy.</b> Toca para verlos.</div></a>` : ''}
-      ${pagosRevisar ? `<div class="banner px" style="margin-top:12px"><div class="bic">💸</div><div class="btxt"><b>${pagosRevisar} pago${pagosRevisar === 1 ? '' : 's'} de Yape por revisar.</b> Monto no coincide, comprobante repetido o ilegible — entra a la ficha del contacto para verlo.</div></div>` : ''}
+
 
       <div class="foot">Se actualiza solo cada 90 s · <a href="/admin/leads.csv?key=${key}" style="color:var(--green-d)">⬇ exportar CSV</a></div>
     </div>
@@ -1054,7 +1078,11 @@ function paginaCRM(db, key, query) {
   const hoy = hoyLima();
 
   const q = (query.q || '').trim().toLowerCase();
-  const zona = ZONAS[query.zona] ? query.zona : '';
+  // Las zonas se crean desde Ajustes: si el filtro solo aceptara las cinco
+  // escritas a mano, un distrito nuevo (San Borja) se ignoraría en silencio y
+  // la lista mostraría a todos como si el filtro no existiera.
+  const zonasVivas = [...db.zonasOperativas(), 'otra'];
+  const zona = zonasVivas.includes(query.zona) ? query.zona : '';
   const filtro = query.filtro || '';
   const estadoF = Object.keys(ESTADOS).includes(query.estado) || ['pago', 'con_datos'].includes(query.estado) ? query.estado : '';
   const dia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
@@ -1143,13 +1171,28 @@ function paginaCRM(db, key, query) {
   const grupo = (titulo, arr) => arr.length
     ? `<div class="shdr">${titulo} · ${arr.length}</div><div class="llist">${arr.map(fila).join('')}</div>` : '';
 
+  // Seguimientos vencidos o de hoy, arriba de todo (propuesta v2). Estaban solo
+  // detrás de un chip: si nadie lo tocaba, la promesa de "llamar a este el
+  // jueves" se perdía. Es lo único de la pantalla con fecha de vencimiento.
+  const paraHoyCrm = todos.filter((l) => l.proxima_accion && l.proxima_accion <= hoy);
+  const seguimientos = (!dia && !filtro && paraHoyCrm.length)
+    ? `<div class="shdr">📌 Seguimientos para hoy <small>· lo que prometiste hacer</small></div>
+       <div class="llist">${paraHoyCrm.map((l) => `
+         <a class="lrow" href="/admin/leads?key=${key}&numero=${esc(l.numero)}">
+           <span class="ava" style="background:${avatarColor(l.numero)}">${esc(iniciales(l.nombre, l.numero))}</span>
+           <span class="lbody"><span class="lname">${esc(l.nombre || 'Sin nombre')}</span>
+             <span class="lsub">${esc(l.proxima_nota || 'sin nota')}</span></span>
+           <span class="lmeta"><span class="badge ${l.proxima_accion < hoy ? 'b-hand' : 'b-wait'}">${l.proxima_accion < hoy ? 'vencido' : 'hoy'}</span></span>
+           ${SVG.chev}</a>`).join('')}</div>`
+    : '';
+
   // Con filtro de día, la agrupación útil es nuevos vs recurrentes de ese día.
   const lista = dia
     ? (leads.length
       ? grupo('🟢 Nuevos ese día', leads.filter(esNuevoEse)) + grupo('🔵 Recurrentes · ya estaban registrados', leads.filter((l) => !esNuevoEse(l)))
       : '<p class="vacio">Nadie escribió ese día ⚽</p>')
     : ((urgentes.length || resto.length)
-      ? grupo('Necesitan tu atención ahora', urgentes) + grupo('Todos los contactos', resto)
+      ? seguimientos + grupo('Necesitan tu atención ahora', urgentes) + grupo('Todos los contactos', resto)
       : `<p class="vacio">${Object.keys(query).some((k) => ['filtro', 'zona', 'estado', 'distrito', 'q'].includes(k))
           ? 'Ningún pichanguero calza con este filtro ⚽<br><a style="color:var(--green-d);font-weight:600" href="/admin/leads?key=' + key + '&vista=crm">Ver todos</a>'
           : 'Todavía no hay pichangueros registrados ⚽<br>Cuando alguien escriba al número, aparece acá.'}</p>`);
@@ -1242,6 +1285,30 @@ function paginaFicha(db, key, numero) {
 
   const dato = (k, v, color) => `<div class="grow"><span class="k">${k}</span><span class="v"${color ? ` style="color:${color}"` : ''}>${esc(v)}</span></div>`;
 
+  /**
+   * La historia del jugador (propuesta v2). La ficha mostraba quién es, no qué
+   * ha hecho: para saber si alguien es un habitual o si tiene partido el
+   * miércoles había que cruzar tres pantallas a ojo.
+   */
+  const hoyF = hoyLima();
+  const inscripciones = db.asistenciasDe(numero) || [];
+  const jugados = inscripciones.filter((i) => i.fecha < hoyF).length;
+  const proximaInsc = inscripciones.filter((i) => i.fecha >= hoyF).sort((a, b) => a.fecha.localeCompare(b.fecha))[0];
+  const confirmados = pagosLead.filter((p) => p.estado === 'confirmado');
+  const montoPagado = confirmados.reduce((a, p) => a + (Number(p.monto) || 0), 0);
+  const historia = {
+    primer: lead.creado_en ? `${db.fechaBonita(lead.creado_en.slice(0, 10))} · lo captó el bot` : '—',
+    partidos: jugados ? `${jugados} jugado${jugados === 1 ? '' : 's'}` : 'Ninguno todavía',
+    hayProximo: Boolean(proximaInsc),
+    proximo: proximaInsc
+      ? `${db.fechaBonita(proximaInsc.fecha)}${proximaInsc.hora ? ` · ${proximaInsc.hora}` : ''} · ${proximaInsc.estado === 'pagado' ? 'pagado' : proximaInsc.estado}`
+      : 'Sin reserva',
+    montoPagado,
+    pagado: montoPagado > 0
+      ? `S/ ${montoPagado} · ${confirmados.length} pago${confirmados.length === 1 ? '' : 's'} verificado${confirmados.length === 1 ? '' : 's'}`
+      : 'Nunca pagó por acá',
+  };
+
   return baseHtml(`Ficha · ${lead.nombre || numero}`, `
     <div class="px">
       <div class="navbar">
@@ -1268,6 +1335,16 @@ function paginaFicha(db, key, numero) {
             ${dato('Distrito', lead.distrito)}
             ${dato('Zona', (z && z.nombre) || lead.zona, z && z.color)}
             ${dato('Etapa', ESTADOS[lead.estado] || lead.estado)}
+          </div>
+        </div>
+
+        <div>
+          <div class="shdr">Historia <small>· lo que el sistema sabe de él</small></div>
+          <div class="group">
+            ${dato('Primer contacto', historia.primer)}
+            ${dato('Partidos', historia.partidos)}
+            ${dato('Próximo partido', historia.proximo, historia.hayProximo ? 'var(--green-d)' : null)}
+            ${dato('Total pagado', historia.pagado, historia.montoPagado > 0 ? 'var(--green-d)' : null)}
           </div>
         </div>
 

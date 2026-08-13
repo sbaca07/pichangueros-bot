@@ -243,6 +243,49 @@ const srv = app.listen(0, async () => {
     check('sin costo cargado, invita a ponerlo en vez de mentir', /Poner costo/.test(htmlSin));
   }
 
+  console.log('== 4e · Las tres pantallas restantes de la propuesta v2 ==');
+  {
+    // RESUMEN: las zonas estaban escritas a mano (Breña/Comas/Otras). Rímac y
+    // Chorrillos ya tenían leads, sedes y partidos y aun así no se dibujaban:
+    // contaban como clasificadas y después nadie las mostraba.
+    db.getOrCreateLead('51990000001'); db.updateLead('51990000001', { zona: 'sanborja', nombre: 'Zona Nueva' });
+    const resumen = (await GET('/admin/leads?key=ux')).html;
+    check('el desglose por zona incluye un distrito creado desde Ajustes', /San Borja/.test(resumen));
+    check('"otra" se lee como lo que es: gente sin cancha cerca', /Sin sede cerca/.test(resumen) || !/zona=otra/.test(resumen));
+
+    // La plata parada se ve arriba, no al final de la página.
+    const posAlerta = resumen.indexOf('pago') >= 0 ? resumen.indexOf('por revisar') : -1;
+    const posComunidad = resumen.indexOf('La comunidad');
+    check('la alerta de pagos por revisar va ANTES del detalle', posAlerta !== -1 && posAlerta < posComunidad, `alerta=${posAlerta} comunidad=${posComunidad}`);
+    check('…y lleva a los pagos ya filtrados', /vista=pagos&estado=rev/.test(resumen));
+
+    // JUGADORES: un filtro de zona que el código no conoce se ignoraba en
+    // silencio y mostraba a TODOS, como si el filtro no existiera.
+    const crmNueva = (await GET('/admin/leads?key=ux&vista=crm&zona=sanborja')).html;
+    check('filtrar por un distrito nuevo devuelve solo a los suyos', /Zona Nueva/.test(crmNueva) && !/Pablo Pagador/.test(crmNueva));
+
+    db.setSeguimiento(L.pagador, enDias(-1), 'llamarlo, quedó en confirmar');
+    const crm = (await GET('/admin/leads?key=ux&vista=crm')).html;
+    check('los seguimientos del día salen arriba, no detrás de un chip', /Seguimientos para hoy/.test(crm));
+    check('…y un seguimiento pasado se marca vencido', /vencido/.test(crm));
+
+    // FICHA: mostraba quién es, no qué ha hecho.
+    const pgF = db.registrarPago({ numero: L.completo, monto: 45, numero_operacion: 'FICHA-1', estado: 'confirmado' });
+    const partF = db.crearPartido({ zona: 'brena', fecha: enDias(2), hora: '8-9pm', cupo: 10 });
+    db.inscribir(partF, L.completo);
+    db.vincularPago(L.completo, pgF, 1, 'brena', 45);
+    const ficha = (await GET(`/admin/leads?key=ux&numero=${L.completo}`)).html;
+    check('la ficha trae la historia del jugador', /Historia/.test(ficha));
+    check('…primer contacto', /Primer contacto/.test(ficha) && /lo captó el bot/.test(ficha));
+    check('…próximo partido con su estado', /Próximo partido/.test(ficha) && !/Sin reserva/.test(ficha));
+    check('…y cuánto pagó en total', /S\/ 45/.test(ficha) && /verificado/.test(ficha));
+
+    // Contacto propio: L.nuevo ya tiene pagos de bloques anteriores.
+    db.getOrCreateLead('51990000009');
+    const virgen = (await GET('/admin/leads?key=ux&numero=51990000009')).html;
+    check('un contacto sin historia lo dice, no muestra ceros sueltos', /Nunca pagó por acá/.test(virgen) && /Sin reserva/.test(virgen));
+  }
+
   console.log('== 5 · Sin key, nada existe ==');
   check('vista sin key → 404', (await GET('/admin/leads?vista=crm')).status === 404);
   check('export sin key → 404', (await GET('/admin/leads.csv')).status === 404);
