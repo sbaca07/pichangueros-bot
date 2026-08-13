@@ -2,8 +2,16 @@
  * Pichangueros — espejo del bot a Google Sheets (backup + visibilidad).
  *
  * Escribe cuatro pestañas: Resumen, Leads, Pagos y Partidos. El bot manda las
- * hojas ya armadas ({nombre, header, filas}), así que agregar una vista nueva
- * mañana no obliga a volver a pegar este archivo: se toca solo el bot.
+ * hojas ya armadas ({nombre, header, filas, fechas, moneda}), así que agregar
+ * una vista nueva mañana no obliga a volver a pegar este archivo: se toca solo
+ * el bot.
+ *
+ * La hoja la usa gente que no es técnica, así que cada pestaña queda con:
+ *   - filtros de flecha en los encabezados (clic → filtrar por lo que sea)
+ *   - fechas de VERDAD, no texto: sin esto Sheets no ofrece "esta semana" ni
+ *     "antes de tal día", que es justo lo que uno quiere preguntarle a la data
+ *   - montos con formato S/ (suman y se ordenan bien)
+ *   - filas alternadas, encabezado congelado y columnas al ancho del contenido
  *
  * SETUP (una sola vez):
  *  1. Crea un Google Sheet nuevo (hoja de cálculo vacía).
@@ -25,6 +33,21 @@
  */
 var SECRET = 'PEGA_AQUI_EL_MISMO_SECRET_QUE_EN_RENDER';
 
+/**
+ * "2026-08-12 21:45:02" o "2026-08-12" → Date real.
+ *
+ * Se parsea a mano en vez de con new Date(texto): el parseo de cadenas depende
+ * del motor y una fecha mal leída es peor que una en texto — se ve bien y
+ * filtra mal. Los timestamps del bot ya vienen en hora de Lima, así que se
+ * construye la fecha en la zona de la hoja sin correrla.
+ */
+function aFecha(v) {
+  if (!v) return '';
+  var m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (!m) return v; // no tiene forma de fecha: se deja tal cual
+  return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+}
+
 function doPost(e) {
   var body;
   try { body = JSON.parse(e.postData.contents); } catch (err) {
@@ -42,24 +65,49 @@ function doPost(e) {
     var h = hojas[i];
     if (!h || !h.nombre || !h.header) continue;
     var sh = ss.getSheetByName(h.nombre) || ss.insertSheet(h.nombre);
+
+    // El filtro y las bandas sobreviven a clear() y hacen fallar al que sigue:
+    // se quitan antes de reescribir y se vuelven a poner al final.
+    var filtroViejo = sh.getFilter();
+    if (filtroViejo) filtroViejo.remove();
+    var bandas = sh.getBandings();
+    for (var b = 0; b < bandas.length; b++) bandas[b].remove();
     sh.clear();
-    sh.getRange(1, 1, 1, h.header.length).setValues([h.header])
-      .setFontWeight('bold').setBackground('#f1f3f4');
+
+    var ancho = h.header.length;
+    sh.getRange(1, 1, 1, ancho).setValues([h.header])
+      .setFontWeight('bold').setBackground('#e8f0fe').setFontColor('#1a3b6e');
 
     var filas = h.filas || [];
     if (filas.length) {
-      // Las filas llegan con el mismo ancho que el header; setValues exige que
-      // la matriz sea rectangular o tira error y no escribe NADA.
-      var ancho = h.header.length;
+      var fechas = h.fechas || [];
+      // setValues exige una matriz rectangular: si una fila viene corta, tira
+      // error y no escribe NADA.
       var rect = filas.map(function (f) {
         var fila = f.slice(0, ancho);
         while (fila.length < ancho) fila.push('');
+        for (var c = 0; c < fechas.length; c++) fila[fechas[c]] = aFecha(fila[fechas[c]]);
         return fila;
       });
-      sh.getRange(2, 1, rect.length, ancho).setValues(rect);
+      var cuerpo = sh.getRange(2, 1, rect.length, ancho);
+      cuerpo.setValues(rect);
+
+      // Fechas: formato legible Y ordenables/filtrables como fecha.
+      for (var d = 0; d < (h.fechas || []).length; d++) {
+        sh.getRange(2, h.fechas[d] + 1, rect.length, 1).setNumberFormat('dd/MM/yyyy HH:mm');
+      }
+      for (var mo = 0; mo < (h.moneda || []).length; mo++) {
+        sh.getRange(2, h.moneda[mo] + 1, rect.length, 1).setNumberFormat('"S/ "#,##0.00');
+      }
+      cuerpo.applyRowBanding(SpreadsheetApp.BandingTheme.LIGHT_GREY, false, false);
     }
+
     sh.setFrozenRows(1);
-    ss.setActiveSheet(sh);
+    // Los filtros de flecha: es lo que hace que alguien no técnico pueda
+    // preguntarle cosas a la hoja sin escribir una sola fórmula.
+    if (filas.length) sh.getRange(1, 1, filas.length + 1, ancho).createFilter();
+    sh.autoResizeColumns(1, ancho);
+
     escritas.push(h.nombre + ':' + filas.length);
   }
 

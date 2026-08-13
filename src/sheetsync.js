@@ -37,8 +37,10 @@ const soles = (n) => (n == null ? '' : Number(n));
 
 /**
  * Las cuatro pestañas que se mandan en cada sync. Cada una es
- * {nombre, header, filas} y el Apps Script las escribe genéricamente, así que
- * agregar una vista mañana es tocar solo este archivo.
+ * {nombre, header, filas} más dos listas de índices de columna: `fechas` (las
+ * convierte a fecha de verdad, si no Sheets las trata como texto y no se puede
+ * filtrar "esta semana") y `moneda` (formato S/). El Apps Script las escribe
+ * genéricamente, así que agregar una vista mañana es tocar solo este archivo.
  *
  * Leads solo no alcanzaba: Clarck mira la plata, y una hoja sin un sol adentro
  * no le dice nada de su negocio.
@@ -59,6 +61,7 @@ function armarHojas(db) {
       l.proxima_accion || '', l.proxima_nota || '', l.creado_en || '', l.actualizado_en || '',
       `https://wa.me/${l.numero}`,
     ]),
+    fechas: [11, 12],
   };
 
   const hojaPagos = {
@@ -71,6 +74,8 @@ function armarHojas(db) {
       p.cupos || 1, p.titular || '', p.numero_operacion || '', p.motivo || '',
       `https://wa.me/${p.numero}`,
     ]),
+    fechas: [0],
+    moneda: [4],
   };
 
   const hojaPartidos = {
@@ -81,6 +86,8 @@ function armarHojas(db) {
       ESTADOS_PARTIDO[p.estado] || p.estado || '', p.cupo || 0,
       p.ocupados || 0, p.pagados || 0, p.en_espera || 0, soles(p.precio),
     ]),
+    fechas: [0],
+    moneda: [9],
   };
 
   // Resumen: lo que Clarck quiere saber sin filtrar nada. Todo sale de la data
