@@ -283,6 +283,25 @@ function registrarPanel(app, db, conexion = null) {
     volverAPartidos(req, res, id);
   });
 
+  // Corregir un partido ya creado. Si db lo rechaza (bajar el cupo por debajo
+  // de los que ya están adentro), el motivo vuelve en la URL: un fallo mudo
+  // hace que Clarck crea que guardó y siga con el dato viejo.
+  app.post('/admin/partido/editar', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const id = Number(req.body.id);
+    const r = db.actualizarPartido(id, {
+      zona: req.body.zona,
+      fecha: req.body.fecha,
+      hora: (req.body.hora || '').slice(0, 40),
+      sede: (req.body.sede || '').slice(0, 120),
+      cupo: req.body.cupo,
+      precio: req.body.precio,
+    });
+    const aviso = r.ok ? 'Partido actualizado.' : r.motivo;
+    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=partidos&partido=${id}`
+      + `&aviso=${encodeURIComponent(aviso)}${r.ok ? '' : '&err=1'}`);
+  });
+
   app.post('/admin/partido/estado', (req, res) => {
     if (!autorizado(req, res)) return;
     db.setEstadoPartido(Number(req.body.id), req.body.estado);
@@ -1448,7 +1467,7 @@ const ESTADOS_INSC = { pagado: 'Pagado ✅', reservado: 'Reservado', espera: 'En
 function paginaPartidos(db, key, query = {}) {
   const keyRaw = decodeURIComponent(key);
   const partidoId = Number(query.partido) || null;
-  if (partidoId) return paginaPartidoDetalle(db, key, keyRaw, partidoId);
+  if (partidoId) return paginaPartidoDetalle(db, key, keyRaw, partidoId, query);
 
   const todosPartidos = db.listPartidos();
   const verCancelados = query.cancelados === '1';
@@ -1549,7 +1568,7 @@ function paginaPartidos(db, key, query = {}) {
   `, { refresh: false, activo: 'partidos', key });
 }
 
-function paginaPartidoDetalle(db, key, keyRaw, partidoId) {
+function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   const p = db.getPartido(partidoId);
   if (!p) return baseHtml('Partido · Pichangueros', `<div class="px"><p style="padding:20px">Partido no encontrado. <a href="/admin/leads?key=${key}&vista=partidos">Volver</a></p></div>`, { activo: 'partidos', key });
 
@@ -1593,6 +1612,78 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId) {
       <button style="border:none;border-radius:11px;padding:9px 14px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;${clase}">${etiqueta}</button>
     </form>`;
 
+  // Resultado de la última edición. Un guardado que falla en silencio es peor
+  // que no tener el botón: uno se va creyendo que cambió el dato.
+  const textoAviso = (query.aviso || '').toString().slice(0, 200);
+  const esError = query.err === '1';
+  const aviso = textoAviso ? `<div style="margin:0 0 14px;padding:12px 14px;border-radius:12px;font-size:13.5px;font-weight:600;
+      background:${esError ? 'rgba(255,59,48,.10)' : 'rgba(163,198,20,.16)'};color:${esError ? 'var(--red)' : 'var(--green-d)'}">
+      ${esError ? '⚠️' : '✅'} ${esc(textoAviso)}</div>` : '';
+
+  // Editor plegado. <details> nativo: se expande al tocar "Editar", no necesita
+  // JS y el navegador ya sabe hacerlo accesible con teclado.
+  const sedesDeZona = db.listSedes(p.zona);
+  const editor = `
+    <details class="editor" ${esError ? 'open' : ''} style="margin-bottom:14px">
+      <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:14px;
+        border:2px solid var(--trazo);border-radius:14px;background:#fff;font-weight:700;font-size:15px">
+        <span style="font-size:18px">✏️</span>
+        <span style="flex:1">Editar este partido</span>
+        <span style="font-size:12.5px;color:var(--faint);font-weight:600">hora · sede · cupo · precio · fecha</span>
+      </summary>
+      <div class="group" style="margin-top:10px;padding:4px 0">
+        <form method="post" action="/admin/partido/editar">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${partidoId}">
+
+          <div style="padding:12px 14px">
+            <label style="display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px">CANCHA</label>
+            <select name="sede" style="width:100%;font:inherit;font-size:15px;padding:12px;border-radius:11px;border:1px solid var(--sep);background:var(--inset)">
+              ${sedesDeZona.map((s) => `<option value="${esc(s.nombre)}" ${s.nombre === p.sede ? 'selected' : ''}>🏟 ${esc(s.nombre)}</option>`).join('')}
+              <option value="" ${!p.sede || !sedesDeZona.some((s) => s.nombre === p.sede) ? 'selected' : ''}>Otra cancha / por definir</option>
+            </select>
+          </div>
+
+          <div style="padding:0 14px 12px;display:flex;gap:10px;flex-wrap:wrap">
+            <div style="flex:1;min-width:140px">
+              <label style="display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px">DÍA</label>
+              <input name="fecha" type="date" value="${esc(p.fecha)}" style="width:100%;font-size:15px;padding:11px">
+            </div>
+            <div style="flex:1;min-width:120px">
+              <label style="display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px">HORA</label>
+              <input name="hora" value="${esc(p.hora || '')}" placeholder="8-9pm" style="width:100%;font-size:15px;padding:11px">
+            </div>
+          </div>
+
+          <div style="padding:0 14px 14px;display:flex;gap:10px;flex-wrap:wrap">
+            <div style="flex:1;min-width:120px">
+              <label style="display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px">CUPO</label>
+              <input name="cupo" type="number" min="${Math.max(2, ocupados)}" max="60" value="${p.cupo}" style="width:100%;font-size:15px;padding:11px">
+              <div style="font-size:11.5px;color:var(--faint);margin-top:5px">${ocupados ? `No puede bajar de ${ocupados} (los que ya están)` : 'Nadie inscrito todavía'}</div>
+            </div>
+            <div style="flex:1;min-width:120px">
+              <label style="display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px">PRECIO</label>
+              <input name="precio" type="number" step="0.5" value="${p.precio ?? ''}" placeholder="S/ ${esc(neg.zonas[p.zona]?.precio ?? '')}" style="width:100%;font-size:15px;padding:11px">
+              <div style="font-size:11.5px;color:var(--faint);margin-top:5px">Vacío = el de ${esc(z ? z.nombre : p.zona)}</div>
+            </div>
+          </div>
+
+          <div style="padding:0 14px 14px">
+            <button style="width:100%;border:none;border-radius:12px;padding:14px;font:inherit;font-weight:800;font-size:15px;cursor:pointer;background:var(--green);color:#fff">
+              Guardar cambios
+            </button>
+            <div style="font-size:12px;color:var(--faint);margin-top:9px;text-align:center">
+              Los ${activas.length} inscritos se mantienen. El bot usa estos datos al responder.
+            </div>
+          </div>
+        </form>
+      </div>
+    </details>
+    <style>
+      .editor summary::-webkit-details-marker{display:none}
+      .editor[open] summary{border-bottom-left-radius:0;border-bottom-right-radius:0;background:var(--inset)}
+      .editor summary:hover{background:var(--inset)}
+    </style>`;
+
   return baseHtml(`Partido ${p.fecha} · Pichangueros`, `
     <div class="px">
       <div class="ltitle">
@@ -1603,6 +1694,10 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId) {
         <span class="badge b-zona" style="background:${p.estado === 'abierto' ? 'var(--green)' : 'var(--faint)'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
       </div>
       <p style="color:var(--muted);font-size:13.5px;margin:-6px 0 14px">${esc(p.sede || 'Sede por definir')} · S/ ${esc(p.precio ?? neg.zonas[p.zona]?.precio ?? '?')} · <b style="color:${ocupados >= p.cupo ? 'var(--amber-d)' : 'var(--green-d)'}">${ocupados}/${p.cupo} cupos</b></p>
+
+      ${aviso}
+
+      ${editor}
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
         ${p.estado === 'abierto' ? cambioEstado('cerrado', '🔒 Cerrar inscripción', 'background:var(--inset);color:var(--muted)') : cambioEstado('abierto', '🔓 Reabrir', 'background:rgba(163,198,20,.14);color:var(--green-d)')}

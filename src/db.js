@@ -602,6 +602,50 @@ function getPartido(id) {
   return db.prepare('SELECT * FROM partidos WHERE id = ?').get(id) || null;
 }
 
+/**
+ * Corregir un partido ya creado: hora, sede, cupo, precio, fecha o zona.
+ *
+ * Hasta ahora un partido se podía abrir, cerrar, cancelar y borrar, pero no
+ * ARREGLAR: si la hora salió mal o cambió la cancha, la única salida era
+ * cancelar y rehacer — y eso deja a los inscritos afuera. De ahí venían los
+ * "Cancelado" vacíos de Rímac y Chorrillos.
+ *
+ * El cupo no puede quedar por debajo de la gente que ya está adentro: sería
+ * dejar a alguien fuera de la lista sin decírselo a nadie. Se rechaza con el
+ * motivo para poder mostrarlo, en vez de recortar en silencio.
+ *
+ * @returns {{ok: true}|{ok: false, motivo: string}}
+ */
+function actualizarPartido(id, campos) {
+  const p = getPartido(id);
+  if (!p) return { ok: false, motivo: 'El partido ya no existe.' };
+
+  const ocupados = db.prepare(
+    `SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ? AND estado IN ${OCUPAN}`
+  ).get(id).n;
+
+  const sets = [];
+  const valores = [];
+  const poner = (col, v) => { sets.push(`${col} = ?`); valores.push(v); };
+
+  if (campos.zona && zonasOperativas().includes(campos.zona)) poner('zona', campos.zona);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(campos.fecha || '')) poner('fecha', campos.fecha);
+  if (campos.hora !== undefined) poner('hora', normalizarHora(campos.hora) || null);
+  if (campos.sede !== undefined) poner('sede', (campos.sede || '').trim() || null);
+  if (campos.cupo != null && campos.cupo !== '') {
+    const cupo = Math.max(2, Math.min(60, Number(campos.cupo) || p.cupo));
+    if (cupo < ocupados) {
+      return { ok: false, motivo: `No se puede bajar el cupo a ${cupo}: ya hay ${ocupados} jugadores adentro. Da de baja a alguien primero.` };
+    }
+    poner('cupo', cupo);
+  }
+  if (campos.precio !== undefined) poner('precio', campos.precio === '' || campos.precio == null ? null : Number(campos.precio));
+
+  if (!sets.length) return { ok: false, motivo: 'No cambiaste nada.' };
+  db.prepare(`UPDATE partidos SET ${sets.join(', ')} WHERE id = ?`).run(...valores, id);
+  return { ok: true };
+}
+
 /** Borra un partido SIN inscripciones (errores de carga, duplicados).
  *  Si tiene gente adentro no se toca: para eso está "cancelar". */
 function eliminarPartido(id) {
@@ -889,7 +933,7 @@ module.exports = {
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
-  crearPartido, getPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
+  crearPartido, getPartido, actualizarPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,

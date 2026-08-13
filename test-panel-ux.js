@@ -151,6 +151,50 @@ const srv = app.listen(0, async () => {
   }
   check('el distrito nuevo quedó operativo tras el POST', db.zonasOperativas().includes('sanborja'));
 
+  console.log('== 4b · Editar un partido ya creado (sin cancelar y rehacer) ==');
+  {
+    // Hasta ahora un partido se podía abrir, cerrar, cancelar y borrar, pero no
+    // ARREGLAR: una hora mal cargada obligaba a cancelar y rehacer, dejando
+    // afuera a los inscritos. De ahí salieron los "Cancelado" vacíos.
+    const detalle = await GET(`/admin/leads?key=ux&vista=partidos&partido=${partido}`);
+    check('el detalle ofrece "Editar este partido"', /Editar este partido/.test(detalle.html));
+    check('el editor viene plegado (no tapa la lista)', !/<details class="editor" open/.test(detalle.html));
+
+    const antes = db.getPartido(partido);
+    const r = await POST('/admin/partido/editar', {
+      key: 'ux', id: partido, zona: antes.zona, fecha: antes.fecha,
+      hora: '9pm', sede: 'Cancha Corregida', cupo: '20', precio: '18',
+    });
+    check('POST /admin/partido/editar redirige a una página viva',
+      r.status === 302 && (await GET(r.location.replace(B, ''))).status === 200);
+    const p2 = db.getPartido(partido);
+    check('la hora se normaliza al guardar (9pm → 9-10pm)', p2.hora === '9-10pm', p2.hora);
+    check('la sede cambió', p2.sede === 'Cancha Corregida', p2.sede);
+    check('el cupo cambió', p2.cupo === 20, String(p2.cupo));
+    check('el precio cambió', Number(p2.precio) === 18, String(p2.precio));
+    check('los inscritos siguen adentro', db.inscripcionesDe(partido).length > 0);
+
+    // El cupo no puede dejar gente afuera en silencio. Va en un partido propio:
+    // el de arriba lo cerraron los bloques anteriores y ahí `inscribir` rechaza,
+    // así que el caso dependía del orden de los tests en vez de la regla.
+    const lleno = db.crearPartido({ zona: 'brena', fecha: enDias(4), hora: '8-9pm', cupo: 10 });
+    for (const n of ['51970000001', '51970000002', '51970000003', '51970000004']) db.inscribir(lleno, n);
+    const dentro = db.inscripcionesDe(lleno).filter((i) => ['pagado', 'reservado'].includes(i.estado)).length;
+    check(`hay ${dentro} jugadores adentro para probar el recorte`, dentro === 4, String(dentro));
+    const rechazo = db.actualizarPartido(lleno, { cupo: '2' });
+    check('bajar el cupo por debajo de los inscritos se rechaza', rechazo.ok === false, JSON.stringify(rechazo));
+    check('…y el motivo dice cuántos hay adentro', /ya hay \d+ jugadores/.test(rechazo.motivo || ''), rechazo.motivo);
+    check('…y el cupo NO se tocó', db.getPartido(lleno).cupo === 10, String(db.getPartido(lleno).cupo));
+
+    const conError = await POST('/admin/partido/editar', { key: 'ux', id: lleno, cupo: '2' });
+    const pagina = await GET(conError.location.replace(B, ''));
+    check('un rechazo vuelve con el aviso visible', /ya hay/.test(pagina.html), 'sin aviso en la página');
+    check('…y deja el editor ABIERTO para corregir', /<details class="editor" open/.test(pagina.html));
+
+    check('editar un partido inexistente no rompe', db.actualizarPartido(999999, { hora: '8pm' }).ok === false);
+    check('guardar sin cambios avisa en vez de mentir', db.actualizarPartido(partido, {}).ok === false);
+  }
+
   console.log('== 5 · Sin key, nada existe ==');
   check('vista sin key → 404', (await GET('/admin/leads?vista=crm')).status === 404);
   check('export sin key → 404', (await GET('/admin/leads.csv')).status === 404);
