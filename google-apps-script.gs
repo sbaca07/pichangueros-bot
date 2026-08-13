@@ -92,6 +92,13 @@ function doPost(e) {
       var cuerpo = sh.getRange(2, 1, rect.length, ancho);
       cuerpo.setValues(rect);
 
+      // Borrón y cuenta nueva ANTES de formatear: clear() no se lleva el
+      // formato numérico, así que si una columna cambia de sitio entre dos
+      // versiones, la nueva hereda el formato de la vieja. Pasó con Edad: una
+      // celda quedó con formato de fecha de un sync anterior y el 34 se mostró
+      // como 02/02/1900. Se ve mal y no se nota hasta que alguien lo mira.
+      cuerpo.setNumberFormat('General');
+
       // Fechas: formato legible Y ordenables/filtrables como fecha.
       for (var d = 0; d < (h.fechas || []).length; d++) {
         sh.getRange(2, h.fechas[d] + 1, rect.length, 1).setNumberFormat('dd/MM/yyyy HH:mm');
