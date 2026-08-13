@@ -162,6 +162,10 @@ async function syncToSheet(db) {
     if (!res.ok) throw new Error(`HTTP ${res.status} ${txt.slice(0, 140)}`);
     const detalle = hojas.map((h) => `${h.nombre} ${h.filas.length}`).join(' · ');
     console.log(`[sheet] Sincronizado → Google Sheet: ${detalle}.`);
+    // Lo que el Apps Script dice que quedó en la hoja: versión, rango del
+    // filtro por pestaña, anchos. Va al log para poder verificar el estado real
+    // sin que nadie tenga que abrir la hoja y mirar.
+    console.log(`[sheet] Respuesta del script: ${txt.slice(0, 900)}`);
     return { ok: true, n: hojas.find((h) => h.nombre === 'Leads')?.filas.length || 0, hojas: hojas.length };
   } catch (e) {
     console.error('[sheet] Error sincronizando:', e.message);

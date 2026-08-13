@@ -37,7 +37,7 @@ var SECRET = 'PEGA_AQUI_EL_MISMO_SECRET_QUE_EN_RENDER';
 // esta sirviendo el codigo que uno acaba de pegar o la version anterior: se
 // pega, se guarda, y si no se publica una version nueva sigue corriendo la
 // vieja en silencio. Subir esto en cada cambio.
-var VERSION = 'v3-formato';
+var VERSION = 'v4-anchos';
 
 /**
  * "2026-08-12 21:45:02" o "2026-08-12" → Date real.
@@ -122,7 +122,17 @@ function doPost(e) {
     // Los filtros de flecha: es lo que hace que alguien no técnico pueda
     // preguntarle cosas a la hoja sin escribir una sola fórmula.
     if (filas.length) sh.getRange(1, 1, filas.length + 1, ancho).createFilter();
+
+    // autoResize ajusta al contenido pero NO reserva lugar para la flecha del
+    // filtro. Donde el título es más ancho que el dato ("Mes de ingreso" con
+    // "2026-08 · Agosto" debajo) la columna quedaba justa, el título se cortaba
+    // y la flecha se caía afuera: la columna quedaba sin filtro visible, que es
+    // lo único que esa columna existe para hacer. Se agrega margen fijo y se
+    // pone techo, porque un Motivo largo se comía media pantalla.
     sh.autoResizeColumns(1, ancho);
+    for (var w = 1; w <= ancho; w++) {
+      sh.setColumnWidth(w, Math.min(Math.max(sh.getColumnWidth(w) + 34, 95), 300));
+    }
 
     // Esta hoja es un ESPEJO: se reescribe entera en cada sync. Lo que alguien
     // escriba acá se pierde en la próxima sin dejar rastro — y el que la abre
@@ -135,7 +145,24 @@ function doPost(e) {
       .setDescription('Espejo del bot: se reescribe cada 6 h. Para cambiar algo, entrá al panel.')
       .setWarningOnly(true);
 
-    escritas.push(h.nombre + ':' + filas.length);
+    // Se reporta lo que quedó de verdad en la hoja, no lo que se intentó
+    // hacer. Sin esto, la unica forma de saber si el filtro cubre todas las
+    // columnas es que alguien abra la hoja y mire — y eso ya nos costó una
+    // ronda entera con la flecha de "Mes de ingreso" faltando.
+    var filtro = sh.getFilter();
+    var anchos = [];
+    for (var q = 1; q <= ancho; q++) anchos.push(sh.getColumnWidth(q));
+    escritas.push({
+      hoja: h.nombre,
+      filas: filas.length,
+      columnas: ancho,
+      filtro: filtro ? filtro.getRange().getA1Notation() : 'SIN FILTRO',
+      columnasConFiltro: filtro ? filtro.getRange().getNumColumns() : 0,
+      congelada: sh.getFrozenRows(),
+      protegida: sh.getProtections(SpreadsheetApp.ProtectionType.SHEET).length > 0,
+      anchoMin: Math.min.apply(null, anchos),
+      anchoMax: Math.max.apply(null, anchos),
+    });
   }
 
   // Las pestañas quedan en el orden en que el bot las manda (Resumen primero).
