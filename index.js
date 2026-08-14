@@ -65,6 +65,11 @@ const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || '.wwebjs_auth';
 const SESSION_DIR = path.join(AUTH_PATH, 'baileys');
 const SAFE_MODE = (process.env.SAFE_MODE || 'true') !== 'false';
 const TEST_TRIGGER = (process.env.TEST_TRIGGER || 'ping kipi').toLowerCase();
+// Pausa antes de responder. Nació como "naturalidad anti-spam" de Baileys, pero
+// por el canal oficial de Meta no hay heurística de baneo que esquivar: lo único
+// que hacía era regalarle 1.5–3.5 s a CADA respuesta (13/08, latencias medidas
+// con Clarck: 7 a 12 s). Queda en 0; sigue configurable por si se vuelve a Baileys.
+const RESPUESTA_DELAY_MS = Number(process.env.RESPUESTA_DELAY_MS || 0);
 // Números (solo dígitos, con código de país, ej. 51999888777) que el cerebro
 // SÍ atiende aunque esté en MODO SEGURO. Separados por coma.
 const ALLOWED_TESTERS = (process.env.ALLOWED_TESTERS || '')
@@ -202,6 +207,68 @@ function encolarPorNumero(numero, tarea) {
   return siguiente;
 }
 
+// Ráfagas: la gente no escribe un párrafo, escribe "hola" / "quiero jugar" /
+// "soy de Breña" en mensajes sueltos. El bot contestaba UNO POR UNO, así que
+// devolvía tres bloques de texto seguidos — exactamente lo que Clarck reportó
+// como "habla mucho" (13/08: 3 respuestas, 848 caracteres, en 20 segundos).
+// Ahora se espera a que termine de escribir y se responde UNA sola vez con
+// todo junto. De paso son 3 llamadas al modelo que pasan a ser 1.
+const DEBOUNCE_MS = Number(process.env.DEBOUNCE_MS || 2500);
+const rafagas = new Map(); // numero → { textos, ultimo, sock, timer }
+
+/**
+ * Solo agrupamos texto plano. Una imagen puede ser un voucher (se procesa con
+ * su propio mensaje y su descargador), y los adjuntos se vuelven marcadores
+ * "[el jugador envió ...]" que no tiene sentido concatenar.
+ */
+function esSoloTexto(msg) {
+  const m = desenvolver(msg.message || {});
+  if (!(m.conversation || m.extendedTextMessage?.text)) return false;
+  return !(m.imageMessage || m.audioMessage || m.videoMessage || m.documentMessage
+    || m.stickerMessage || m.locationMessage || m.liveLocationMessage
+    || m.contactMessage || m.contactsArrayMessage);
+}
+
+/** Cierra la ráfaga pendiente de un número y la manda a procesar como un solo mensaje. */
+function soltarRafaga(numero) {
+  const r = rafagas.get(numero);
+  if (!r) return;
+  clearTimeout(r.timer);
+  rafagas.delete(numero);
+  if (r.textos.length > 1) {
+    // Se responde sobre el ÚLTIMO mensaje (su wamid es el que Meta acepta para
+    // el visto azul y el "escribiendo…"), pero con el texto de toda la ráfaga.
+    r.ultimo._textoAgrupado = r.textos.join('\n');
+    console.log(`[rafaga] ${numero}: ${r.textos.length} mensajes agrupados en una sola respuesta.`);
+  }
+  encolarPorNumero(numero, () => manejarMensaje(r.sock, r.ultimo));
+}
+
+/**
+ * Puerta de entrada de todo mensaje entrante: agrupa ráfagas de texto y deja
+ * pasar de largo lo que debe atenderse ya (adjuntos, comandos de control, ping).
+ */
+function recibirMensaje(sock, msg) {
+  const numero = numeroDe(msg);
+  const texto = extraerTexto(msg);
+  const instantaneo = !numero || !texto || !esSoloTexto(msg)
+    || numero === NOTIFY_NUMBER || texto.toLowerCase() === TEST_TRIGGER;
+
+  if (instantaneo) {
+    soltarRafaga(numero); // lo que estaba pendiente va primero: la cola conserva el orden
+    encolarPorNumero(numero, () => manejarMensaje(sock, msg));
+    return;
+  }
+
+  const r = rafagas.get(numero) || { textos: [], ultimo: msg, sock, timer: null };
+  clearTimeout(r.timer);
+  r.textos.push(texto);
+  r.ultimo = msg;
+  r.sock = sock;
+  r.timer = setTimeout(() => soltarRafaga(numero), DEBOUNCE_MS);
+  rafagas.set(numero, r);
+}
+
 /**
  * Clarck contestó a mano desde su celular (fromMe que NO envió este bot):
  * se guarda como respuesta del negocio para que el CRM muestre la conversación
@@ -234,7 +301,8 @@ async function manejarMensaje(sock, msg) {
   const from = msg.key.remoteJid;
   if (!from || from.endsWith('@g.us') || from === 'status@broadcast') return; // grupos: Semana 5
 
-  const body = extraerTexto(msg);
+  // _textoAgrupado: varias líneas si el contacto escribió en ráfaga (ver recibirMensaje).
+  const body = msg._textoAgrupado || extraerTexto(msg);
   if (!body) return;
   const numero = numeroDe(msg); // resuelve LID → número real cuando se puede
 
@@ -311,7 +379,7 @@ async function manejarMensaje(sock, msg) {
         if (resultado.handoff) db.setHandoff(numero, resultado.motivoHandoff || 'Revisar comprobante de pago');
         if (!modoSilencio) {
           try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
-          await sleep(1000 + Math.random() * 1500);
+          if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
           await enviarTexto(sock, destino, resultado.respuesta);
           db.saveMessage(numero, 'assistant', resultado.respuesta);
           if (resultado.handoff) await notificarControl(sock, `💸 Revisar pago de wa.me/${numero}: ${resultado.motivoHandoff}`);
@@ -331,7 +399,7 @@ async function manejarMensaje(sock, msg) {
     console.log(`[atajo] ${numero} → ${rapida.atajo} (sin IA)`);
     if (!modoSilencio) {
       try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
-      await sleep(600 + Math.random() * 700);
+      if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
       try {
         await enviarTexto(sock, destino, rapida.respuesta);
         db.saveMessage(numero, 'assistant', rapida.respuesta);
@@ -439,9 +507,9 @@ async function manejarMensaje(sock, msg) {
   }
 
   if (decision.reply && !modoSilencio) {
-    // Naturalidad anti-spam: "escribiendo…" + pausa corta antes de responder.
+    // "Escribiendo…" real (visto azul + typing indicator de Cloud API).
     try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
-    await sleep(1500 + Math.random() * 2000);
+    if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
     try {
       const sent = await enviarTexto(sock, destino, decision.reply);
       console.log(`[send] OK → ${destino} id=${sent?.key?.id} (${decision.reply.length} chars)`);
@@ -569,7 +637,7 @@ async function startBot() {
       try {
         if (!msg.message) continue;
         if (msg.key.fromMe) { registrarRespuestaManual(msg); continue; }
-        encolarPorNumero(numeroDe(msg), () => manejarMensaje(sock, msg));
+        recibirMensaje(sock, msg);
       } catch (e) { console.error('[message] Error:', e.message); }
     }
   });
@@ -623,7 +691,7 @@ if (oficial && !oficial.activo() && typeof oficial.registrarVerificacion === 'fu
 if (oficial && oficial.activo()) {
   oficial.registrarWebhook(app, {
     // Los mensajes entrantes pasan por la MISMA cola por contacto que Baileys.
-    onMensaje: (sockLike, msg) => encolarPorNumero(numeroDe(msg), () => manejarMensaje(sockLike, msg)),
+    onMensaje: (sockLike, msg) => recibirMensaje(sockLike, msg),
     // Echoes de coexistencia = respuestas a mano de Clarck desde su app.
     onEcho: (msg) => registrarRespuestaManual(msg),
     // Salud de la cuenta: con el historial de sanciones, es la alerta más

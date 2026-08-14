@@ -31,6 +31,8 @@ Estabilidad de la conexión: `markOnlineOnConnect:false` (el bot es dispositivo 
 
 Ver `.env.example`. Las nuevas de la Semana 2: `OPENAI_API_KEY` (sin ella el cerebro queda apagado y el bot solo registra), `OPENAI_MODEL` (default `gpt-4o-mini`), `ALLOWED_TESTERS`, `NOTIFY_NUMBER`.
 
+Ritmo de respuesta (tras las observaciones de Clarck del 13/08): `DEBOUNCE_MS` (default 2500 — cuánto se espera a que el contacto termine de escribir antes de responder **una sola vez**) y `RESPUESTA_DELAY_MS` (default 0 — la vieja pausa "anti-spam" de Baileys, innecesaria por el canal oficial). Ver `test-rafagas.js`.
+
 ## Comandos del número de control (por DM al bot)
 
 - `kipi estado` — conexión, modo, leads por zona, handoffs activos.
