@@ -107,6 +107,35 @@ const comoTexto = (h) => `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`;
   check('y con una tarea pendiente para hoy', lead?.proxima_accion === hoy);
   check('que dice sumarlo al grupo', /Sumarlo al grupo/i.test(lead?.proxima_nota || ''));
 
+  console.log('== 3 · La hora entra por reloj (24 h) y sale legible para el jugador ==');
+  check('20:00 se guarda como "8-9pm"', db.normalizarHora('20:00') === '8-9pm');
+  check('09:00 → "9-10am"', db.normalizarHora('09:00') === '9-10am');
+  check('20:30 conserva los minutos', db.normalizarHora('20:30') === '8:30-9:30pm');
+  check('un turno que cruza el mediodía lleva los dos sufijos', db.normalizarHora('11:00') === '11am-12pm');
+  check('con hora de fin explícita respeta la duración', db.normalizarHora('20:00-22:00') === '8-10pm');
+  check('lo ya guardado a mano no se toca', db.normalizarHora('8-9pm') === '8-9pm');
+  check('el viejo "9pm" sigue funcionando', db.normalizarHora('9pm') === '9-10pm');
+
+  // El bug que hacía invisible un partido: ordenHora leía "20:00" como las 8am,
+  // así que el filtro de vigentes lo descartaba a media mañana.
+  check('ordenHora lee 20:00 como las 20, no como las 8', db.ordenHora('20:00') === 20);
+  check('y sigue leyendo bien "8-9pm"', db.ordenHora('8-9pm') === 20);
+  check('"12am" es medianoche', db.ordenHora('12am') === 0);
+  check('sin hora devuelve 99 (nunca se descarta)', db.ordenHora(null) === 99);
+
+  check('horaInput precarga el reloj desde lo guardado', db.horaInput('8-9pm') === '20:00');
+  check('con minutos también', db.horaInput('8:30-9:30pm') === '20:30');
+  check('sin hora, el reloj queda vacío', db.horaInput('') === '');
+
+  // De punta a punta: lo que manda el <input type="time"> tiene que quedar
+  // guardado legible Y seguir siendo ofrecido si el turno todavía no empezó.
+  if (horaAhora <= 20) {
+    const p = db.crearPartido({ zona: 'brena', fecha: manana, hora: '20:00', sede: 'Melgar', cupo: 14, precio: 15 });
+    const guardado = db.getPartido(p.id ?? p);
+    check('el partido cargado con el reloj se guarda como "8-9pm"', guardado.hora === '8-9pm');
+    check('y el bot sí lo ofrece', db.partidosAbiertos(null, { vigentes: true }).some((x) => x.id === (p.id ?? p)));
+  }
+
   console.log(`\n${fallos ? '❌' : '✅'} ${ok} checks OK, ${fallos} fallos`);
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {}
   process.exit(fallos ? 1 : 0);

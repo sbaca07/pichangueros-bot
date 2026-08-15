@@ -539,20 +539,67 @@ db.exec(`
 const hoyLimaDb = () => new Date(Date.now() - 5 * 3600e3).toISOString().slice(0, 10);
 
 /** '9pm' → '9-10pm' (los turnos duran 1 h): un solo formato en todo el sistema. */
+/** 20 → '8', 20 con 30' → '8:30' (sin el am/pm, que lo pone quien llama). */
+const en12 = (h, min) => `${h % 12 || 12}${min ? `:${String(min).padStart(2, '0')}` : ''}`;
+const meridiano = (h) => (h % 24 < 12 ? 'am' : 'pm');
+
+/**
+ * Deja la hora en el formato que leen los jugadores ('8-9pm').
+ *
+ * Acepta lo que manda el reloj del navegador ('20:00', '20:00-21:00'), que es
+ * como el panel la pide desde el 15/08. Antes el campo era texto libre y solo
+ * se entendía '9pm': cualquier otra cosa se guardaba cruda, y '20:00' hacía que
+ * ordenHora lo leyera como las 8 de la MAÑANA — con lo cual el bot dejaba de
+ * ofrecer un partido de las 8 de la noche desde las 8am, sin que se notara.
+ */
 function normalizarHora(hora) {
   const t = (hora || '').trim();
+  if (!t) return t;
+  // Reloj (24 h): '20:00' o '20:00-21:00'. Sin hora de fin se asume 1 hora.
+  const reloj = /^(\d{1,2}):(\d{2})(?:\s*[-a]\s*(\d{1,2}):(\d{2}))?$/.exec(t);
+  if (reloj && !/am|pm/i.test(t)) {
+    const hIni = Number(reloj[1]) % 24;
+    const mIni = Number(reloj[2]);
+    const hFin = reloj[3] != null ? Number(reloj[3]) % 24 : (hIni + 1) % 24;
+    const mFin = reloj[4] != null ? Number(reloj[4]) : mIni;
+    // Si el turno cruza el mediodía o la medianoche, se escriben los dos
+    // sufijos ('11am-12pm'); si no, uno solo al final ('8-9pm').
+    return meridiano(hIni) === meridiano(hFin)
+      ? `${en12(hIni, mIni)}-${en12(hFin, mFin)}${meridiano(hFin)}`
+      : `${en12(hIni, mIni)}${meridiano(hIni)}-${en12(hFin, mFin)}${meridiano(hFin)}`;
+  }
   const m = /^(\d{1,2})\s*(am|pm)$/i.exec(t);
   if (!m) return t;
   const n = Number(m[1]);
   return `${n}-${n === 12 ? 1 : n + 1}${m[2].toLowerCase()}`;
 }
 
+/** '8-9pm' → '20:00' — para precargar el <input type="time"> del panel. */
+function horaInput(hora) {
+  const t = (hora || '').trim();
+  if (!t) return '';
+  const m = /^(\d{1,2})(?::(\d{2}))?/.exec(t);
+  if (!m) return '';
+  let h = Number(m[1]);
+  if (/am|pm/i.test(t)) {
+    h %= 12;
+    if (/pm/i.test(t)) h += 12;
+  }
+  if (h > 23) return '';
+  return `${String(h).padStart(2, '0')}:${m[2] || '00'}`;
+}
+
 /** '8-9pm' → 20 · '9-10am' → 9 — para ordenar los turnos dentro del día. */
 function ordenHora(hora) {
-  const m = /^(\d{1,2})/.exec(hora || '');
+  const t = (hora || '').trim();
+  const m = /^(\d{1,2})/.exec(t);
   if (!m) return 99;
-  let h = Number(m[1]) % 12;
-  if (/pm/i.test(hora || '')) h += 12;
+  const n = Number(m[1]);
+  // Sin am/pm es formato de 24 h ('20:00' del reloj, o una hora suelta): va tal
+  // cual. Hacerle el %12 era el bug que convertía las 20:00 en las 8am.
+  if (!/am|pm/i.test(t)) return Math.min(n, 23);
+  let h = n % 12;
+  if (/pm/i.test(t)) h += 12;
   return h;
 }
 
@@ -1017,5 +1064,5 @@ module.exports = {
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
-  hoyLima: hoyLimaDb,
+  hoyLima: hoyLimaDb, ordenHora, horaInput, normalizarHora,
 };

@@ -1236,6 +1236,22 @@ function badges(l, sinResponder) {
 // ==============================================================================
 //  Vista 1 · RESUMEN (dashboard)
 // ==============================================================================
+/**
+ * Un campo = etiqueta visible + control + ayuda debajo.
+ *
+ * Antes eran <input> con solo placeholder. El placeholder desaparece en cuanto
+ * el campo tiene valor, que es SIEMPRE al editar algo ya cargado: la pantalla
+ * quedaba en cajas mudas. Y la poca ayuda que había vivía en title=, que en
+ * celular no se puede ver. Vive a nivel de módulo porque lo usan tanto Ajustes
+ * como el alta de partido.
+ */
+const campo = (id, etiqueta, control, ayuda = '', ancho = false) => `
+  <div class="campo${ancho ? ' campo-ancho' : ''}">
+    <label for="${id}">${etiqueta}</label>
+    ${control}
+    ${ayuda ? `<small>${ayuda}</small>` : ''}
+  </div>`;
+
 function paginaResumen(db, key, query = {}) {
   const todos = db.listLeads();
   const roles = db.ultimosRoles();
@@ -1415,6 +1431,19 @@ function paginaResumen(db, key, query = {}) {
       ico: '🏟', que: `${sinCosto.length} cancha${sinCosto.length === 1 ? '' : 's'} sin costo de alquiler`,
       para: 'Sin ese dato la caja del partido muestra lo que entra, no lo que queda.',
       href: aConfig(`zona-${sinCosto[0].zona}`), cta: 'Completar',
+    });
+  }
+  // Partidos que ya se jugaron y siguen en 'abierto'. Nada los cierra solo (a
+  // propósito: cerrarlos dejaría huérfano el Yape que entra tarde), así que la
+  // única forma de que no se apilen es recordárselo acá.
+  const horaAhora = Number(new Date(Date.now() - 5 * 3600e3).toISOString().slice(11, 13));
+  const sinCerrar = db.listPartidos().filter((p) => p.estado === 'abierto'
+    && (p.fecha < hoyLima() || (p.fecha === hoyLima() && db.ordenHora(p.hora) <= horaAhora)));
+  if (sinCerrar.length) {
+    pendientes.push({
+      ico: '🔒', que: `${sinCerrar.length} partido${sinCerrar.length === 1 ? '' : 's'} ya jugado${sinCerrar.length === 1 ? '' : 's'} sin cerrar`,
+      para: 'Al cerrarlos cuadra la caja y dejan de figurar como si aún se pudiera entrar.',
+      href: `/admin/leads?key=${key}&vista=partidos`, cta: 'Cerrarlos',
     });
   }
   if (!(cfg.yape_numero || '').trim()) {
@@ -2061,21 +2090,6 @@ function paginaConfig(db, key, conexion = null, query = {}) {
   const zonasOp = db.zonasOperativas();
   const sedesPorZona = Object.fromEntries(zonasOp.map((z) => [z, db.listSedes(z)]));
 
-  /**
-   * Un campo = etiqueta visible + control + ayuda debajo.
-   *
-   * Antes eran <input> con solo placeholder. El placeholder desaparece en
-   * cuanto el campo tiene valor, que es SIEMPRE al editar algo ya cargado: la
-   * pantalla quedaba en siete cajas mudas. Y la poca ayuda que había vivía en
-   * title=, que en celular no se puede ver.
-   */
-  const campo = (id, etiqueta, control, ayuda = '', ancho = false) => `
-    <div class="campo${ancho ? ' campo-ancho' : ''}">
-      <label for="${id}">${etiqueta}</label>
-      ${control}
-      ${ayuda ? `<small>${ayuda}</small>` : ''}
-    </div>`;
-
   const filaSede = (zona, s) => {
     const uid = s ? `s${s.id}` : `nueva-${esc(zona)}`;
     const v = (campoNombre) => esc(s?.[campoNombre] ?? '');
@@ -2330,9 +2344,13 @@ function paginaPartidos(db, key, query = {}) {
   const neg = db.getNegocio();
   const hoy = hoyLima();
 
+  // Hora de Lima, para saber qué turno de HOY ya arrancó.
+  const horaAhora = Number(new Date(Date.now() - 5 * 3600e3).toISOString().slice(11, 13));
+  const yaEmpezo = (p) => p.fecha < hoy || (p.fecha === hoy && db.ordenHora(p.hora) <= horaAhora);
+
   const fila = (p) => {
     const z = ZONAS[p.zona];
-    const pasado = p.fecha < hoy;
+    const pasado = yaEmpezo(p);
     const lleno = p.ocupados >= p.cupo;
     // "Lleno" se decía SOLO pintando el "12/14" de ámbar en vez de verde: con
     // daltonismo rojo-verde los dos son el mismo marrón, y a contraluz tampoco
@@ -2341,6 +2359,13 @@ function paginaPartidos(db, key, query = {}) {
       ? `<span class="est est-lleno">${p.ocupados}/${p.cupo} lleno</span>`
       : `<span class="est est-ok">${p.ocupados}/${p.cupo} · ${p.cupo - p.ocupados} libre${p.cupo - p.ocupados === 1 ? '' : 's'}</span>`;
     const abierto = p.estado === 'abierto' && !pasado;
+    // Un partido cuya hora ya pasó seguía diciendo "Abierto" — nada lo cierra
+    // solo, y el estado se imprimía crudo. A las 12pm la lista mostraba tres
+    // turnos de la mañana como si todavía se pudiera entrar. El bot ya no los
+    // ofrece (partidosAbiertos con vigentes), así que lo que faltaba era que
+    // el panel lo dijera y diera el atajo para cerrarlo.
+    const sinCerrar = p.estado === 'abierto' && pasado;
+    const etiquetaEstado = sinCerrar ? 'Terminó — ciérralo' : (ESTADOS_PARTIDO[p.estado] || p.estado);
     return `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}">
       <span class="pfecha"><b>${esc(p.fecha.slice(8, 10))}</b><small>${esc(mesCorto(p.fecha))}</small></span>
       <span class="lbody">
@@ -2348,7 +2373,7 @@ function paginaPartidos(db, key, query = {}) {
         <span class="lsub">${esc(p.sede || 'Sede por definir')} · S/ ${esc(p.precio ?? neg.zonas[p.zona]?.precio ?? '?')}</span>
         <span class="pchips">
           ${chipCupos}
-          <span class="est ${abierto ? 'est-ok' : 'est-off'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
+          <span class="est ${abierto ? 'est-ok' : sinCerrar ? 'est-debe' : 'est-off'}">${esc(etiquetaEstado)}</span>
           ${p.pagados ? `<span class="est est-ok">${p.pagados} pagados</span>` : ''}
           ${p.en_espera ? `<span class="est est-debe">${p.en_espera} en espera</span>` : ''}
         </span>
@@ -2391,10 +2416,17 @@ function paginaPartidos(db, key, query = {}) {
             <button type="button" class="qd" onclick="setDia(this,'${fechaLima(1)}')">Mañana</button>
             <input name="fecha" id="fFecha" type="date" required min="${hoy}" value="${hoy}" style="flex:1;min-width:130px">
           </div>
-          <label>Hora, cupo y precio</label>
-          <input name="hora" placeholder="Hora (ej. 8-9pm)" style="flex:2">
-          <input name="cupo" id="fCupo" type="number" min="2" max="60" value="14" style="max-width:84px" title="Cupo (se llena solo al elegir cancha)">
-          <input name="precio" type="number" step="0.5" placeholder="S/ auto" style="max-width:100px" title="Vacío = precio de la zona">
+          <div class="campos" style="flex-basis:100%">
+            ${campo('fHora', 'Hora de inicio',
+              '<input id="fHora" name="hora" type="time" step="1800" required>',
+              'El turno dura una hora: si pones 8:00 pm, los jugadores ven "8-9pm".')}
+            ${campo('fCupo', 'Cupo',
+              '<input id="fCupo" name="cupo" type="number" min="2" max="60" inputmode="numeric" value="14">',
+              'Se llena solo al elegir la cancha.')}
+            ${campo('fPrecio', 'Precio por jugador',
+              '<input id="fPrecio" name="precio" type="number" step="0.5" inputmode="decimal" placeholder="S/ auto">',
+              'Vacío = el precio de la zona.')}
+          </div>
           <button style="flex-basis:100%">⚽ Abrir partido — el bot empieza a llenarlo</button>
         </form>
       </div>
@@ -2595,7 +2627,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
             </div>
             <div class="campo">
               <label for="ed-hora">Hora</label>
-              <input id="ed-hora" name="hora" value="${esc(p.hora || '')}" placeholder="8-9pm">
+              <input id="ed-hora" name="hora" type="time" step="1800" value="${esc(db.horaInput(p.hora))}">
             </div>
             <div class="campo">
               <label for="ed-cupo">Cupo</label>
