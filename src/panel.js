@@ -96,6 +96,28 @@ function registrarPanel(app, db, conexion = null) {
   const express = require('express');
   app.use(express.urlencoded({ extended: false }));
 
+  /**
+   * Isotipo de Pichangueros para la pestaña del navegador y la pantalla de
+   * inicio del celular. Servido por NOSOTROS, no por un CDN: el panel no
+   * depende de terceros para pintarse.
+   *
+   * Va SIN key a propósito — el navegador pide el favicon por su cuenta y no
+   * arrastra la query. Es un logo público, no hay nada que proteger. Se cachea
+   * un año: son 7 KB que Clarck baja una sola vez, no en cada vista.
+   */
+  const fsIconos = require('fs');
+  const rutaIconos = require('path').join(__dirname, '..', 'assets');
+  for (const tam of [64, 180]) {
+    app.get(`/icono-${tam}.png`, (_req, res) => {
+      const archivo = require('path').join(rutaIconos, `icono-${tam}.png`);
+      if (!fsIconos.existsSync(archivo)) return res.status(404).end();
+      res.type('png').set('Cache-Control', 'public, max-age=31536000, immutable');
+      res.send(fsIconos.readFileSync(archivo));
+    });
+  }
+  // Los navegadores lo piden solo, aunque no esté declarado.
+  app.get('/favicon.ico', (_req, res) => res.redirect(301, '/icono-64.png'));
+
   const ADMIN_KEY = process.env.ADMIN_KEY || '';
   const autorizado = (req, res) => {
     const key = req.method === 'POST' ? req.body.key : req.query.key;
@@ -1170,6 +1192,9 @@ function baseHtml(titulo, cuerpo, { refresh = false, activo = '', key = '', tabb
   return `<!doctype html><html lang="es"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${esc(titulo)}</title>
+<link rel="icon" type="image/png" sizes="64x64" href="/icono-64.png">
+<link rel="apple-touch-icon" href="/icono-180.png">
+<meta name="theme-color" content="#16385F">
 ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ? refresh : 90}">` : ''}
 <style>${ESTILOS_MIN}</style></head><body>
 <div class="shell">${key ? sidebar(key, activo) : ''}<div class="app">${bannerAviso(aviso || {})}${cuerpo}</div></div>
