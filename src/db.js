@@ -1002,4 +1002,5 @@ module.exports = {
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
+  hoyLima: hoyLimaDb,
 };

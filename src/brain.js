@@ -112,6 +112,27 @@ function describirPartidos(negocio) {
   + '\n\nAl mencionar un partido usa la fecha tal cual está arriba ("MAÑANA miércoles 12 de agosto") — NUNCA el formato 2026-08-12. Los IDs son solo para inscribir_partido: NUNCA los menciones en el reply.';
 }
 
+/**
+ * Hace cuánto se dijo algo, en palabras. null si es de hace un rato nomás.
+ *
+ * Sin esto el cerebro lee las últimas 12 líneas como si fueran una charla
+ * continua: el 15/08 le siguió hablando a Sebastian del "partido de mañana en
+ * Comas" y del Yape pendiente… de una conversación del 12. El partido ya se
+ * había jugado. A un jugador real eso le cobra un cupo que no existe.
+ */
+function antiguedad(creadoEn) {
+  if (!creadoEn) return null;
+  // creado_en ya viene en hora de Lima ('YYYY-MM-DD HH:MM:SS').
+  const t = Date.parse(`${String(creadoEn).replace(' ', 'T')}-05:00`);
+  if (!Number.isFinite(t)) return null;
+  const min = Math.floor((Date.now() - t) / 60000);
+  if (min < 90) return null; // misma conversación: marcarlo sería ruido
+  const horas = Math.floor(min / 60);
+  if (horas < 24) return `hace ${horas} h`;
+  const dias = Math.floor(horas / 24);
+  return dias === 1 ? 'ayer' : `hace ${dias} días`;
+}
+
 function buildSystemPrompt(lead) {
   const negocio = db.getNegocio(); // se lee fresco en cada mensaje: precios/sedes se editan sin redesplegar
   const faltantes = [];
@@ -149,6 +170,12 @@ ${negocio.bienvenida}
 3. Cuando dé su distrito, clasifícalo en la zona operativa que calce o quede cerca. Zonas actuales: ${Object.entries(negocio.zonas).map(([k, z]) => `"${k}" (${z.nombre})`).join(', ')}. Referencias de cercanía: Breña o cerca → brena; Comas, Collique, Carabayllo, Los Olivos norte → comas; Rímac o cerca → rimac; Chorrillos, Barranco, Surco sur → chorrillos. Cualquier otro distrito → zona "otra".
 4. Zona brena/comas: explícale la mecánica y pásale el link del grupo (o dile que se lo envías en un momento si no está configurado).
 5. Zona "otra": respuesta CORTA (3-4 líneas máximo). Dile con buena onda que aún no tenemos sede en su distrito, que ya lo anotaste para avisarle apenas abramos por ahí, y ofrécele UNA o DOS sedes concretas (las más cercanas a su distrito, no todas) preguntándole si le queda cómodo llegar. **NO le vuelques la parrilla completa de la semana**: eso abruma. Si dice que sí, ahí recién le das los partidos de esa sede.
+
+## Hoy es ${db.fechaBonita(db.hoyLima(), { relativa: false })} (hora de Lima)
+Los mensajes del historial que empiezan con "[hace ...]" o "[ayer]" son VIEJOS: cuentan algo que ya pasó.
+- Un "mañana" dicho hace tres días NO es mañana. Ese partido ya se jugó.
+- NUNCA retomes un partido reservado ni un Yape pendiente de esos mensajes como si siguiera vigente: la única lista al día es la de acá abajo.
+- Si el jugador vuelve después de un día o más, salúdalo y pregúntale qué necesita HOY. No le reclames una captura vieja ni le confirmes un cupo viejo.
 
 ## Partidos con inscripción abierta (cupos EN VIVO — única fuente de verdad sobre cupos)
 ${describirPartidos(negocio)}
@@ -203,7 +230,14 @@ async function pensar(lead, historial, textoUsuario) {
 
   const messages = [
     { role: 'system', content: buildSystemPrompt(lead) },
-    ...historial.map((m) => ({ role: m.rol === 'user' ? 'user' : 'assistant', content: m.texto })),
+    // Cada línea vieja va fechada, para que el cerebro no la lea como si fuera de recién.
+    ...historial.map((m) => {
+      const cuando = antiguedad(m.creado_en);
+      return {
+        role: m.rol === 'user' ? 'user' : 'assistant',
+        content: cuando ? `[${cuando}] ${m.texto}` : m.texto,
+      };
+    }),
     { role: 'user', content: textoUsuario },
   ];
 
@@ -220,6 +254,10 @@ async function pensar(lead, historial, textoUsuario) {
     // perder calidad en esta tarea; OpenAI clásico no lo soporta.
     ...(ES_GOOGLE ? { reasoning_effort: 'low' } : {}),
   };
+  // Cuánto tarda el cerebro es LA pregunta recurrente de Clarck ("se demora"),
+  // y hasta el 15/08 la respondíamos a ojo porque no se medía en ninguna parte.
+  const t0 = Date.now();
+  let modeloUsado = MODEL;
   try {
     let completion;
     try {
@@ -230,12 +268,18 @@ async function pensar(lead, historial, textoUsuario) {
       if (![429, 503].includes(e.status) || !MODEL_RESPALDO) throw e;
       console.warn(`[brain] ${e.status} con ${MODEL} — reintento con ${MODEL_RESPALDO}.`);
       await espera(1500);
+      modeloUsado = MODEL_RESPALDO;
       completion = await openai.chat.completions.create({ model: MODEL_RESPALDO, ...params });
     }
+    const ms = Date.now() - t0;
+    const tokens = completion.usage?.total_tokens;
+    const linea = `[brain] ${ms} ms · ${modeloUsado}${tokens ? ` · ${tokens} tokens` : ''} · ${messages.length} mensajes de contexto`;
+    if (ms > 15000) console.warn(`${linea} ← LENTO`);
+    else console.log(linea);
     fallosSeguidos = 0;
     return JSON.parse(completion.choices[0].message.content);
   } catch (e) {
-    console.error('[brain] Error llamando a OpenAI:', e.message);
+    console.error(`[brain] Error llamando a OpenAI tras ${Date.now() - t0} ms:`, e.message);
     registrarFalloCerebro(e);
     return null;
   }
@@ -243,6 +287,7 @@ async function pensar(lead, historial, textoUsuario) {
 
 module.exports = {
   pensar,
+  antiguedad, // exportado para test-tiempo.js
   cerebroActivo: () => Boolean(process.env.OPENAI_API_KEY),
   // Para GET /: "activo" es que HAY api key; "fallosSeguidos" dice si de verdad
   // está respondiendo (0 = sano). La lección del mes mudo, aplicada al cerebro.
