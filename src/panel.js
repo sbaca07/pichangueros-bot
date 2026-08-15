@@ -1106,7 +1106,9 @@ const ESTILOS = `
   .shell{min-height:100vh}
   .sidebar{display:none}
   .sidebar .brand{display:flex;align-items:center;gap:11px;font-family:var(--font-num);font-style:italic;text-transform:uppercase;font-weight:800;font-size:22px;color:var(--navy);letter-spacing:.02em;margin-bottom:26px}
-  .sidebar .brand .iso{width:36px;height:36px;border-radius:11px;border:1px solid var(--line);background:var(--lime);display:grid;place-items:center;font-size:19px;box-shadow:var(--sombra)}
+  /* La mascota real, no el emoji ⚽ sobre un cuadrado lima que había antes: el
+     logo ya trae su color y su forma, taparlo con un fondo lo ensuciaba. */
+  .sidebar .brand .iso{width:38px;height:38px;object-fit:contain;flex:0 0 auto}
   .snav{display:flex;flex-direction:column;gap:4px}
   .snav a{display:flex;align-items:center;gap:12px;min-height:var(--tap);padding:11px 13px;border-radius:var(--r2);font-weight:600;font-size:15px;color:var(--ink-2)}
   .snav a svg{width:22px;height:22px}
@@ -1228,7 +1230,7 @@ const tabbar = (key, activo) => `<nav class="tabbar">
 </nav>`;
 
 const sidebar = (key, activo) => `<aside class="sidebar">
-  <div class="brand"><span class="iso">⚽</span> Pichangueros</div>
+  <div class="brand"><img class="iso" src="/icono-64.png" alt="" width="38" height="38"> Pichangueros</div>
   <nav class="snav">
     <a class="${activo === 'resumen' ? 'on' : ''}" href="/admin/leads?key=${key}">${SVG.iResumen} Resumen</a>
     <a class="${activo === 'partidos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=partidos">${SVG.iPartidos} Partidos</a>

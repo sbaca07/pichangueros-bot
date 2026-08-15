@@ -136,6 +136,27 @@ const comoTexto = (h) => `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`;
     check('y el bot sí lo ofrece', db.partidosAbiertos(null, { vigentes: true }).some((x) => x.id === (p.id ?? p)));
   }
 
+  console.log('== 4 · Un pago puede entrar al partido EN CURSO, no al ya terminado ==');
+  // 15/08: Anthony yapeó S/20 a las 11:07 por dos cupos del domingo. El único
+  // candidato de Comas era el de ese mismo día 9-10am, terminado hacía una
+  // hora — y ahí quedaron él y su invitado.
+  if (horaAhora >= 3 && horaAhora <= 20) {
+    const termino = db.crearPartido({ zona: 'chorrillos', fecha: hoy, hora: comoTexto(horaAhora - 2), sede: 'La 13', cupo: 14, precio: 15 });
+    const enCurso = db.crearPartido({ zona: 'chorrillos', fecha: hoy, hora: comoTexto(horaAhora), sede: 'La 13', cupo: 14, precio: 15 });
+    const idsDe = (opts) => db.partidosAbiertos('chorrillos', opts).map((p) => p.id);
+
+    check('para OFRECER, el que está en curso ya no se ofrece',
+      !idsDe({ vigentes: true }).includes(enCurso.id ?? enCurso));
+    check('para COBRAR, el que está en curso sí acepta el Yape',
+      idsDe({ vigentes: true, incluirEnCurso: true }).includes(enCurso.id ?? enCurso));
+    check('pero el que ya terminó no acepta nada',
+      !idsDe({ vigentes: true, incluirEnCurso: true }).includes(termino.id ?? termino));
+    check('y el panel los sigue viendo a los dos',
+      idsDe().includes(termino.id ?? termino) && idsDe().includes(enCurso.id ?? enCurso));
+  } else {
+    console.log(`  ⏭ salteado: son las ${horaAhora}h en Lima y el test necesita margen`);
+  }
+
   console.log(`\n${fallos ? '❌' : '✅'} ${ok} checks OK, ${fallos} fallos`);
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {}
   process.exit(fallos ? 1 : 0);

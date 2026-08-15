@@ -783,18 +783,29 @@ function listPartidos() {
   `).all();
 }
 
-/** Partidos abiertos de hoy en adelante, con cupo restante — es lo que ve el cerebro. */
+/** Cuánto dura un turno. Los de Pichangueros son de una hora ("8-9pm"). */
+const DURACION_H = 1;
+
 /**
  * Partidos con inscripción abierta.
  *
- * `vigentes: true` descarta además los de HOY que YA EMPEZARON. Va en todo lo
- * que ve el jugador: el 15/08 a las 10:40 el bot ofrecía "Breña 9am y 10am,
- * Comas 9am" — los tres habían arrancado, porque acá solo se filtraba por
- * FECHA. NO se filtra para el panel (Clarck necesita ver el partido en curso
- * para pasar lista) ni para el emparejado de pagos (un Yape que entra con el
- * partido ya empezado quedaría huérfano).
+ * Dos recortes distintos, porque "todavía sirve" significa dos cosas:
+ *
+ * - `vigentes: true` → los que AÚN NO EMPEZARON. Es lo que se le OFRECE al
+ *   jugador. El 15/08 a las 10:40 el bot ofrecía "Breña 9am y 10am, Comas 9am":
+ *   los tres habían arrancado, porque acá solo se filtraba por FECHA.
+ * - `+ incluirEnCurso: true` → los que aún NO TERMINARON. Es lo que puede
+ *   recibir un PAGO: el Yape que entra 8:05pm es del partido de 8-9pm que ya
+ *   arrancó, y tiene que engancharse ahí.
+ *
+ * Sin ninguna de las dos, la lista completa: la usa el panel (Clarck necesita
+ * el partido en curso para pasar lista).
+ *
+ * Por qué importa la diferencia: el 15/08 Anthony yapeó S/20 a las 11:07 por
+ * dos cupos del domingo. El único candidato de Comas era el de ESE día 9-10am,
+ * terminado hacía una hora — y ahí se metieron él y su invitado.
  */
-function partidosAbiertos(zona = null, { vigentes = false } = {}) {
+function partidosAbiertos(zona = null, { vigentes = false, incluirEnCurso = false } = {}) {
   const filas = db.prepare(`
     SELECT p.*,
       (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id AND i.estado IN ${OCUPAN}) AS ocupados
@@ -809,8 +820,9 @@ function partidosAbiertos(zona = null, { vigentes = false } = {}) {
   if (!vigentes) return lista;
   const hoy = hoyLimaDb();
   const horaAhora = Number(new Date(Date.now() - 5 * 3600e3).toISOString().slice(11, 13));
+  const margen = incluirEnCurso ? DURACION_H : 0;
   // Sin hora cargada, ordenHora devuelve 99: ante la duda se sigue ofreciendo.
-  return lista.filter((p) => p.fecha > hoy || ordenHora(p.hora) > horaAhora);
+  return lista.filter((p) => p.fecha > hoy || ordenHora(p.hora) + margen > horaAhora);
 }
 
 function inscripcionesDe(partidoId) {
@@ -918,7 +930,11 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null) {
     // bot pregunta y, si está callado, Clarck lo asigna desde el panel.
     const limite = new Date(Date.now() - 5 * 3600e3 + 3 * 86400e3).toISOString().slice(0, 10);
     const neg = getNegocio();
-    let candidatos = (zona ? partidosAbiertos(zona) : []).filter((p) => p.fecha <= limite);
+    // Se acepta el partido EN CURSO (el Yape entra minutos después de arrancar)
+    // pero no el ya terminado: ese pago es para otro día, no para el de la
+    // mañana. Sin esto, un partido viejo se comía el pago del que viene.
+    let candidatos = (zona ? partidosAbiertos(zona, { vigentes: true, incluirEnCurso: true }) : [])
+      .filter((p) => p.fecha <= limite);
     if (monto != null && candidatos.length > 1) {
       const calzan = candidatos.filter((p) => {
         const precio = p.precio ?? neg.zonas[p.zona]?.precio;
