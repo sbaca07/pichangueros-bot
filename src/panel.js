@@ -27,15 +27,19 @@ const { buildLeadsWorkbook } = require('./excel');
 const esc = (v) =>
   String(v ?? '—').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Colores de zona. Todos llevan texto BLANCO encima (badges, puntos, barras),
+// así que todos tienen que pasar 4.5:1 contra blanco. El lima del logo (#A3C614)
+// daba 1.97:1 — "Breña" en blanco sobre lima era ilegible a contraluz; acá va la
+// versión oscura del mismo verde, que sigue leyéndose como la marca.
 const ZONAS = {
-  brena: { nombre: 'Breña', color: '#A3C614' },
-  comas: { nombre: 'Comas', color: '#16385F' },
-  rimac: { nombre: 'Rímac', color: '#0A7E8C' },
-  chorrillos: { nombre: 'Chorrillos', color: '#8944AB' },
-  otra: { nombre: 'Otra zona', color: '#64748b' },
+  brena: { nombre: 'Breña', color: '#5F7A0A' },      // 4.91:1
+  comas: { nombre: 'Comas', color: '#16385F' },      // 11.90:1
+  rimac: { nombre: 'Rímac', color: '#0A6570' },      // 6.76:1
+  chorrillos: { nombre: 'Chorrillos', color: '#7A3A99' }, // 7.26:1
+  otra: { nombre: 'Otra zona', color: '#4F5B6B' },   // 6.91:1
 };
 // Color para zonas creadas después de este mapa (nuevos distritos).
-const colorZona = (z) => ZONAS[z]?.color || '#5D8A3C';
+const colorZona = (z) => ZONAS[z]?.color || '#4A6B2E'; // 6.12:1
 // Slug de zona a partir del nombre que escribe Clarck ("San Miguel" → sanmiguel).
 const slugZona = (nombre) => (nombre || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -568,212 +572,442 @@ function registrarPanel(app, db, conexion = null) {
 //  Base HTML + sistema de diseño iOS
 // ==============================================================================
 /**
- * Aviso de resultado de una acción ("guardado", "no se pudo", "X dado de baja").
+ * Hoja de estilos del panel.
  *
- * Va arriba de la página y PEGADO al viewport (sticky): después de guardar se
- * vuelve con #ancla al bloque donde estaba el usuario, así que un banner metido
- * en el flujo del documento quedaría fuera de pantalla justo cuando hace falta.
- * Sticky y no fixed para que ocupe su lugar y no tape el título de la vista.
+ * Vive en una constante y no dentro del template de baseHtml por dos razones:
+ * se arma UNA vez al arrancar en vez de en cada request, y se sirve SIN los
+ * comentarios. Los comentarios de acá abajo explican por qué cada decisión es
+ * como es —valen para quien toque el archivo— pero son ~13 KB que el celular de
+ * Clarck no necesita bajar parado en una cancha con 4G malo, y el servidor no
+ * tiene compresión, así que cada KB se paga entero.
  */
-function bannerAviso(query = {}) {
-  const texto = (query.aviso || '').toString().slice(0, 300);
-  if (!texto) return '';
-  const err = query.err === '1';
-  return `<div class="aviso ${err ? 'aviso-err' : 'aviso-ok'}" role="status">
-    <span class="aviso-ic">${err ? '⚠️' : '✅'}</span><span class="aviso-tx">${esc(texto)}</span>
-  </div>`;
-}
+const ESTILOS = `
+  /* Sistema de diseño Pichangueros v3 (2026-08-15).
+     Sigue la propuesta v2 —hairline, sombra difusa, lima del logo, marcador
+     navy, cifras en display itálico— y le pone abajo un sistema de tokens.
+     Los tres cambios de fondo, todos por la misma razón (Clarck lo abre en el
+     celular, parado en una cancha, de noche, con una mano):
 
-function baseHtml(titulo, cuerpo, { refresh = false, activo = '', key = '', tabbarMobile = true, aviso = null } = {}) {
-  return `<!doctype html><html lang="es"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>${esc(titulo)}</title>
-${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ? refresh : 90}">` : ''}
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders:ital,wght@0,700;0,800;1,700;1,800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>
-  /* Sistema de diseño Pichangueros v2 (2026-08-12, sobre la propuesta de Figma):
-     la limpieza del mockup —hairline, sombra difusa, títulos en peso, no en
-     mayúsculas— con la identidad encima: lima del logo, marcador navy y los
-     NÚMEROS en Big Shoulders itálica. El carácter vive en el color y en las
-     cifras; la estructura se calla para que se lea el dato.
-     Antes: borde negro de 2.5px y sombra dura tipo sticker en cada tarjeta. */
+     1. CONTRASTE. Todo par texto/fondo llega a 4.5:1 y todo borde o barra que
+        comunica algo llega a 3:1. Los ratios están anotados al lado de cada
+        token; están calculados, no estimados.
+     2. UN SOLO SISTEMA. Antes había tres rojos (#D14538, #cc2f26, #FF3B30), dos
+        ámbares, seis nombres para tres colores y 26 tamaños de fuente. Ahora hay
+        escalas: espaciado de 4, radios, tipos, y un color por ESTADO.
+     3. EL COLOR ES ESTADO, NO DECORACIÓN. pagado / debe / alerta / lleno /
+        cancelado, cada uno con su glifo — el color solo no sirve con
+        daltonismo ni con la pantalla a contraluz. */
   :root{
-    --bg:#F4F6F9; --card:#fff; --ink:#101B2B; --muted:#5A6A7D; --faint:#8B98A8;
-    --sep:#E4E9F0; --inset:#F7F9FC; --trazo:#E4E9F0;
-    --sombra:0 1px 2px rgba(16,24,40,.04), 0 6px 16px rgba(16,24,40,.05);
-    --sombra-alta:0 2px 4px rgba(16,24,40,.05), 0 12px 28px rgba(16,24,40,.09);
-    --green:#A3C614; --green-d:#55770B; --navy:#16385F; --navy2:#1E4470;
-    --amber:#E8930C; --amber-d:#9A5B00; --red:#D14538; --blue:#16385F; --lime:#A3C614;
+    /* ---------- SUPERFICIES ---------- */
+    --bg:#F2F5F8; --surface:#FFFFFF; --surface-2:#F5F8FB; --surface-3:#E9EEF4;
+    --line:#DFE6EE;              /* hairline separador (decorativo) */
+    --line-strong:#8494A8;       /* borde de control — 3.10:1 sobre blanco */
+    --desk:#E9EEF4;              /* el "escritorio" detrás del panel en pantalla grande */
+
+    /* ---------- TINTA ---------- */
+    --ink:#0F1B2A;               /* 17.35:1 — el dato, el título, el valor */
+    --ink-2:#4C5C6E;             /*  6.86:1 — etiqueta, subtítulo, ayuda */
+    --ink-3:#5E6E82;             /*  5.21:1 sobre blanco · 4.76:1 sobre --bg.
+                                    Lo más tenue permitido. Reemplaza al viejo
+                                    --faint #8B98A8, que era 2.94:1 y cargaba el
+                                    estado de cada inscripción y toda .shdr. */
+    --on-lime:#16385F;           /*  6.03:1 — SOBRE LIMA LA TINTA ES NAVY, NUNCA
+                                    BLANCO: blanco sobre lima da 1.97:1 y era lo
+                                    que tenían "Copiar lista" y el botón WhatsApp. */
+    --on-navy:#FFFFFF;           /* 11.90:1 */
+    --on-navy-2:#C4D1DF;         /*  9.94:1 — secundario dentro del marcador */
+    --on-navy-3:#A8BEDC;         /*  5.23:1 — el más tenue del marcador */
+    /* Acentos DENTRO del marcador: el navy es oscuro en los dos modos, así que
+       estos tres no cambian con el modo oscuro. */
+    --on-navy-ok:#C6E34E;        /* 10.65:1 sobre el navy profundo */
+    --on-navy-debe:#F0B857;      /*  8.59:1 */
+    --on-navy-rec:#8FB3E0;       /*  7.12:1 — la serie "recurrentes" del gráfico */
+
+    /* ---------- MARCA ---------- */
+    --lime:#A3C614;              /* relleno de marca; solo con --on-lime encima */
+    --lime-fill:#7E9C0D;         /* 3.16:1 — barras y puntos lima sobre blanco */
+    --lime-ink:#55770B;          /* 5.21:1 — texto verde sobre claro */
+    --lime-tint:#EDF5D3;         /* con --lime-ink = 4.62:1 */
+    /* --navy es el navy COMO TEXTO sobre claro; en modo oscuro se aclara para
+       seguir leyéndose. --navy-fill es el navy COMO RELLENO (chip activo, tarjeta
+       seleccionada): ese tiene que seguir siendo oscuro en los dos modos, porque
+       encima siempre lleva blanco. Confundirlos deja texto blanco sobre celeste. */
+    --navy:#16385F; --navy-2:#1E4470; --navy-9:#0E2542;
+    --navy-fill:#16385F;
+    --grad-marcador:linear-gradient(160deg,var(--navy-2),var(--navy-9));
+
+    /* ---------- ESTADO (color + glifo, nunca color solo) ---------- */
+    --st-ok-ink:#55770B;     --st-ok-bg:#EDF5D3;     --st-ok-solid:#55770B;
+    --st-debe-ink:#8A5200;   --st-debe-bg:#FCEFD8;   --st-debe-solid:#9A5B00;
+    --st-alerta-ink:#B3261E; --st-alerta-bg:#FBE7E5; --st-alerta-solid:#C4362B;
+    --st-lleno-ink:#16385F;  --st-lleno-bg:#E4EAF2;  --st-lleno-solid:#16385F;
+    --st-off-ink:#4C5C6E;    --st-off-bg:#ECF0F5;    --st-off-solid:#4F5B6B;
+    /* Escalón medio de la rampa del embudo (navy → teal → ámbar → lima). */
+    --ramp-mid:#0A6570;          /* 6.76:1 con blanco encima */
+
+    /* ---------- ESPACIADO, RADIOS, TÁCTIL ---------- */
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s7:32px;
+    --r1:8px; --r2:12px; --r3:16px; --r4:20px; --rp:999px;
+    --tap:44px;                  /* mínimo de cualquier cosa tocable */
+    --tap-lg:52px;               /* la acción principal de la pantalla */
+    --gap-peligro:var(--s6);     /* aire mínimo entre lo común y lo destructivo */
+
+    /* ---------- TIPOGRAFÍA ----------
+       Sin fuentes remotas: el panel corre en Render y tiene que funcionar solo.
+       Antes cargaba Inter y Big Shoulders desde el servicio de fuentes de Google
+       con un <link rel=stylesheet>, que BLOQUEA el render: con 4G malo en la
+       cancha la página se quedaba en blanco esperando esa respuesta, y si la
+       fuente no llegaba el marcador pasaba de condensada a normal y se salía de
+       su caja. Ahora el panel no le pide NADA a nadie. */
+    --font-ui:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+    --font-num:var(--font-ui);
+    --font-mono:ui-monospace,SFMono-Regular,'SF Mono',Consolas,'Liberation Mono',monospace;
+    --t-eyebrow:11px;            /* SOLO mayúsculas + 700 + tracking */
+    --t-xs:12px; --t-s:13px; --t-m:15px; --t-l:17px; --t-xl:20px; --t-2xl:26px;
+    --t-input:16px;              /* INTOCABLE: por debajo, iOS hace zoom al
+                                    enfocar y deja la página ampliada con scroll
+                                    horizontal, que es lo peor con una mano */
+    --n-s:30px; --n-m:42px; --n-l:58px;
+    --track-num:-.02em;          /* compensa la pérdida de la condensada */
+
+    /* ---------- SOMBRAS ---------- */
+    --sombra:0 1px 2px rgba(15,27,42,.05), 0 6px 16px rgba(15,27,42,.06);
+    --sombra-alta:0 2px 4px rgba(15,27,42,.06), 0 12px 28px rgba(15,27,42,.10);
+    --sh-marcador:0 4px 10px rgba(14,37,66,.18), 0 16px 32px rgba(14,37,66,.15);
+    --focus:0 0 0 3px rgba(22,56,95,.18), 0 0 0 1.5px var(--navy);
   }
+
+  /* MODO OSCURO — solo se redefinen tokens, ninguna regla de componente cambia.
+     Clarck usa esto de noche: una pantalla casi blanca a brillo alto encandila
+     y después no se ve ni la cancha ni el celular. */
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0D131C; --surface:#161E2A; --surface-2:#1D2733; --surface-3:#25313F;
+      --line:#2F3C4C;            /* 1.49:1 — hairline visible sin brillar */
+      --line-strong:#5F7793;     /* 3.63:1 */
+      --desk:#070B11;
+      --ink:#EAF0F7;             /* 14.61:1 */
+      --ink-2:#A8B7C8;           /*  8.20:1 */
+      --ink-3:#8B9BAD;           /*  5.90:1 */
+      --on-lime:#0F1B2A;         /*  8.79:1 — el lima sigue claro, la tinta oscura */
+      /* --on-navy-* NO se redefinen a propósito: el marcador es oscuro en los
+         dos modos, así que su tinta es la misma. Redefinirla más oscura bajaba
+         el rótulo del marcador a 3.98:1 justo en el modo nocturno. */
+      --lime-fill:#A3C614;       /* sobre superficie oscura el lima ya destaca */
+      --lime-ink:#C3E24E;        /* 11.42:1 — el #55770B sería ilegible acá */
+      --lime-tint:#24310C;       /* con --lime-ink = 9.42:1 */
+      --navy:#8FB6E8;            /*  8.00:1 como TEXTO */
+      --navy-fill:#1E4470;       /* como RELLENO sigue oscuro: lleva blanco encima */
+      --navy-9:#0B1B2E; --navy-2:#1B3A5C;
+      --grad-marcador:linear-gradient(160deg,var(--navy-2),var(--navy-9));
+      --st-ok-ink:#9BD24B;     --st-ok-bg:#22300C;     --st-ok-solid:#4C7A12;
+      --st-debe-ink:#F0B857;   --st-debe-bg:#37260A;   --st-debe-solid:#8A5200;
+      --st-alerta-ink:#FF9A8F; --st-alerta-bg:#3A1A17; --st-alerta-solid:#B3352A;
+      --st-lleno-ink:#8FB6E8;  --st-lleno-bg:#17273A;  --st-lleno-solid:#1E4470;
+      --st-off-ink:#A8B7C8;    --st-off-bg:#212B38;    --st-off-solid:#3C4A5C;
+      /* En oscuro la sombra no despega la tarjeta del fondo: el relieve lo da
+         el borde. Sombras suaves solo para que no se vea plano. */
+      --sombra:0 1px 2px rgba(0,0,0,.35);
+      --sombra-alta:0 4px 16px rgba(0,0,0,.45);
+      --sh-marcador:0 4px 18px rgba(0,0,0,.5);
+      --focus:0 0 0 3px rgba(143,182,232,.28), 0 0 0 1.5px #8FB6E8;
+    }
+    /* La barra translúcida blanca sería una linterna en la cara. */
+    .tabbar{background:rgba(22,30,42,.94)}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+      transition-duration:.001ms!important}
+  }
+
   *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
-  body{font-family:'Inter',-apple-system,'Segoe UI',sans-serif;color:var(--ink);background:var(--bg);
-    min-height:100vh;line-height:1.4}
+  body{font-family:var(--font-ui);color:var(--ink);background:var(--bg);
+    min-height:100vh;line-height:1.45;overflow-x:hidden}
   a{color:inherit;text-decoration:none}
+  /* Se quitó el resaltado nativo del toque (arriba) y hay outline:none suelto en
+     varios inputs: sin esto no quedaba NINGUNA señal de foco en toda la app. */
+  a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,
+  textarea:focus-visible,summary:focus-visible{outline:none;box-shadow:var(--focus);border-radius:var(--r1)}
+
+  /* Cifras: el carácter del marcador sin fuente remota. Peso 800 + itálica del
+     sistema (SF Pro y Segoe UI tienen itálica real) + tracking cerrado que
+     compensa la condensada que se perdió + tabular para que no bailen al
+     refrescar cada 90 s. */
+  .num{font-family:var(--font-num);font-weight:800;font-style:italic;
+    letter-spacing:var(--track-num);font-variant-numeric:tabular-nums;line-height:1}
+
   .app{max-width:480px;margin:0 auto;min-height:100vh;background:var(--bg);
     padding:calc(env(safe-area-inset-top) + 8px) 0 96px;position:relative}
   .px{padding-left:16px;padding-right:16px}
 
   /* large title */
   .ltitle{padding:6px 18px 10px;display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
-  .ltitle .eyebrow{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--green-d);margin-bottom:2px}
+  .ltitle .eyebrow{font-size:var(--t-eyebrow);font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--lime-ink);margin-bottom:2px}
   .ltitle h2{font-size:29px;font-weight:800;letter-spacing:-.02em;line-height:1.1;color:var(--ink)}
-  .live{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--green-d);
-    background:rgba(163,198,20,.12);padding:5px 11px;border-radius:999px;white-space:nowrap}
-  .live i{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+  .live{display:inline-flex;align-items:center;gap:6px;font-size:var(--t-xs);font-weight:600;color:var(--lime-ink);
+    background:var(--lime-tint);padding:5px 11px;border-radius:var(--rp);white-space:nowrap}
+  .live i{width:7px;height:7px;border-radius:50%;background:var(--lime);animation:pulse 2s infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(163,198,20,.5)}70%{box-shadow:0 0 0 7px rgba(163,198,20,0)}100%{box-shadow:0 0 0 0 rgba(163,198,20,0)}}
-  .csv{font-size:13px;color:var(--muted);border:1px solid var(--sep);background:var(--card);padding:6px 12px;border-radius:999px;white-space:nowrap}
+  .csv{display:inline-flex;align-items:center;min-height:var(--tap);font-size:var(--t-s);color:var(--ink-2);
+    border:1.5px solid var(--line-strong);background:var(--surface);padding:0 14px;border-radius:var(--rp);white-space:nowrap}
 
   /* scoreboard hero */
-  .marcador{background:linear-gradient(160deg,#1E4470,#0E2542);border:none;border-radius:18px;padding:19px 20px 17px;
-    color:#fff;position:relative;overflow:hidden;box-shadow:0 4px 10px rgba(14,37,66,.16), 0 16px 32px rgba(14,37,66,.14);margin:2px 0 0}
+  .marcador{background:var(--grad-marcador);border:none;border-radius:var(--r4);padding:19px 20px 17px;
+    color:var(--on-navy);position:relative;overflow:hidden;box-shadow:var(--sh-marcador);margin:2px 0 0}
   .marcador::before{content:"";position:absolute;inset:0;
     background:repeating-linear-gradient(90deg,transparent 0 30px,rgba(255,255,255,.025) 30px 60px)}
   .marcador>*{position:relative}
   .mtop{display:flex;justify-content:space-between;align-items:center}
-  .mlabel{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#9fb6d6}
-  .mdelta{font-size:12px;font-weight:700;color:#C6E34E;background:rgba(163,198,20,.14);padding:4px 10px;border-radius:999px}
-  .mnum{font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:62px;line-height:.92;color:#fff;margin-top:2px;font-variant-numeric:tabular-nums}
-  .bars{display:flex;align-items:flex-end;gap:3px;height:62px;margin-top:10px}
-  .bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%}
-  .bar .bn{font-size:9px;font-weight:700;color:#a9c2e6;line-height:1;min-height:10px}
+  .mlabel{font-size:var(--t-eyebrow);font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--on-navy-3)}
+  .mdelta{font-size:var(--t-xs);font-weight:700;color:var(--on-navy-ok);background:rgba(163,198,20,.16);padding:4px 10px;border-radius:var(--rp)}
+  /* 58px y no 62: sin la condensada el número ocupa más ancho, y a 62 se salía
+     de la caja del marcador en 360px. */
+  .mnum{font-family:var(--font-num);font-style:italic;font-weight:800;font-size:var(--n-l);
+    letter-spacing:var(--track-num);line-height:.95;color:var(--on-navy);margin-top:2px;font-variant-numeric:tabular-nums}
+  /* El gráfico de 14 días tenía las etiquetas de día a 8px y los números a 9px,
+     en un azul de 4.33:1 sobre el navy. A 8px, de noche y a contraluz, eso no se
+     lee: es tinta gastada. Ahora 11px mínimo y --on-navy-2 (9.94:1). Como 14
+     etiquetas de 11px no entran en 360px, en móvil se muestra una de cada dos
+     (la de hoy siempre) y desde 520px vuelven todas. */
+  .bars{display:flex;align-items:flex-end;gap:3px;height:74px;margin-top:10px}
+  .bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%;min-width:0}
+  .bar .bn{font-size:var(--t-eyebrow);font-weight:700;color:var(--on-navy-2);line-height:1;min-height:12px}
   .bar .track{flex:1;width:100%;display:flex;flex-direction:column;justify-content:flex-end;gap:1px}
-  .bar .track i{width:100%;background:linear-gradient(180deg,#C6E34E,#A3C614);border-radius:2px;min-height:3px;display:block;opacity:.95}
-  .bar .track i.brec{background:linear-gradient(180deg,#8fb3e0,#5a7fb5);opacity:.8}
-  .bar.hot .track i.bnue{background:linear-gradient(180deg,#cde96b,var(--lime))}
-  .bar.hot .bn{color:var(--lime)}
-  .bar .bd{font-size:8px;color:#7e97b8;line-height:1;white-space:nowrap;margin-top:1px}
-  .bar .bd.bhoy{color:var(--lime);font-weight:700}
-  .mfoot{font-size:9.5px;color:#7e97b8;margin-top:8px;line-height:1.35}
+  .bar .track i{width:100%;background:linear-gradient(180deg,var(--on-navy-ok),var(--lime));border-radius:2px;min-height:3px;display:block;opacity:.95}
+  .bar .track i.brec{background:linear-gradient(180deg,var(--on-navy-rec),#5A7FB5);opacity:.9}
+  .bar.hot .track i.bnue{background:linear-gradient(180deg,#DFF29A,var(--on-navy-ok))}
+  .bar.hot .bn{color:var(--on-navy-ok)}
+  .bar .bd{font-size:var(--t-eyebrow);color:var(--on-navy-2);line-height:1;white-space:nowrap;margin-top:2px}
+  .bar .bd.bhoy{color:var(--on-navy-ok);font-weight:800}
+  @media (max-width:519px){
+    .bar:nth-child(even) .bd:not(.bhoy){visibility:hidden}
+  }
+  .mfoot{font-size:var(--t-xs);color:var(--on-navy-2);margin-top:8px;line-height:1.4}
 
-  /* banner */
-  .banner{display:flex;gap:12px;align-items:center;background:#fff7e8;border:1px solid var(--sep);border-radius:16px;padding:13px 15px;margin-top:14px;box-shadow:var(--sombra)}
-  .banner.ok{background:#eafaf0;border-color:#b7ebca}
-  .bic{flex:0 0 auto;width:34px;height:34px;border-radius:10px;background:var(--amber);display:grid;place-items:center;font-size:18px}
-  .banner.ok .bic{background:var(--green)}
-  .btxt{font-size:12.5px;line-height:1.35;color:#7a5300}
-  .banner.ok .btxt{color:#1c6b3a}
+  /* banner — casi todos son enlaces: 44px de alto para que sean tocables. */
+  .banner{display:flex;gap:var(--s3);align-items:center;min-height:var(--tap);
+    background:var(--st-debe-bg);border:1px solid var(--st-debe-ink);border-left-width:4px;
+    border-radius:var(--r3);padding:13px 15px;margin-top:14px;box-shadow:var(--sombra)}
+  .banner.ok{background:var(--st-ok-bg);border-color:var(--st-ok-ink)}
+  .bic{flex:0 0 auto;width:34px;height:34px;border-radius:var(--r1);background:var(--st-debe-solid);
+    color:#fff;display:grid;place-items:center;font-size:18px}
+  .banner.ok .bic{background:var(--st-ok-solid)}
+  .btxt{font-size:var(--t-s);line-height:1.4;color:var(--st-debe-ink)}
+  .banner.ok .btxt{color:var(--st-ok-ink)}
   .btxt b{font-weight:700}
 
   /* stat grid */
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-top:14px}
-  .stat{background:var(--card);border:1px solid var(--sep);border-radius:16px;padding:14px 15px;box-shadow:var(--sombra);display:block}
-  .stat .sn{font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:34px;line-height:1;font-variant-numeric:tabular-nums}
-  .stat .sl{font-size:12px;color:var(--muted);font-weight:500;margin-top:3px}
-  .stat.amber .sn{color:var(--amber)} .stat.green .sn{color:var(--green-d)} .stat.navy .sn{color:var(--navy2)} .stat.red .sn{color:var(--red)}
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--r3);padding:14px 15px;box-shadow:var(--sombra);display:block}
+  /* overflow-wrap: un "S/ 12,345" a 30px no entra en una tarjeta de 163px
+     (360px de pantalla, dos columnas) — que corte antes de desbordar. */
+  .stat .sn{font-family:var(--font-num);font-style:italic;font-weight:800;font-size:var(--n-s);
+    letter-spacing:var(--track-num);line-height:1.05;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+  .stat .sl{font-size:var(--t-s);color:var(--ink-2);font-weight:500;margin-top:4px}
+  .stat.amber .sn{color:var(--st-debe-ink)} .stat.green .sn{color:var(--lime-ink)} .stat.navy .sn{color:var(--navy)} .stat.red .sn{color:var(--st-alerta-ink)}
   /* Tarjeta-filtro activa: se ve que ESA es la que está aplicada. */
-  .stat.sel{background:var(--navy);box-shadow:var(--sombra)}
+  .stat.sel{background:var(--navy-fill);box-shadow:var(--sombra)}
   .stat.sel .sn,.stat.sel .sl{color:#fff}
   a.stat:hover{transform:translateY(-1px);box-shadow:var(--sombra-alta)}
-  .stat .chip{float:right;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px}
-  .chip.up{background:rgba(163,198,20,.14);color:var(--green-d)}
-  .chip.wait{background:rgba(255,149,0,.14);color:var(--amber-d)}
+  .stat .chip{float:right;font-size:var(--t-xs);font-weight:700;padding:3px 9px;border-radius:var(--rp)}
+  .chip.up{background:var(--st-ok-bg);color:var(--st-ok-ink)}
+  .chip.wait{background:var(--st-debe-bg);color:var(--st-debe-ink)}
 
-  /* section header */
-  .shdr{font-size:11.5px;font-weight:800;letter-spacing:.11em;text-transform:uppercase;color:var(--faint);padding:22px 6px 9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .shdr small{text-transform:none;letter-spacing:0;font-weight:500;font-size:11.5px;color:var(--faint);opacity:.85}
+  /* section header — era 11.5px en el gris más tenue (2.94:1) siendo el título
+     de CADA sección de CADA vista. */
+  .shdr{font-size:var(--t-xs);font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-2);padding:22px 6px 9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .shdr small{text-transform:none;letter-spacing:0;font-weight:400;font-size:var(--t-s);color:var(--ink-2)}
 
   /* zona rows */
-  .zlist{background:var(--card);border:1px solid var(--sep);border-radius:16px;overflow:hidden;box-shadow:var(--sombra)}
-  .zrow{display:flex;align-items:center;gap:12px;padding:12px 15px;border-bottom:1px solid var(--sep)}
+  .zlist{background:var(--surface);border:1px solid var(--line);border-radius:var(--r3);overflow:hidden;box-shadow:var(--sombra)}
+  /* Rejilla en vez de flex: el nombre tenía flex 0 0 96px con nowrap, así que
+     "Sin sede cerca", "Escribieron al número" o "Dejaron sus datos · nombre ·
+     edad · distrito" se desbordaban ENCIMA de la barra. Ahora el nombre ocupa
+     la fila entera y la barra va debajo, que además es donde se compara mejor. */
+  .zrow{display:grid;grid-template-columns:11px minmax(0,1fr) auto;align-items:center;
+    gap:6px 12px;min-height:var(--tap);padding:12px 15px;border-bottom:1px solid var(--line)}
   .zrow:last-child{border-bottom:none}
-  .zdot{width:11px;height:11px;border-radius:3px;flex:0 0 auto}
-  .zname{font-size:14.5px;font-weight:600;flex:0 0 96px;white-space:nowrap}
-  .ztrack{flex:1;height:7px;background:var(--inset);border-radius:999px;overflow:hidden}
-  .ztrack i{display:block;height:100%;border-radius:999px}
-  .zval{font-size:13px;font-weight:600;color:var(--muted);flex:0 0 auto;min-width:40px;text-align:right}
+  .zrow:active{background:var(--surface-3)}
+  .zdot{width:11px;height:11px;border-radius:3px;flex:0 0 auto;grid-row:1}
+  .zname{font-size:var(--t-m);font-weight:600;min-width:0;grid-row:1;
+    overflow:hidden;text-overflow:ellipsis}
+  .zval{font-size:var(--t-s);font-weight:700;color:var(--ink-2);grid-row:1;text-align:right;
+    white-space:nowrap;font-variant-numeric:tabular-nums}
+  .ztrack{grid-row:2;grid-column:2/-1;height:8px;background:var(--surface-3);border-radius:var(--rp);overflow:hidden}
+  .ztrack i{display:block;height:100%;border-radius:var(--rp)}
+  @media (min-width:520px){
+    /* Con ancho de sobra vuelve a la línea única, pero con el nombre elástico. */
+    .zrow{grid-template-columns:11px minmax(90px,auto) minmax(0,1fr) auto}
+    .ztrack{grid-row:1;grid-column:3}
+  }
 
   /* search + chips */
-  .search{display:flex;align-items:center;gap:8px;background:var(--inset);border-radius:12px;padding:0 13px;margin:2px 0 4px}
-  .search svg{flex:0 0 auto;color:var(--faint)}
-  .search input{flex:1;border:none;background:transparent;outline:none;font:inherit;font-size:15px;padding:10px 0;color:var(--ink)}
-  .search input::placeholder{color:var(--faint)}
-  .search button{border:1px solid var(--sep);background:var(--lime);color:var(--navy);font:inherit;font-weight:800;font-size:13px;padding:6px 14px;border-radius:9px;margin:5px 0;cursor:pointer}
-  .chips{display:flex;gap:7px;padding:8px 2px 4px;flex-wrap:wrap}
-  .fchip{font-size:12.5px;font-weight:600;color:var(--muted);background:var(--card);border:1px solid var(--sep);padding:7px 13px;border-radius:999px;white-space:nowrap}
-  .fchip.on{background:var(--navy2);color:#fff;border-color:var(--navy2)}
-  .fchip.amber.on{background:var(--amber);border-color:var(--amber);color:#fff}
-  .fchip.red.on{background:var(--red);border-color:var(--red);color:#fff}
+  .search{display:flex;align-items:center;gap:var(--s2);background:var(--surface-2);border:1px solid var(--line-strong);
+    border-radius:var(--r2);padding:0 13px;margin:2px 0 4px;min-height:var(--tap)}
+  .search svg{flex:0 0 auto;color:var(--ink-3)}
+  /* 16px: era 15 y con eso iOS ya amplía al enfocar. */
+  .search input{flex:1;min-width:0;border:none;background:transparent;outline:none;font:inherit;
+    font-size:var(--t-input);padding:11px 0;color:var(--ink)}
+  .search input::placeholder{color:var(--ink-3)}
+  .search button{min-height:36px;border:1px solid var(--lime);background:var(--lime);color:var(--on-lime);
+    font:inherit;font-weight:800;font-size:var(--t-s);padding:0 14px;border-radius:var(--r1);cursor:pointer}
+
+  /* Chips de filtro: 44px. Eran 32 y hay CATORCE en el CRM — el objetivo más
+     repetido de la app era también el más chico. */
+  .chips{display:flex;gap:var(--s2);padding:var(--s2) 2px var(--s1);flex-wrap:wrap}
+  .fchip{display:inline-flex;align-items:center;justify-content:center;min-height:var(--tap);
+    font-size:var(--t-s);font-weight:600;color:var(--ink-2);background:var(--surface);
+    border:1.5px solid var(--line-strong);padding:0 14px;border-radius:var(--rp);white-space:nowrap}
+  /* El filtro puesto lleva ✓ además del relleno: en escala de grises un chip
+     navy y uno blanco se parecen más de lo que uno cree. */
+  .fchip.on{background:var(--navy-fill);color:#fff;border-color:var(--navy-fill);font-weight:700}
+  .fchip.on::before{content:"✓ ";font-weight:800}
+  .fchip.amber.on{background:var(--st-debe-solid);border-color:var(--st-debe-solid);color:#fff}
+  .fchip.red.on{background:var(--st-alerta-solid);border-color:var(--st-alerta-solid);color:#fff}
 
   /* barra de filtros (selects estilo slicer) */
-  .fbar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 2px}
-  .fbar select,.fbar input[type=date]{flex:1;min-width:105px;background:var(--card);border:1px solid var(--sep);
-    border-radius:12px;padding:9px 11px;font:inherit;font-size:13px;font-weight:600;color:var(--ink);outline:none;
+  .fbar{display:flex;gap:var(--s2);flex-wrap:wrap;margin:var(--s3) 0 2px}
+  .fbar select,.fbar input[type=date]{flex:1;min-width:130px;min-height:var(--tap);background:var(--surface);
+    border:1.5px solid var(--line-strong);border-radius:var(--r2);padding:0 11px;font:inherit;
+    font-size:var(--t-input);font-weight:600;color:var(--ink);outline:none;
     -webkit-appearance:none;appearance:none}
-  .fbar select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b7c72' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-    background-repeat:no-repeat;background-position:right 11px center;padding-right:26px}
+  .fbar select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='7'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%235E6E82' stroke-width='1.8' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 11px center;padding-right:30px}
 
   /* lead list */
-  .llist{background:var(--card);border:1px solid var(--sep);border-radius:16px;overflow:hidden;box-shadow:var(--sombra)}
-  .lrow{display:flex;align-items:center;gap:13px;padding:12px 14px;border-bottom:1px solid var(--sep);position:relative}
+  .llist{background:var(--surface);border:1px solid var(--line);border-radius:var(--r3);overflow:hidden;box-shadow:var(--sombra)}
+  .lrow{display:flex;align-items:center;gap:13px;min-height:var(--tap);padding:12px 14px;border-bottom:1px solid var(--line);position:relative}
   .lrow:last-child{border-bottom:none}
-  .lrow:active{background:var(--inset)}
+  .lrow:active{background:var(--surface-3)}
   .ava{width:44px;height:44px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;font-weight:700;font-size:15px;color:#fff}
   .lbody{flex:1;min-width:0;overflow:hidden;display:flex;flex-direction:column}
-  .lname{font-size:15.5px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .lsub{font-size:12.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+  .lname{font-size:var(--t-m);font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .lsub{font-size:var(--t-s);color:var(--ink-2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
   .lmeta{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:0 0 auto;margin-left:10px}
-  .ltime{font-size:11.5px;color:var(--faint);white-space:nowrap}
-  .badge{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;white-space:nowrap}
-  .b-wait{background:rgba(255,149,0,.15);color:var(--amber-d)}
-  .b-hand{background:rgba(255,59,48,.13);color:#cc2f26}
-  .b-done{background:rgba(163,198,20,.15);color:var(--green-d)}
-  .b-new{background:var(--inset);color:var(--muted)}
-  .b-zona{color:#fff}
-  .chev{color:#c7d0cb;flex:0 0 auto}
-  .pico{width:40px;height:40px;border-radius:12px;flex:0 0 auto;display:grid;place-items:center;font-weight:800;font-size:12px;color:#fff;letter-spacing:.04em}
-  .dotnew{position:absolute;left:5px;top:50%;transform:translateY(-50%);width:7px;height:7px;border-radius:50%;background:var(--amber)}
-  .vacio{color:var(--muted);text-align:center;padding:48px 16px;font-size:15px}
+  .ltime{font-size:var(--t-xs);color:var(--ink-3);white-space:nowrap}
+
+  /* Badges de estado. 12px (eran 10, ilegibles de noche) y con BORDE del color
+     de su tinta: el borde da una segunda señal además del relleno, para que se
+     distingan en escala de grises y con daltonismo. */
+  .badge{font-size:var(--t-xs);font-weight:700;padding:3px 9px;border-radius:var(--rp);
+    white-space:nowrap;border:1px solid transparent}
+  .b-wait{background:var(--st-debe-bg);color:var(--st-debe-ink);border-color:var(--st-debe-ink)}
+  .b-hand{background:var(--st-alerta-bg);color:var(--st-alerta-ink);border-color:var(--st-alerta-ink)}
+  .b-done{background:var(--st-ok-bg);color:var(--st-ok-ink);border-color:var(--st-ok-ink)}
+  .b-new{background:var(--st-off-bg);color:var(--st-off-ink);border-color:var(--st-off-ink)}
+  .b-zona{color:#fff;border-color:transparent}
+
+  /* Chip de estado con glifo puesto por CSS: para los estados que hoy se
+     comunicaban SOLO con color (el "12/14" que se pintaba de ámbar al llenarse
+     era indistinguible del verde con deuteranopia). El glifo no se puede
+     olvidar porque no se escribe en el markup. */
+  .est{display:inline-flex;align-items:center;gap:5px;font-size:var(--t-xs);font-weight:700;
+    padding:4px 10px;border-radius:var(--rp);border:1px solid transparent;white-space:nowrap}
+  .est::before{font-size:11px;line-height:1}
+  .est-ok{background:var(--st-ok-bg);color:var(--st-ok-ink);border-color:var(--st-ok-ink)}
+  .est-ok::before{content:"✓"}
+  .est-debe{background:var(--st-debe-bg);color:var(--st-debe-ink);border-color:var(--st-debe-ink)}
+  .est-debe::before{content:"⏳"}
+  .est-alerta{background:var(--st-alerta-bg);color:var(--st-alerta-ink);border-color:var(--st-alerta-ink)}
+  .est-alerta::before{content:"!"}
+  .est-lleno{background:var(--st-lleno-bg);color:var(--st-lleno-ink);border-color:var(--st-lleno-ink)}
+  .est-lleno::before{content:"●"}
+  .est-off{background:var(--st-off-bg);color:var(--st-off-ink);border-color:var(--st-off-ink)}
+  .est-off::before{content:"–"}
+
+  /* Era #c7d0cb = 1.58:1. Es la ÚNICA señal de "esto se toca" en cada fila. */
+  .chev{color:var(--ink-3);flex:0 0 auto}
+  .pico{width:40px;height:40px;border-radius:var(--r2);flex:0 0 auto;display:grid;place-items:center;font-weight:800;font-size:12px;color:#fff;letter-spacing:.04em}
+  /* El punto de 7px pegado al borde era casi invisible; una barra lateral se ve
+     de reojo mientras se baja por la lista. */
+  .dotnew{position:absolute;left:0;top:0;bottom:0;width:4px;border-radius:0 3px 3px 0;background:var(--st-debe-solid)}
+  .vacio{color:var(--ink-2);text-align:center;padding:48px 16px;font-size:var(--t-m)}
 
   /* ficha */
   .navbar{display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px}
-  .navback{display:inline-flex;align-items:center;gap:2px;color:var(--green-d);font-size:16px;font-weight:500}
-  .wabtn{display:inline-flex;align-items:center;gap:6px;background:var(--green);color:#fff;font-size:13px;font-weight:600;padding:8px 14px;border-radius:999px;box-shadow:0 4px 12px -4px rgba(163,198,20,.6)}
+  .navback{display:inline-flex;align-items:center;gap:4px;min-height:var(--tap);color:var(--lime-ink);font-size:var(--t-l);font-weight:600}
+  /* Tinta navy, no blanca: blanco sobre lima daba 1.97:1 en el botón que más se
+     toca de la ficha. Y 44px de alto — antes eran 29. */
+  .wabtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:var(--tap);
+    background:var(--lime);color:var(--on-lime);font-size:var(--t-m);font-weight:700;
+    padding:0 var(--s4);border-radius:var(--rp);box-shadow:var(--sombra)}
   .fhead{display:flex;flex-direction:column;align-items:center;text-align:center;padding:4px 0 12px}
   .fava{width:74px;height:74px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:26px;color:#fff;margin-bottom:10px}
   .fhead h2{font-size:21px;font-weight:700;letter-spacing:-.01em}
-  .fnum{font-size:13px;color:var(--muted);margin-top:2px}
+  .fnum{font-size:var(--t-m);color:var(--ink-2);margin-top:2px}
   .fpills{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap;justify-content:center}
-  .pz{font-size:11.5px;font-weight:700;padding:5px 12px;border-radius:999px;color:#fff}
+  .pz{display:inline-flex;align-items:center;font-size:var(--t-xs);font-weight:700;padding:6px 12px;border-radius:var(--rp);color:#fff}
 
-  .group{background:var(--card);border:1px solid var(--sep);border-radius:16px;overflow:hidden;box-shadow:var(--sombra)}
-  .grow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 15px;border-bottom:1px solid var(--sep);font-size:14.5px}
+  .group{background:var(--surface);border:1px solid var(--line);border-radius:var(--r3);overflow:hidden;box-shadow:var(--sombra)}
+  .grow{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:var(--tap);padding:12px 15px;border-bottom:1px solid var(--line);font-size:var(--t-m)}
   .grow:last-child{border-bottom:none}
-  .grow .k{color:var(--muted)} .grow .v{font-weight:600;text-align:right}
-  .pipe{display:flex;gap:6px;flex-wrap:wrap;padding:13px 14px}
-  .pstep{font-family:inherit;font-size:12px;font-weight:600;padding:7px 12px;border-radius:999px;background:var(--inset);color:var(--muted);border:none}
-  .pstep.on{background:var(--blue);color:#fff}
-  form.inline{display:flex;gap:8px;flex-wrap:wrap;padding:12px 14px}
-  form.inline input{flex:1;min-width:130px;background:var(--inset);border:1px solid var(--sep);border-radius:11px;padding:10px 13px;color:var(--ink);font:inherit;font-size:14px;outline:none}
-  form.inline textarea{flex-basis:100%;background:var(--inset);border:1px solid var(--sep);border-radius:11px;padding:10px 13px;color:var(--ink);font:inherit;font-size:14px;outline:none;resize:vertical;min-height:64px}
-  form.inline button{background:var(--lime);color:var(--navy);border:1px solid var(--sep);border-radius:11px;padding:9px 16px;font:inherit;font-weight:800;box-shadow:var(--sombra);cursor:pointer}
-  form.inline button:active{transform:translate(1px,1px);box-shadow:var(--sombra)}
-  form.inline label{flex-basis:100%;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:-4px}
-  .config-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 14px;border-bottom:1px solid var(--sep)}
+  .grow .k{color:var(--ink-2)} .grow .v{font-weight:600;text-align:right}
+  /* Las 6 etapas del pipeline eran botones de 31px pegados con 6px de gap: un
+     toque de más y cambiabas la etapa equivocada. 44px y 8px de separación. */
+  .pipe{display:flex;gap:var(--s2);flex-wrap:wrap;padding:13px 14px}
+  .pstep{display:inline-flex;align-items:center;justify-content:center;min-height:var(--tap);
+    font-family:inherit;font-size:var(--t-s);font-weight:600;padding:0 14px;border-radius:var(--rp);
+    background:var(--surface-2);color:var(--ink-2);border:1.5px solid var(--line-strong);cursor:pointer}
+  .pstep.on{background:var(--navy-fill);color:#fff;border-color:var(--navy-fill);font-weight:700}
+  .pstep.on::before{content:"✓ ";font-weight:800}
+
+  /* 16px y 44px de alto en todos los campos: por debajo de 16px iOS amplía la
+     página al enfocar y la deja ampliada, con scroll horizontal — lo peor que
+     puede pasar cuando estás con una mano. Eran 14px. */
+  form.inline{display:flex;gap:var(--s2);flex-wrap:wrap;padding:var(--s3) 14px}
+  form.inline input{flex:1;min-width:130px;min-height:var(--tap);background:var(--surface-2);border:1px solid var(--line-strong);
+    border-radius:var(--r2);padding:0 13px;color:var(--ink);font:inherit;font-size:var(--t-input);outline:none}
+  form.inline textarea{flex-basis:100%;background:var(--surface-2);border:1px solid var(--line-strong);border-radius:var(--r2);
+    padding:11px 13px;color:var(--ink);font:inherit;font-size:var(--t-input);outline:none;resize:vertical;min-height:80px;line-height:1.45}
+  form.inline button{min-height:var(--tap);background:var(--lime);color:var(--on-lime);border:1px solid var(--lime);
+    border-radius:var(--r2);padding:0 var(--s4);font:inherit;font-size:var(--t-m);font-weight:800;box-shadow:var(--sombra);cursor:pointer}
+  form.inline button:active{transform:scale(.985)}
+  form.inline label{flex-basis:100%;font-size:var(--t-s);font-weight:700;color:var(--ink-2);margin-bottom:-4px}
+  form.inline input::placeholder,form.inline textarea::placeholder{color:var(--ink-3)}
+
+  /* --- Partidos: fila de la lista -------------------------------------------
+     En 360px no entran fecha + zona + sede + ratio + estado + chevron en una
+     línea. Los estados bajan a su propia fila de chips debajo del subtítulo, que
+     además es donde se leen mejor. */
+  .pfecha{flex:0 0 44px;text-align:center}
+  .pfecha b{display:block;font-family:var(--font-num);font-style:italic;font-weight:800;
+    font-size:var(--t-xl);line-height:1;letter-spacing:var(--track-num)}
+  .pfecha small{display:block;font-size:var(--t-xs);color:var(--ink-2);margin-top:2px}
+  .pchips{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+
+  /* Acción destructiva: fuera de la fila de acciones comunes, separada por aire
+     y una línea. Nunca a menos de 24px de un botón de uso frecuente. */
+  .acc-peligro{margin-top:var(--gap-peligro);padding-top:var(--s3);border-top:1px solid var(--line);
+    display:flex;justify-content:flex-end;gap:var(--s2);flex-wrap:wrap}
+
+  .config-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line)}
   .config-row:last-child{border-bottom:none}
   .config-row input{flex:1;min-width:90px}
-  .btn-rojo{background:var(--red)!important}
+  .btn-rojo{background:var(--st-alerta-solid)!important;color:#fff!important}
   .notas-list{padding:0 14px 12px}
-  .notas-list p{font-size:14px;border-left:3px solid var(--sep);padding:4px 10px;margin-bottom:8px}
-  .notas-list time{display:block;font-size:11px;color:var(--faint)}
+  .notas-list p{font-size:var(--t-m);border-left:3px solid var(--line-strong);padding:4px 10px;margin-bottom:8px}
+  .notas-list time{display:block;font-size:var(--t-xs);color:var(--ink-3)}
   .chat{padding:8px 4px 2px;display:flex;flex-direction:column;gap:6px}
-  .bub{max-width:80%;padding:8px 12px;border-radius:18px;font-size:14px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
-  .bub.in{align-self:flex-start;background:#e9ebec;color:#0b1b12;border-bottom-left-radius:5px}
-  .bub.out{align-self:flex-end;background:var(--navy);color:#fff;border-bottom-right-radius:5px}
-  .bub time{display:block;font-size:10px;margin-top:3px;opacity:.55;text-align:right}
-  .noreply{align-self:center;display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;color:var(--amber-d);background:rgba(255,149,0,.12);border:1px dashed #ffce8a;padding:5px 12px;border-radius:999px;margin:6px 0}
+  .bub{max-width:82%;padding:9px 13px;border-radius:18px;font-size:var(--t-m);line-height:1.45;white-space:pre-wrap;word-break:break-word}
+  .bub.in{align-self:flex-start;background:var(--surface-3);color:var(--ink);border-bottom-left-radius:5px}
+  .bub.out{align-self:flex-end;background:var(--navy-9);color:var(--on-navy);border-bottom-right-radius:5px}
+  /* La hora del mensaje era 10px al 55% de opacidad: eso es ~2:1 real. */
+  .bub time{display:block;font-size:var(--t-xs);margin-top:3px;opacity:.75;text-align:right}
+  .noreply{align-self:center;display:inline-flex;align-items:center;gap:7px;font-size:var(--t-xs);font-weight:600;
+    color:var(--st-debe-ink);background:var(--st-debe-bg);border:1px dashed var(--st-debe-ink);
+    padding:5px 12px;border-radius:var(--rp);margin:6px 0}
 
   .stack>*+*{margin-top:6px}
-  .foot{color:var(--faint);font-size:12px;text-align:center;padding:22px 16px 6px}
+  .foot{color:var(--ink-2);font-size:var(--t-s);text-align:center;padding:22px 16px 6px}
 
   /* --- Avisos de resultado (guardado / error) --------------------------------
      Sticky arriba: tras guardar volvemos con #ancla al bloque donde estaba el
      usuario, y un aviso en el flujo normal quedaría fuera de pantalla. */
   .aviso{position:sticky;top:0;z-index:80;display:flex;gap:9px;align-items:flex-start;
-    padding:13px 16px;margin:0 0 12px;font-size:13.5px;font-weight:600;line-height:1.4;
+    padding:13px 16px;margin:0 0 12px;font-size:var(--t-m);font-weight:600;line-height:1.4;
     box-shadow:var(--sombra)}
-  .aviso-ok{background:#eafaf0;color:#1c6b3a;border-bottom:1px solid #b7ebca}
-  .aviso-err{background:#fdecea;color:#a3241a;border-bottom:1px solid #f3c2bd}
+  .aviso-ok{background:var(--st-ok-bg);color:var(--st-ok-ink);border-bottom:2px solid var(--st-ok-ink)}
+  .aviso-err{background:var(--st-alerta-bg);color:var(--st-alerta-ink);border-bottom:2px solid var(--st-alerta-ink)}
   .aviso-ic{flex:0 0 auto}
   .aviso-tx{flex:1;min-width:0}
   /* Los destinos de ancla se paran DEBAJO del aviso pegado, no atrás. */
@@ -788,43 +1022,50 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .campos{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:13px;padding:0 14px 14px}
   .campo{display:flex;flex-direction:column;gap:5px;min-width:0}
   .campo-ancho{grid-column:1/-1}
-  .campo label{font-size:12px;font-weight:700;color:var(--muted)}
+  .campo label{font-size:var(--t-s);font-weight:700;color:var(--ink-2)}
   /* 16px a propósito: por debajo de eso iOS hace zoom solo al enfocar. */
-  .campo input,.campo textarea,.campo select{width:100%;background:var(--inset);border:1px solid var(--sep);
-    border-radius:11px;padding:11px 13px;color:var(--ink);font:inherit;font-size:16px;outline:none;min-height:44px}
+  .campo input,.campo textarea,.campo select{width:100%;background:var(--surface-2);border:1.5px solid var(--line-strong);
+    border-radius:var(--r2);padding:11px 13px;color:var(--ink);font:inherit;font-size:var(--t-input);outline:none;min-height:var(--tap)}
   .campo textarea{min-height:100px;resize:vertical;line-height:1.45}
-  .campo small{font-size:11.5px;color:var(--faint);line-height:1.35}
-  .campo .falta{color:var(--amber-d);font-weight:600}
-  .campos-tit{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
-    color:var(--faint);padding:13px 14px 2px}
+  .campo small{font-size:var(--t-xs);color:var(--ink-2);line-height:1.35}
+  .campo .falta{color:var(--st-debe-ink);font-weight:600}
+  .campos-tit{font-size:var(--t-eyebrow);font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-2);padding:13px 14px 2px}
 
   /* Botones tocables: mínimo 44px de alto (dedo, una mano, de noche). */
   .btn-toque{min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:6px;
-    border:none;border-radius:11px;padding:0 16px;font:inherit;font-weight:700;font-size:14px;cursor:pointer}
-  .btn-guardar{background:var(--lime);color:var(--navy);border:1px solid var(--sep)}
-  .btn-peligro{background:none;border:1px dashed var(--red);color:var(--red);font-weight:600;font-size:13px}
+    border:none;border-radius:var(--r2);padding:0 16px;font:inherit;font-weight:700;font-size:var(--t-m);cursor:pointer}
+  .btn-guardar{background:var(--lime);color:var(--on-lime);border:1px solid var(--lime)}
+  .btn-peligro{background:var(--st-alerta-bg);border:1.5px solid var(--st-alerta-ink);color:var(--st-alerta-ink);font-weight:700;font-size:var(--t-s)}
   .pie-form{padding:0 14px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 
   /* Bloque de una sede dentro de la tarjeta del distrito. */
-  .sede{border-top:1px solid var(--sep)}
-  .sede-tit{font-size:14px;font-weight:700;padding:14px 14px 0}
+  .sede{border-top:1px solid var(--line)}
+  .sede-tit{font-size:var(--t-m);font-weight:700;padding:14px 14px 0}
 
   /* "Para que el bot trabaje solo": qué falta cargar, con el link al campo. */
-  .prow{display:flex;align-items:center;gap:12px;padding:13px 15px;border-bottom:1px solid var(--sep)}
+  .prow{display:flex;align-items:center;gap:12px;min-height:var(--tap);padding:13px 15px;border-bottom:1px solid var(--line)}
   .prow:last-child{border-bottom:none}
   .pico2{flex:0 0 auto;font-size:19px}
   .ptxt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
-  .ptxt b{font-size:14px;font-weight:600}
-  .ptxt small{font-size:12px;color:var(--muted);line-height:1.35}
-  .pcta{flex:0 0 auto;font-size:12.5px;font-weight:700;color:var(--green-d);white-space:nowrap}
+  .ptxt b{font-size:var(--t-m);font-weight:600}
+  .ptxt small{font-size:var(--t-s);color:var(--ink-2);line-height:1.35}
+  .pcta{flex:0 0 auto;font-size:var(--t-s);font-weight:700;color:var(--lime-ink);white-space:nowrap}
 
   /* Fila de inscrito: acciones comunes a la izquierda, la destructiva aparte. */
-  .finsc{display:flex;align-items:center;gap:9px;padding:11px 14px;border-bottom:1px solid var(--sep);flex-wrap:wrap}
+  .finsc{display:flex;align-items:center;gap:9px;padding:11px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
   .finsc:last-of-type{border-bottom:none}
   .finsc-acc{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
-  .finsc-peligro{margin-left:auto;padding-left:10px;border-left:1px solid var(--sep)}
+  .finsc-peligro{margin-left:auto;padding-left:10px;border-left:1px solid var(--line)}
+  /* En 360px la fila envuelve y el margin-left:auto deja de separar nada: "Baja"
+     puede caer justo debajo del dedo que buscaba "Pagó". Ahí pasa a ocupar su
+     propia línea, alineada a la derecha y con una separación de verdad. */
+  @media (max-width:479px){
+    .finsc-peligro{flex-basis:100%;margin:var(--s2) 0 0;padding:var(--s2) 0 0;
+      border-left:none;border-top:1px solid var(--line);display:flex;justify-content:flex-end}
+  }
   .btn-fila{min-height:44px;min-width:44px;border:none;border-radius:10px;padding:0 12px;
-    font:inherit;font-size:13px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+    font:inherit;font-size:var(--t-s);font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
 
   /* tab bar */
   /* Barra clara como la propuesta v2: la navegación no compite con el
@@ -833,40 +1074,40 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .tabbar{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;
     height:calc(62px + env(safe-area-inset-bottom));background:rgba(255,255,255,.92);
     backdrop-filter:saturate(180%) blur(12px);-webkit-backdrop-filter:saturate(180%) blur(12px);
-    border-top:1px solid var(--sep);display:flex;padding:7px 0 env(safe-area-inset-bottom);z-index:50}
-  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--faint);
-    font-size:10.5px;font-weight:600;letter-spacing:.01em}
+    border-top:1px solid var(--line);display:flex;padding:7px 0 env(safe-area-inset-bottom);z-index:50}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--ink-2);
+    font-size:var(--t-xs);font-weight:600;letter-spacing:.01em}
   .tab svg{width:23px;height:23px}
   .tab.on{color:var(--navy);font-weight:700}
 
   /* sidebar (solo escritorio) */
   .shell{min-height:100vh}
   .sidebar{display:none}
-  .sidebar .brand{display:flex;align-items:center;gap:11px;font-family:'Big Shoulders',sans-serif;font-style:italic;text-transform:uppercase;font-weight:800;font-size:22px;color:var(--navy);letter-spacing:.02em;margin-bottom:26px}
-  .sidebar .brand .iso{width:36px;height:36px;border-radius:11px;border:1px solid var(--sep);background:var(--lime);display:grid;place-items:center;font-size:19px;box-shadow:var(--sombra)}
+  .sidebar .brand{display:flex;align-items:center;gap:11px;font-family:var(--font-num);font-style:italic;text-transform:uppercase;font-weight:800;font-size:22px;color:var(--navy);letter-spacing:.02em;margin-bottom:26px}
+  .sidebar .brand .iso{width:36px;height:36px;border-radius:11px;border:1px solid var(--line);background:var(--lime);display:grid;place-items:center;font-size:19px;box-shadow:var(--sombra)}
   .snav{display:flex;flex-direction:column;gap:4px}
-  .snav a{display:flex;align-items:center;gap:12px;padding:11px 13px;border-radius:12px;font-weight:600;font-size:15px;color:var(--muted)}
+  .snav a{display:flex;align-items:center;gap:12px;min-height:var(--tap);padding:11px 13px;border-radius:var(--r2);font-weight:600;font-size:15px;color:var(--ink-2)}
   .snav a svg{width:22px;height:22px}
-  .snav a.on{background:rgba(163,198,20,.12);color:var(--green-d)}
-  .snav a:hover{background:var(--inset)}
-  .sbottom{margin-top:22px;padding-top:16px;border-top:1px solid var(--sep);display:flex;flex-direction:column;gap:2px}
-  .sbottom::before{content:'Herramientas';font-size:10.5px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);padding:0 13px 8px}
-  .scsv{display:inline-flex;align-items:center;gap:7px;font-size:13.5px;color:var(--muted);padding:11px 13px;border-radius:12px}
-  .scsv:hover{background:var(--inset)}
+  .snav a.on{background:var(--lime-tint);color:var(--lime-ink)}
+  .snav a:hover{background:var(--surface-2)}
+  .sbottom{margin-top:22px;padding-top:16px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:2px}
+  .sbottom::before{content:'Herramientas';font-size:var(--t-eyebrow);font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2);padding:0 13px 8px}
+  .scsv{display:inline-flex;align-items:center;gap:7px;min-height:var(--tap);font-size:var(--t-s);color:var(--ink-2);padding:0 13px;border-radius:var(--r2)}
+  .scsv:hover{background:var(--surface-2)}
   .fcol-right .group{margin-bottom:0}
 
   /* RESPONSIVE: a partir de 980px, layout de escritorio */
   @media (min-width:980px){
-    body{background:#e3e8e5}
+    body{background:var(--desk)}
     .shell{display:flex;max-width:1180px;margin:0 auto;background:var(--bg);min-height:100vh;box-shadow:0 0 90px -50px rgba(16,39,68,.45)}
-    .sidebar{display:flex;flex-direction:column;flex:0 0 250px;background:#fff;border-right:1px solid var(--sep);padding:28px 20px;position:sticky;top:0;height:100vh}
+    .sidebar{display:flex;flex-direction:column;flex:0 0 250px;background:var(--surface);border-right:1px solid var(--line);padding:28px 20px;position:sticky;top:0;height:100vh}
     .app{flex:1;min-width:0;max-width:none;margin:0;padding:24px 36px 56px}
     .px{padding-left:0;padding-right:0}
     .tabbar{display:none}
     .ltitle{padding-left:2px;padding-right:2px}
     .grid2{grid-template-columns:repeat(4,1fr)}
     .marcador{padding:24px 28px 22px}
-    .mnum{font-size:76px}
+    .mnum{font-size:72px}
 
     /* El marcador con gráfico usaba el ancho como relleno: la cifra chica a la
        izquierda y las barras apretadas contra el borde derecho. En escritorio
@@ -876,8 +1117,8 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
     .marcador:has(.bars) > .mnum{grid-column:1;grid-row:2;align-self:end}
     .marcador:has(.bars) > .bars{grid-column:2;grid-row:2 / span 2;margin-top:0;height:132px}
     .marcador:has(.bars) > .mfoot{grid-column:1;grid-row:3}
-    .bars .bd{font-size:9.5px}
-    .bars .bn{font-size:10px}
+    .bars .bd{font-size:var(--t-xs)}
+    .bars .bn{font-size:var(--t-xs)}
 
     /* Dos columnas: a la izquierda lo accionable (la pichanga de hoy, los
        avisos, los pendientes), a la derecha lo analítico (la comunidad, el
@@ -900,7 +1141,37 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   @media (min-width:1280px){
     .app{padding:28px 56px 56px}
   }
-</style></head><body>
+`;
+// Lo que se sirve: mismo CSS, sin comentarios ni sangría.
+const ESTILOS_MIN = ESTILOS
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^[ \t]+/gm, '')
+  .replace(/\n{2,}/g, '\n')
+  .trim();
+
+/**
+ * Aviso de resultado de una acción ("guardado", "no se pudo", "X dado de baja").
+ *
+ * Va arriba de la página y PEGADO al viewport (sticky): después de guardar se
+ * vuelve con #ancla al bloque donde estaba el usuario, así que un banner metido
+ * en el flujo del documento quedaría fuera de pantalla justo cuando hace falta.
+ * Sticky y no fixed para que ocupe su lugar y no tape el título de la vista.
+ */
+function bannerAviso(query = {}) {
+  const texto = (query.aviso || '').toString().slice(0, 300);
+  if (!texto) return '';
+  const err = query.err === '1';
+  return `<div class="aviso ${err ? 'aviso-err' : 'aviso-ok'}" role="status">
+    <span class="aviso-ic">${err ? '⚠️' : '✅'}</span><span class="aviso-tx">${esc(texto)}</span>
+  </div>`;
+}
+
+function baseHtml(titulo, cuerpo, { refresh = false, activo = '', key = '', tabbarMobile = true, aviso = null } = {}) {
+  return `<!doctype html><html lang="es"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>${esc(titulo)}</title>
+${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ? refresh : 90}">` : ''}
+<style>${ESTILOS_MIN}</style></head><body>
 <div class="shell">${key ? sidebar(key, activo) : ''}<div class="app">${bannerAviso(aviso || {})}${cuerpo}</div></div>
 ${tabbarMobile && activo ? tabbar(key, activo) : ''}</body></html>`;
 }
@@ -1049,11 +1320,14 @@ function paginaResumen(db, key, query = {}) {
   const maxD = Math.max(1, ...distritos.map((d) => d.n));
   const drow = (d) => {
     const listo = d.n >= UMBRAL_PILOTO;
-    const color = listo ? '#A3C614' : '#64748b';
+    // El lima puro sobre blanco da 1.97:1: como relleno de un punto de 11px y de
+    // una barra de 8px, prácticamente no se ve. Va la versión --lime-fill (3.16:1),
+    // que es el mismo verde con el peso justo para leerse.
+    const color = listo ? 'var(--lime-fill)' : 'var(--st-off-solid)';
     return `<a class="zrow" href="/admin/leads?key=${key}&vista=crm&distrito=${encodeURIComponent(d.k)}"><span class="zdot" style="background:${color}"></span>
       <span class="zname">${esc(d.nombre)}${listo ? ' 🔥' : ''}</span>
       <span class="ztrack"><i style="width:${Math.max(3, Math.round((d.n / maxD) * 100))}%;background:${color}"></i></span>
-      <span class="zval">${d.n}${d.mes ? ` <small style="color:var(--faint);font-weight:400">+${d.mes} este mes</small>` : ''}</span></a>`;
+      <span class="zval">${d.n}${d.mes ? ` <small style="color:var(--ink-3);font-weight:400">+${d.mes} este mes</small>` : ''}</span></a>`;
   };
 
   // Cada barra es un link: toca un día → CRM filtrado a los contactos de ese día.
@@ -1080,9 +1354,9 @@ function paginaResumen(db, key, query = {}) {
   // Cada escalón del embudo lleva al CRM con ESA gente filtrada.
   const frow = (nombre, n, color, detalle, filtroUrl) =>
     `<a class="zrow" href="/admin/leads?key=${key}&vista=crm${filtroUrl || ''}"><span class="zdot" style="background:${color}"></span>
-      <span class="zname">${nombre}${detalle ? ` <small style="color:var(--faint);font-weight:400">${detalle}</small>` : ''}</span>
+      <span class="zname">${nombre}${detalle ? ` <small style="color:var(--ink-2);font-weight:400">${detalle}</small>` : ''}</span>
       <span class="ztrack"><i style="width:${Math.max(3, pct(n))}%;background:${color}"></i></span>
-      <span class="zval">${n} <small style="color:var(--faint);font-weight:400">${pct(n)}%</small></span></a>`;
+      <span class="zval">${n} <small style="color:var(--ink-2);font-weight:400">${pct(n)}%</small></span></a>`;
 
   // El banner refleja el modo real del bot (misma lectura de env que index.js).
   const modoSeguro = (process.env.SAFE_MODE || 'true') !== 'false';
@@ -1165,8 +1439,8 @@ function paginaResumen(db, key, query = {}) {
     ? `<a class="marcador" style="display:block;margin-bottom:14px" href="/admin/leads?key=${key}&vista=partidos&partido=${prox.id}">
         <div class="mtop"><span class="mlabel">⚽ Próxima pichanga · ${ZONAS[prox.zona]?.nombre || esc(prox.zona)}</span>
           <span class="mdelta">${prox.restante > 0 ? `${prox.restante} cupos libres` : '⏳ LLENO — hay espera'}</span></div>
-        <div class="mnum">${prox.ocupados}<span style="font-size:32px;color:#8FA3BC">/${prox.cupo}</span></div>
-        <div class="mfoot" style="font-size:12px;color:#C4D1DF">${esc(db.fechaBonita(prox.fecha))}${prox.hora ? ` · ${esc(prox.hora)}` : ''}${prox.sede ? ` · ${esc(prox.sede)}` : ''} — toca para ver la lista y copiarla al grupo</div>
+        <div class="mnum">${prox.ocupados}<span style="font-size:32px;color:var(--on-navy-3)">/${prox.cupo}</span></div>
+        <div class="mfoot">${esc(db.fechaBonita(prox.fecha))}${prox.hora ? ` · ${esc(prox.hora)}` : ''}${prox.sede ? ` · ${esc(prox.sede)}` : ''} — toca para ver la lista y copiarla al grupo</div>
       </a>`
     : `<a class="banner px" href="/admin/leads?key=${key}&vista=partidos" style="margin:0 0 14px;text-decoration:none"><div class="bic">⚽</div>
         <div class="btxt"><b>No hay partidos con inscripción abierta.</b> Abre uno y el bot empieza a llenar la lista solo.</div></a>`;
@@ -1200,7 +1474,7 @@ function paginaResumen(db, key, query = {}) {
           ZONAS[z]?.color || '#64748b',
           `&zona=${encodeURIComponent(z)}`
         )).join('')}
-        ${sinClasificar ? zrow('Por clasificar', sinClasificar, 'var(--faint)', null) : ''}
+        ${sinClasificar ? zrow('Por clasificar', sinClasificar, 'var(--ink-3)', null) : ''}
       </div>
 
       ${distritos.length ? `
@@ -1216,20 +1490,25 @@ function paginaResumen(db, key, query = {}) {
           <span class="mdelta">▲ +${semana} esta semana</span></div>
         <div class="mnum">${todos.length}</div>
         <div style="font-size:13px;font-weight:700;margin-top:4px">
-          <span style="color:#C6E34E">Hoy: ${dias[dias.length - 1].nuevos} nuevo${dias[dias.length - 1].nuevos === 1 ? '' : 's'}</span>
-          <span style="color:#8fb3e0"> · ${dias[dias.length - 1].rec} recurrente${dias[dias.length - 1].rec === 1 ? '' : 's'} (ya registrados, volvieron a escribir)</span>
+          <span style="color:var(--on-navy-ok)">Hoy: ${dias[dias.length - 1].nuevos} nuevo${dias[dias.length - 1].nuevos === 1 ? '' : 's'}</span>
+          <span style="color:var(--on-navy-rec)"> · ${dias[dias.length - 1].rec} recurrente${dias[dias.length - 1].rec === 1 ? '' : 's'} (ya registrados, volvieron a escribir)</span>
         </div>
         <div class="bars">${barras}</div>
-        <div class="mfoot"><span style="color:#C6E34E">■ Nuevos</span> · <span style="color:#8fb3e0">■ Recurrentes</span> — toca una barra para ver ese día. Solo chats directos.</div>
+        <div class="mfoot"><span style="color:var(--on-navy-ok)">■ Nuevos</span> · <span style="color:var(--on-navy-rec)">■ Recurrentes</span> — toca una barra para ver ese día. Solo chats directos.</div>
       </div>
 
       <div class="shdr">Pipeline · del primer mensaje al pago <small>· toca para ver quiénes</small></div>
       <div class="zlist">
-        ${frow('Escribieron al número', todos.length, '#0a84ff', '', '')}
-        ${frow('Dejaron sus datos', conDatos, '#5e5ce6', 'nombre · edad · distrito', '&estado=con_datos')}
-        ${frow('Invitados al grupo', invitados, '#A3C614', 'Breña / Comas', '&estado=invitado_grupo')}
-        ${frow('Lista de espera', enEspera, '#ff9f0a', 'otras zonas', '&estado=lista_espera')}
-        ${frow('Pagaron por Yape', nPagadores, '#55770B', '', '&estado=pago')}
+        ${/* El embudo usaba el azul y el violeta de iOS (#0a84ff, #5e5ce6) en un
+              panel lima/navy: cinco colores de tres sistemas distintos para una
+              sola escalera. Ahora es UNA rampa de marca, de navy (todos los que
+              escriben) a lima (los que pagan), y el ámbar marca el único escalón
+              que es una espera, no un avance. */ ''}
+        ${frow('Escribieron al número', todos.length, 'var(--navy-fill)', '', '')}
+        ${frow('Dejaron sus datos', conDatos, 'var(--navy-2)', 'nombre · edad · distrito', '&estado=con_datos')}
+        ${frow('Invitados al grupo', invitados, 'var(--ramp-mid)', 'Breña / Comas', '&estado=invitado_grupo')}
+        ${frow('Lista de espera', enEspera, 'var(--st-debe-solid)', 'otras zonas', '&estado=lista_espera')}
+        ${frow('Pagaron por Yape', nPagadores, 'var(--lime-fill)', '', '&estado=pago')}
       </div>
       <div class="foot" style="padding:8px 2px 0">"Escribieron" cuenta a <b>todos</b> los que chatean al número (también conocidos y jugadores antiguos), no solo interesados nuevos.</div>
 
@@ -1238,7 +1517,7 @@ function paginaResumen(db, key, query = {}) {
 
       </div>
       </div>
-      <div class="foot">Se actualiza solo cada 90 s · <a href="/admin/leads.csv?key=${key}" style="color:var(--green-d)">⬇ exportar CSV</a></div>
+      <div class="foot">Se actualiza solo cada 90 s · <a href="/admin/leads.csv?key=${key}" style="color:var(--lime-ink)">⬇ exportar CSV</a></div>
     </div>
   `, { refresh: true, activo: 'resumen', key, aviso: query });
 }
@@ -1260,12 +1539,15 @@ const fechaCompacta = (f, conDia = false, conAnio = true) => {
 // ==============================================================================
 //  Vista · PAGOS (finanzas: todos los cobros, medio, operación, estado)
 // ==============================================================================
+// Mismo criterio que ZONAS: el cuadrito del medio de pago lleva sus iniciales en
+// blanco. Plin (#0aa5a8 → 3.02:1) e Interbank (#12a14b → 3.37:1) no llegaban;
+// van oscurecidos lo justo para conservar el color de cada app.
 const MEDIOS = {
-  yape: { nombre: 'Yape', color: '#7b2f8e' },
-  plin: { nombre: 'Plin', color: '#0aa5a8' },
-  bcp: { nombre: 'BCP', color: '#003b7a' },
-  interbank: { nombre: 'Interbank', color: '#12a14b' },
-  otro: { nombre: 'Otro', color: '#64748b' },
+  yape: { nombre: 'Yape', color: '#6B2A7C' },        // 9.34:1
+  plin: { nombre: 'Plin', color: '#067074' },        // 5.87:1
+  bcp: { nombre: 'BCP', color: '#003B7A' },          // 11.01:1
+  interbank: { nombre: 'Interbank', color: '#0C7A38' }, // 5.45:1
+  otro: { nombre: 'Otro', color: '#4F5B6B' },        // 6.91:1
 };
 
 function paginaPagos(db, key, query = {}) {
@@ -1346,8 +1628,8 @@ function paginaPagos(db, key, query = {}) {
       <div class="lbody">
         <div class="lname">${soles(p.monto)} · ${esc(quien)}</div>
         <div class="lsub">${detalles}</div>
-        ${!ok && p.motivo ? `<div class="lsub" style="color:var(--amber-d)">⚠ ${esc(p.motivo)}</div>` : ''}
-        ${evidencia ? `<div class="lsub" style="color:var(--amber-d);white-space:normal">${evidencia}</div>` : ''}
+        ${!ok && p.motivo ? `<div class="lsub" style="color:var(--st-debe-ink)">⚠ ${esc(p.motivo)}</div>` : ''}
+        ${evidencia ? `<div class="lsub" style="color:var(--st-debe-ink);white-space:normal">${evidencia}</div>` : ''}
       </div>
       <div class="lmeta">
         <span class="badge ${ok ? 'b-done' : 'b-wait'}">${ok ? 'confirmado' : 'por revisar'}</span>
@@ -1501,7 +1783,7 @@ function paginaCRM(db, key, query) {
       : l.estado && l.estado !== 'nuevo' ? `<span class="badge b-done">${esc(ESTADOS[l.estado] || l.estado)}</span>`
       : z ? `<span class="badge b-zona" style="background:${z.color}">${z.nombre}</span>` : '';
     return `<a class="lrow" href="/admin/leads?key=${key}&numero=${esc(l.numero)}">
-      ${(l.handoff || sr) ? '<span class="dotnew" style="background:' + (l.handoff ? 'var(--red)' : 'var(--amber)') + '"></span>' : ''}
+      ${(l.handoff || sr) ? '<span class="dotnew" style="background:' + (l.handoff ? 'var(--st-alerta-solid)' : 'var(--st-debe-solid)') + '"></span>' : ''}
       <span class="ava" style="background:${avatarColor(l.numero)}">${esc(iniciales(l.nombre, l.numero))}</span>
       <span class="lbody"><span class="lname">${esc(l.nombre || 'Sin nombre')}</span><span class="lsub">${sub}</span></span>
       <span class="lmeta"><span class="ltime">${horaCorta(l.actualizado_en)}</span>${badge}</span>
@@ -1534,7 +1816,7 @@ function paginaCRM(db, key, query) {
     : ((urgentes.length || resto.length)
       ? seguimientos + grupo('Necesitan tu atención ahora', urgentes) + grupo('Todos los contactos', resto)
       : `<p class="vacio">${Object.keys(query).some((k) => ['filtro', 'zona', 'estado', 'distrito', 'q'].includes(k))
-          ? 'Ningún pichanguero calza con este filtro ⚽<br><a style="color:var(--green-d);font-weight:600" href="/admin/leads?key=' + key + '&vista=crm">Ver todos</a>'
+          ? 'Ningún pichanguero calza con este filtro ⚽<br><a style="color:var(--lime-ink);font-weight:600" href="/admin/leads?key=' + key + '&vista=crm">Ver todos</a>'
           : 'Todavía no hay pichangueros registrados ⚽<br>Cuando alguien escriba al número, aparece acá.'}</p>`);
 
   return baseHtml('Pichangueros — CRM', `
@@ -1578,7 +1860,7 @@ function paginaCRM(db, key, query) {
         ${zona ? `<input type="hidden" name="zona" value="${zona}">` : ''}
         ${filtro ? `<input type="hidden" name="filtro" value="${filtro}">` : ''}
         ${estadoF ? `<input type="hidden" name="estado" value="${estadoF}">` : ''}
-        <select name="distrito" onchange="this.form.submit()" style="flex:1;border:none;background:transparent;outline:none;font:inherit;font-size:14px;padding:10px 0;color:var(--ink)">
+        <select name="distrito" onchange="this.form.submit()" style="flex:1;min-width:0;min-height:var(--tap);border:none;background:transparent;outline:none;font:inherit;font-size:var(--t-input);color:var(--ink)">
           <option value="">📍 Filtrar por distrito…</option>
           ${distritosCrm.map(([k, d]) => `<option value="${esc(k)}"${k === distritoF ? ' selected' : ''}>${esc(d.label)} (${d.n})</option>`).join('')}
         </select>
@@ -1667,8 +1949,8 @@ function paginaFicha(db, key, numero, query = {}) {
         <div class="fnum">+${esc(numero)}</div>
         <div class="fpills">
           ${z ? `<span class="pz" style="background:${z.color}">${z.nombre}</span>` : ''}
-          ${lead.handoff ? `<span class="pz" style="background:var(--red)">🔔 ${esc(lead.handoff_motivo || 'derivado')}</span>` : ''}
-          ${sinResp ? '<span class="pz" style="background:var(--amber)">📥 Sin responder</span>' : ''}
+          ${lead.handoff ? `<span class="pz" style="background:var(--st-alerta-solid)">🔔 ${esc(lead.handoff_motivo || 'derivado')}</span>` : ''}
+          ${sinResp ? '<span class="pz" style="background:var(--st-debe-solid)">📥 Sin responder</span>' : ''}
         </div>
       </div>
 
@@ -1687,14 +1969,14 @@ function paginaFicha(db, key, numero, query = {}) {
           <div class="group">
             ${dato('Primer contacto', historia.primer)}
             ${dato('Partidos', historia.partidos)}
-            ${dato('Próximo partido', historia.proximo, historia.hayProximo ? 'var(--green-d)' : null)}
-            ${dato('Total pagado', historia.pagado, historia.montoPagado > 0 ? 'var(--green-d)' : null)}
+            ${dato('Próximo partido', historia.proximo, historia.hayProximo ? 'var(--lime-ink)' : null)}
+            ${dato('Total pagado', historia.pagado, historia.montoPagado > 0 ? 'var(--lime-ink)' : null)}
           </div>
         </div>
 
         ${lead.handoff ? `<form method="post" action="/admin/lead/reactivar">
           <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
-          <button class="wabtn btn-rojo" style="width:100%;justify-content:center;border:none;padding:13px;font-size:14px">🔓 Reactivar el bot para este contacto</button>
+          <button class="btn-toque btn-guardar" style="width:100%;min-height:var(--tap-lg);font-size:var(--t-l)">🔓 Reactivar el bot para este contacto</button>
         </form>` : ''}
 
         <div class="ancla" id="etapa">
@@ -1727,11 +2009,11 @@ function paginaFicha(db, key, numero, query = {}) {
             ${pagosLead.map((p) => `
               <div class="grow" style="align-items:flex-start">
                 <span class="k">${p.monto != null ? `S/ ${esc(p.monto)}` : 'Monto ilegible'}${p.titular ? ` · ${esc(p.titular)}` : ''}<br>
-                  <small style="color:var(--faint)">${esc((p.creado_en || '').slice(0, 16))}${p.numero_operacion ? ` · op. ${esc(p.numero_operacion)}` : ''}</small>
-                  ${p.estado === 'revisar' && p.motivo ? `<br><small style="color:var(--red)">⚠ ${esc(p.motivo)}</small>` : ''}
-                  ${originalDe[p.id] ? `<br><small style="color:var(--red)">↩ mismo nº de operación que el pago CONFIRMADO de <a href="/admin/leads?key=${key}&numero=${esc(originalDe[p.id].numero)}" style="text-decoration:underline">+${esc(originalDe[p.id].numero)}</a> · ${esc((originalDe[p.id].creado_en || '').slice(0, 16))} · S/${esc(originalDe[p.id].monto)}</small>` : ''}
+                  <small style="color:var(--ink-3)">${esc((p.creado_en || '').slice(0, 16))}${p.numero_operacion ? ` · op. ${esc(p.numero_operacion)}` : ''}</small>
+                  ${p.estado === 'revisar' && p.motivo ? `<br><small style="color:var(--st-alerta-ink)">⚠ ${esc(p.motivo)}</small>` : ''}
+                  ${originalDe[p.id] ? `<br><small style="color:var(--st-alerta-ink)">↩ mismo nº de operación que el pago CONFIRMADO de <a href="/admin/leads?key=${key}&numero=${esc(originalDe[p.id].numero)}" style="text-decoration:underline">+${esc(originalDe[p.id].numero)}</a> · ${esc((originalDe[p.id].creado_en || '').slice(0, 16))} · S/${esc(originalDe[p.id].monto)}</small>` : ''}
                 </span>
-                <span class="v" style="color:${p.estado === 'confirmado' ? 'var(--green-d)' : 'var(--red)'}">${p.estado === 'confirmado' ? '✅ Confirmado' : '⚠ Revisar'}</span>
+                <span class="v" style="color:${p.estado === 'confirmado' ? 'var(--lime-ink)' : 'var(--st-alerta-ink)'}">${p.estado === 'confirmado' ? '✅ Confirmado' : '⚠ Revisar'}</span>
               </div>`).join('')}
           </div>
         </div>` : ''}
@@ -1744,14 +2026,19 @@ function paginaFicha(db, key, numero, query = {}) {
               <input name="texto" placeholder="ej. vino con 3 amigos, buen arquero…">
               <button>+ Nota</button>
             </form>
-            <div class="notas-list">${notas.map((n) => `<p>${esc(n.texto)}<time>${esc((n.creado_en || '').slice(0, 16))}</time></p>`).join('') || '<p style="border:none;color:var(--faint)">Sin notas.</p>'}</div>
+            <div class="notas-list">${notas.map((n) => `<p>${esc(n.texto)}<time>${esc((n.creado_en || '').slice(0, 16))}</time></p>`).join('') || '<p style="border:none;color:var(--ink-3)">Sin notas.</p>'}</div>
           </div>
         </div>
 
-        <form method="post" action="/admin/lead/eliminar" onsubmit="return confirm('¿Eliminar este contacto y todo su historial? No se puede deshacer.')">
-          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
-          <button style="width:100%;background:none;border:1px dashed var(--red);color:var(--red);border-radius:11px;padding:10px;font:inherit;font-size:13px">🗑 Eliminar contacto (prueba/spam)</button>
-        </form>
+        ${/* Borrar el contacto y todo su historial quedaba pegado justo debajo
+              del "+ Nota": dos botones a 6px de distancia, uno de uso diario y
+              el otro irreversible. Va apartado, con línea y 24px de aire. */ ''}
+        <div class="acc-peligro">
+          <form method="post" action="/admin/lead/eliminar" onsubmit="return confirm('¿Eliminar este contacto y todo su historial? No se puede deshacer.')">
+            <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
+            <button class="btn-toque btn-peligro">🗑 Eliminar contacto (prueba/spam)</button>
+          </form>
+        </div>
 
         </div>
         <div class="fcol-right">
@@ -1875,7 +2162,7 @@ function paginaConfig(db, key, conexion = null, query = {}) {
         </form>
         <div class="campos-tit">Canchas de ${esc(nombre)}</div>
         ${sedesPorZona[zona].map((s) => filaSede(zona, s)).join('')
-          || '<p style="padding:0 14px 12px;color:var(--faint);font-size:14px">Sin canchas todavía.</p>'}
+          || '<p style="padding:0 14px 12px;color:var(--ink-3);font-size:14px">Sin canchas todavía.</p>'}
         ${filaSede(zona, null)}
       </div>
     </div>`;
@@ -1888,7 +2175,7 @@ function paginaConfig(db, key, conexion = null, query = {}) {
       <div class="group">
         <form method="post" action="/admin/config/corte">
           <input type="hidden" name="key" value="${esc(keyRaw)}">
-          <p style="padding:13px 14px 0;font-size:13.5px;color:var(--muted);line-height:1.45">
+          <p style="padding:13px 14px 0;font-size:13.5px;color:var(--ink-2);line-height:1.45">
             Los pagos y las derivaciones <b>anteriores</b> a esta fecha quedan como historial: la plata se sigue
             sumando y las conversaciones siguen ahí, pero <b>no aparecen como pendientes</b> (esos partidos ya se
             jugaron y esas derivaciones ya las atendiste). <b>No se borra nada.</b>
@@ -1910,7 +2197,7 @@ function paginaConfig(db, key, conexion = null, query = {}) {
   const nuevoDistrito = `
     <div class="ancla" id="nuevo-distrito">
       <div class="shdr">➕ Nuevo distrito <small>· al crearlo aparece en el bot, los partidos y esta página</small></div>
-      <div class="group" style="border:2.5px dashed var(--trazo);box-shadow:none">
+      <div class="group" style="border:1.5px dashed var(--line-strong);box-shadow:none">
         <form method="post" action="/admin/config/zona/nueva">
           <input type="hidden" name="key" value="${esc(keyRaw)}">
           <div class="campos">
@@ -1942,15 +2229,15 @@ function paginaConfig(db, key, conexion = null, query = {}) {
   const bloqueCanal = `
     <div class="shdr ancla" id="canal">Canal de WhatsApp</div>
     <div class="group" style="display:flex;align-items:center;gap:13px;padding:15px">
-      <span style="flex:0 0 auto;width:11px;height:11px;border-radius:50%;background:${enLinea ? 'var(--green)' : 'var(--amber)'}"></span>
+      <span style="flex:0 0 auto;width:11px;height:11px;border-radius:50%;background:${enLinea ? 'var(--lime)' : 'var(--st-debe-solid)'}"></span>
       <div style="flex:1;min-width:0">
         <div style="font-weight:700;font-size:15px">${enLinea ? 'Bot en línea' : `Canal ${esc(estadoCanal)}`}</div>
-        <div style="font-size:13px;color:var(--muted)">
+        <div style="font-size:13px;color:var(--ink-2)">
           ${numeroCanal ? `Atendiendo desde +${esc(numeroCanal)}` : 'Sin número enlazado'} · canal oficial de Meta
         </div>
       </div>
     </div>
-    <p style="font-size:12.5px;color:var(--faint);margin:8px 2px 20px;line-height:1.5">
+    <p style="font-size:12.5px;color:var(--ink-3);margin:8px 2px 20px;line-height:1.5">
       Con el canal oficial el número no se enlaza por QR: se administra desde la cuenta de Meta.
       Clarck sigue usando su WhatsApp normal en el celular sobre el mismo número.
     </p>`;
@@ -2046,20 +2333,26 @@ function paginaPartidos(db, key, query = {}) {
   const fila = (p) => {
     const z = ZONAS[p.zona];
     const pasado = p.fecha < hoy;
-    return `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}" style="display:flex;align-items:center;gap:12px;padding:13px 14px;border-bottom:1px solid var(--sep)">
-      <div style="min-width:52px;text-align:center">
-        <div style="font-family:'Big Shoulders',sans-serif;font-weight:800;font-size:22px;line-height:1">${esc(p.fecha.slice(8, 10))}</div>
-        <div style="font-size:11px;color:var(--faint)">${esc(p.fecha.slice(5, 7))}/${esc(p.fecha.slice(2, 4))}</div>
-      </div>
-      <div style="flex:1;min-width:0">
-        <div style="font-weight:700;font-size:15px">${z ? z.nombre : esc(p.zona)}${p.hora ? ` · ${esc(p.hora)}` : ''}</div>
-        <div style="font-size:12.5px;color:var(--muted)">${esc(p.sede || 'Sede por definir')} · S/ ${esc(p.precio ?? neg.zonas[p.zona]?.precio ?? '?')}</div>
-      </div>
-      <div style="text-align:right">
-        <div style="font-weight:800;font-size:15px;color:${p.ocupados >= p.cupo ? 'var(--amber-d)' : 'var(--green-d)'}">${p.ocupados}/${p.cupo}</div>
-        <div style="font-size:11px;color:var(--faint)">${p.pagados} pagados${p.en_espera ? ` · ${p.en_espera} espera` : ''}</div>
-      </div>
-      <span class="badge ${p.estado === 'abierto' && !pasado ? 'b-zona' : 'b-new'}" style="${p.estado === 'abierto' && !pasado ? 'background:var(--green)' : ''}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
+    const lleno = p.ocupados >= p.cupo;
+    // "Lleno" se decía SOLO pintando el "12/14" de ámbar en vez de verde: con
+    // daltonismo rojo-verde los dos son el mismo marrón, y a contraluz tampoco
+    // se distinguen. Ahora la palabra está escrita y el chip trae su glifo.
+    const chipCupos = lleno
+      ? `<span class="est est-lleno">${p.ocupados}/${p.cupo} lleno</span>`
+      : `<span class="est est-ok">${p.ocupados}/${p.cupo} · ${p.cupo - p.ocupados} libre${p.cupo - p.ocupados === 1 ? '' : 's'}</span>`;
+    const abierto = p.estado === 'abierto' && !pasado;
+    return `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}">
+      <span class="pfecha"><b>${esc(p.fecha.slice(8, 10))}</b><small>${esc(mesCorto(p.fecha))}</small></span>
+      <span class="lbody">
+        <span class="lname">${z ? z.nombre : esc(p.zona)}${p.hora ? ` · ${esc(p.hora)}` : ''}</span>
+        <span class="lsub">${esc(p.sede || 'Sede por definir')} · S/ ${esc(p.precio ?? neg.zonas[p.zona]?.precio ?? '?')}</span>
+        <span class="pchips">
+          ${chipCupos}
+          <span class="est ${abierto ? 'est-ok' : 'est-off'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
+          ${p.pagados ? `<span class="est est-ok">${p.pagados} pagados</span>` : ''}
+          ${p.en_espera ? `<span class="est est-debe">${p.en_espera} en espera</span>` : ''}
+        </span>
+      </span>
       ${SVG.chev}
     </a>`;
   };
@@ -2070,13 +2363,19 @@ function paginaPartidos(db, key, query = {}) {
 
       <div class="shdr">Abrir partido nuevo <small>· 3 toques: zona, día y listo</small></div>
       <style>
-        .zbtn{flex:1;text-align:center;padding:11px;border:1px solid var(--sep);border-radius:12px;background:#fff;
-          font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:16px;letter-spacing:.06em;
-          text-transform:uppercase;color:var(--muted);cursor:pointer}
-        .zbtn:has(input:checked){background:var(--navy);color:#fff;box-shadow:var(--sombra)}
+        /* 44px de alto: son los tres primeros toques para abrir un partido. */
+        .zbtn{flex:1;min-height:var(--tap);display:inline-flex;align-items:center;justify-content:center;
+          text-align:center;padding:0 var(--s3);border:1.5px solid var(--line-strong);border-radius:var(--r2);
+          background:var(--surface);font-family:var(--font-num);font-style:italic;font-weight:800;
+          font-size:var(--t-l);letter-spacing:.04em;text-transform:uppercase;color:var(--ink-2);cursor:pointer}
+        .zbtn:has(input:checked){background:var(--navy-fill);color:#fff;border-color:var(--navy-fill);box-shadow:var(--sombra)}
         .zbtn input{display:none}
-        .qd{padding:10px 14px;border:1px solid var(--sep);border-radius:12px;background:#fff;font:inherit;font-weight:700;font-size:13px;cursor:pointer}
-        .qd.on{background:var(--lime);color:var(--navy)}
+        .qd{min-height:var(--tap);padding:0 var(--s4);border:1.5px solid var(--line-strong);border-radius:var(--r2);
+          background:var(--surface);font:inherit;font-weight:700;font-size:var(--t-m);color:var(--ink);cursor:pointer}
+        .qd.on{background:var(--lime);color:var(--on-lime);border-color:var(--lime)}
+        /* El selector de cancha es un campo más: mismo tamaño que el resto. */
+        #selSede{flex-basis:100%;min-height:var(--tap);font:inherit;font-size:var(--t-input);padding:0 var(--s3);
+          border-radius:var(--r2);border:1px solid var(--line-strong);background:var(--surface-2);color:var(--ink)}
       </style>
       <div class="group">
         <form class="inline" method="post" action="/admin/partido">
@@ -2085,7 +2384,7 @@ function paginaPartidos(db, key, query = {}) {
           <div style="display:flex;gap:8px;flex-basis:100%;flex-wrap:wrap">
             ${db.zonasOperativas().map((z, i) => `<label class="zbtn"><input type="radio" name="zona" value="${esc(z)}" ${i === 0 ? 'checked' : ''} onchange="pintaSedes('${esc(z)}')">${esc(db.nombreDeZona(z))}</label>`).join('')}
           </div>
-          <select name="sede" id="selSede" onchange="cupoDeSede()" style="flex-basis:100%;font:inherit;font-size:14px;padding:10px 12px;border-radius:11px;border:1px solid var(--sep);background:var(--inset)"></select>
+          <select name="sede" id="selSede" onchange="cupoDeSede()"></select>
           <label>¿Cuándo?</label>
           <div style="display:flex;gap:8px;flex-basis:100%;align-items:center">
             <button type="button" class="qd on" onclick="setDia(this,'${hoy}')">Hoy</button>
@@ -2123,9 +2422,9 @@ function paginaPartidos(db, key, query = {}) {
         pintaSedes('brena');
       </script>
 
-      <div class="shdr">Todos los partidos ${ocultos ? `<small>· <a style="color:var(--green-d)" href="/admin/leads?key=${key}&vista=partidos${verCancelados ? '' : '&cancelados=1'}">${verCancelados ? 'ocultar' : `ver ${ocultos}`} cancelado${ocultos === 1 ? '' : 's'} vacío${ocultos === 1 ? '' : 's'}</a></small>` : ''}</div>
+      <div class="shdr">Todos los partidos ${ocultos ? `<small>· <a style="color:var(--lime-ink)" href="/admin/leads?key=${key}&vista=partidos${verCancelados ? '' : '&cancelados=1'}">${verCancelados ? 'ocultar' : `ver ${ocultos}`} cancelado${ocultos === 1 ? '' : 's'} vacío${ocultos === 1 ? '' : 's'}</a></small>` : ''}</div>
       <div class="group">
-        ${partidos.map(fila).join('') || '<p style="padding:14px;color:var(--faint);font-size:14px">Sin partidos todavía. Abre el primero arriba — el bot lo ofrece automáticamente a quien pida jugar.</p>'}
+        ${partidos.map(fila).join('') || '<p style="padding:14px;color:var(--ink-3);font-size:14px">Sin partidos todavía. Abre el primero arriba — el bot lo ofrece automáticamente a quien pida jugar.</p>'}
       </div>
 
       <div class="foot">⚽ Pichangueros · Partidos</div>
@@ -2155,10 +2454,14 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
       <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${i.id}"><input type="hidden" name="partido_id" value="${partidoId}"><input type="hidden" name="estado" value="${estado}">
       <button class="btn-fila" style="${estilo}">${etiqueta}</button>
     </form>`;
+  // Marcado "Vino": lima con tinta NAVY (6.03:1). Con texto blanco daba 1.97:1 —
+  // el botón que dice si alguien vino se leía peor que el que no lo dice.
   const btnAsist = (i, valor, etiqueta, on) => `
     <form method="post" action="/admin/inscripcion/asistencia" style="display:inline">
       <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${i.id}"><input type="hidden" name="partido_id" value="${partidoId}"><input type="hidden" name="valor" value="${i.asistencia === valor ? '' : valor}">
-      <button class="btn-fila" style="background:${on ? (valor === 'si' ? 'var(--green)' : 'var(--red)') : 'var(--inset)'};color:${on ? '#fff' : 'var(--muted)'}">${etiqueta}</button>
+      <button class="btn-fila" style="${on
+        ? (valor === 'si' ? 'background:var(--lime);color:var(--on-lime)' : 'background:var(--st-alerta-solid);color:#fff')
+        : 'background:var(--surface-2);color:var(--ink-2);border:1.5px solid var(--line-strong)'}">${etiqueta}</button>
     </form>`;
 
   /**
@@ -2170,22 +2473,29 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
    * al primero de la espera y dispara un WhatsApp, sin deshacer— sale del
    * amontonamiento de botones: va apartada a la derecha y pregunta antes.
    */
+  // El estado de cada inscrito (Pagado / Reservado / En espera) estaba en 12px
+  // gris tenue (2.94:1) — siendo el dato principal de esta pantalla. Ahora es un
+  // badge con relleno, borde y tinta que pasan 4.5:1.
+  const chipInsc = { pagado: 'b-done', reservado: 'b-new', espera: 'b-wait', baja: 'b-new' };
   const filaInsc = (i) => {
     const nombre = i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : '¿?');
     const puedeMarcar = p.estado === 'jugado' || p.fecha <= hoyLima();
     return `<div class="finsc ancla" id="insc-${i.id}">
       <div style="flex:1;min-width:140px">
-        <div style="font-weight:700;font-size:14.5px">${i.numero ? `<a href="/admin/leads?key=${key}&numero=${i.numero}">${esc(nombre)}</a>` : esc(nombre)}</div>
-        <div style="font-size:12px;color:var(--faint)">${esc(ESTADOS_INSC[i.estado] || i.estado)}${i.pago_id ? ` · pago #${i.pago_id}` : ''}</div>
+        <div style="font-weight:700;font-size:var(--t-m)">${i.numero ? `<a href="/admin/leads?key=${key}&numero=${i.numero}">${esc(nombre)}</a>` : esc(nombre)}</div>
+        <div style="margin-top:5px">
+          <span class="badge ${chipInsc[i.estado] || 'b-new'}">${esc(ESTADOS_INSC[i.estado] || i.estado)}</span>
+          ${i.pago_id ? `<span class="badge b-new">pago #${i.pago_id}</span>` : ''}
+        </div>
       </div>
       ${i.estado !== 'baja' ? `
       <div class="finsc-acc">
-        ${i.estado !== 'pagado' ? accion(i, 'pagado', '💰 Pagó', 'background:rgba(163,198,20,.14);color:var(--green-d)') : ''}
-        ${i.estado === 'espera' ? accion(i, 'reservado', '⬆ Subir', 'background:var(--inset);color:var(--muted)') : ''}
+        ${i.estado !== 'pagado' ? accion(i, 'pagado', '💰 Pagó', 'background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink)') : ''}
+        ${i.estado === 'espera' ? accion(i, 'reservado', '⬆ Subir', 'background:var(--surface-2);color:var(--ink-2);border:1.5px solid var(--line-strong)') : ''}
         ${puedeMarcar ? `${btnAsist(i, 'si', '✔ Vino', i.asistencia === 'si')}${btnAsist(i, 'no', '✘ Faltó', i.asistencia === 'no')}` : ''}
       </div>
       <div class="finsc-peligro">
-        ${accion(i, 'baja', '🗑 Baja', 'background:rgba(255,59,48,.12);color:var(--red)',
+        ${accion(i, 'baja', '🗑 Baja', 'background:var(--st-alerta-bg);color:var(--st-alerta-ink);border:1.5px solid var(--st-alerta-ink)',
           `¿Dar de baja a ${nombre}? Libera su cupo y sube al primero de la lista de espera. No se puede deshacer con un botón.`)}
       </div>` : ''}
     </div>`;
@@ -2205,35 +2515,43 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   const pct = p.cupo ? Math.min(100, Math.round((ocupados / p.cupo) * 100)) : 0;
   const queda = k.costoCancha != null ? k.cobrado - k.costoCancha : null;
 
-  const dato = (rot, val, color = '#fff') => `
-    <div style="flex:1;min-width:96px;padding:11px 12px;background:rgba(255,255,255,.07);border-radius:12px">
-      <div style="font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:rgba(255,255,255,.62);font-weight:700">${rot}</div>
-      <div style="font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:26px;line-height:1.1;color:${color};font-variant-numeric:tabular-nums">${val}</div>
+  // Rótulos a 12px (eran 10.5) y en --on-navy-2 (8.36:1 sobre el navy): esta
+  // caja es lo que Clarck mira de noche, en la cancha, antes de cobrar.
+  const dato = (rot, val, color = 'var(--on-navy)') => `
+    <div style="flex:1;min-width:104px;padding:11px 12px;background:rgba(255,255,255,.09);border-radius:var(--r2)">
+      <div style="font-size:var(--t-xs);letter-spacing:.11em;text-transform:uppercase;color:var(--on-navy-2);font-weight:700">${rot}</div>
+      <div class="num" style="font-size:var(--t-2xl);line-height:1.15;color:${color};margin-top:3px;overflow-wrap:anywhere">${val}</div>
     </div>`;
 
+  // El "amarillo = lleno" de la barra era la única señal de que ya no entra
+  // nadie. Ahora el porcentaje va escrito al lado de la barra.
+  const lleno = pct >= 100;
   const caja = `
     <div class="marcador" style="margin:-2px 0 14px">
-      <div style="font-size:12.5px;color:rgba(255,255,255,.72);font-weight:600">
+      <div style="font-size:var(--t-s);color:var(--on-navy-2);font-weight:600">
         ${esc(p.sede || 'Sede por definir')} · ${esc(p.hora || 'hora por definir')} · ${soles(k.precio)} por jugador
       </div>
-      <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px">
-        <div style="font-family:'Big Shoulders',sans-serif;font-style:italic;font-weight:800;font-size:40px;line-height:1;color:#fff;font-variant-numeric:tabular-nums">${ocupados}/${p.cupo}</div>
-        <div style="font-size:12.5px;color:rgba(255,255,255,.7);font-weight:600">cupos ocupados${activas.length - ocupados > 0 ? ` · ${activas.length - ocupados} en espera` : ''}</div>
+      <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px;flex-wrap:wrap">
+        <div class="num" style="font-size:var(--n-m);color:var(--on-navy)">${ocupados}/${p.cupo}</div>
+        <div style="font-size:var(--t-s);color:var(--on-navy-2);font-weight:600">cupos ocupados${activas.length - ocupados > 0 ? ` · ${activas.length - ocupados} en espera` : ''}</div>
       </div>
-      <div style="height:9px;border-radius:999px;background:rgba(255,255,255,.16);margin:10px 0 14px;overflow:hidden">
-        <div style="height:100%;width:${pct}%;border-radius:999px;background:${pct >= 100 ? 'var(--amber)' : 'var(--lime)'}"></div>
+      <div style="display:flex;align-items:center;gap:11px;margin:10px 0 14px">
+        <div style="flex:1;height:10px;border-radius:var(--rp);background:rgba(255,255,255,.20);overflow:hidden">
+          <div style="height:100%;width:${pct}%;border-radius:var(--rp);background:${lleno ? 'var(--st-debe-ink)' : 'var(--lime)'}"></div>
+        </div>
+        <div style="flex:0 0 auto;font-size:var(--t-s);font-weight:700;color:${lleno ? 'var(--on-navy-debe)' : 'var(--on-navy-2)'};font-variant-numeric:tabular-nums">${lleno ? 'LLENO' : `${pct}%`}</div>
       </div>
       <div style="display:flex;gap:9px;flex-wrap:wrap">
-        ${dato('Cobrado', soles(k.cobrado), 'var(--lime)')}
-        ${dato('Por cobrar', soles(k.porCobrar), k.porCobrar > 0 ? 'var(--amber)' : '#fff')}
+        ${dato('Cobrado', soles(k.cobrado), 'var(--on-navy-ok)')}
+        ${dato('Por cobrar', soles(k.porCobrar), k.porCobrar > 0 ? 'var(--on-navy-debe)' : 'var(--on-navy)')}
         ${k.costoCancha != null
           ? dato('Cancha', soles(k.costoCancha))
-          : `<a href="/admin/leads?key=${key}&vista=config" style="flex:1;min-width:96px;padding:11px 12px;background:rgba(255,255,255,.07);border-radius:12px;text-decoration:none;display:block">
-              <div style="font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:rgba(255,255,255,.62);font-weight:700">Cancha</div>
-              <div style="font-size:13px;color:rgba(255,255,255,.85);font-weight:700;margin-top:5px">Poner costo ›</div>
+          : `<a href="/admin/leads?key=${key}&vista=config" style="flex:1;min-width:104px;min-height:var(--tap);padding:11px 12px;background:rgba(255,255,255,.09);border-radius:var(--r2);text-decoration:none;display:block">
+              <div style="font-size:var(--t-xs);letter-spacing:.11em;text-transform:uppercase;color:var(--on-navy-2);font-weight:700">Cancha</div>
+              <div style="font-size:var(--t-s);color:var(--on-navy);font-weight:700;margin-top:5px">Poner costo ›</div>
             </a>`}
       </div>
-      ${queda != null ? `<div style="margin-top:11px;font-size:13px;font-weight:700;color:${queda >= 0 ? 'var(--lime)' : 'var(--amber)'}">
+      ${queda != null ? `<div style="margin-top:11px;font-size:var(--t-m);font-weight:700;color:${queda >= 0 ? 'var(--on-navy-ok)' : 'var(--on-navy-debe)'}">
         ${queda >= 0 ? `Queda ${soles(queda)} después de pagar la cancha` : `Faltan ${soles(-queda)} para cubrir la cancha`}
       </div>` : ''}
     </div>`;
@@ -2250,52 +2568,52 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   const editor = `
     <details class="editor ancla" id="editor" ${esError ? 'open' : ''} style="margin-bottom:14px">
       <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:14px;
-        border:1px solid var(--sep);border-radius:14px;background:#fff;font-weight:700;font-size:15px">
+        min-height:var(--tap);border:1px solid var(--line);border-radius:var(--r3);background:var(--surface);
+        font-weight:700;font-size:var(--t-m)">
         <span style="font-size:18px">✏️</span>
         <span style="flex:1">Editar este partido</span>
-        <span style="font-size:12.5px;color:var(--faint);font-weight:600">hora · sede · cupo · precio · fecha</span>
+        <span style="font-size:var(--t-xs);color:var(--ink-2);font-weight:600">hora · sede · cupo · precio · fecha</span>
       </summary>
       <div class="group" style="margin-top:10px;padding:4px 0">
         <form method="post" action="/admin/partido/editar">
           <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${partidoId}">
 
-          <div style="padding:12px 14px">
-            <label style="display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px">CANCHA</label>
-            <select name="sede" style="width:100%;font:inherit;font-size:15px;padding:12px;border-radius:11px;border:1px solid var(--sep);background:var(--inset)">
-              ${sedesDeZona.map((s) => `<option value="${esc(s.nombre)}" ${s.nombre === p.sede ? 'selected' : ''}>🏟 ${esc(s.nombre)}</option>`).join('')}
-              <option value="" ${!p.sede || !sedesDeZona.some((s) => s.nombre === p.sede) ? 'selected' : ''}>Otra cancha / por definir</option>
-            </select>
-          </div>
-
-          <div style="padding:0 14px 12px;display:flex;gap:10px;flex-wrap:wrap">
-            <div style="flex:1;min-width:140px">
-              <label style="display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px">DÍA</label>
-              <input name="fecha" type="date" value="${esc(p.fecha)}" style="width:100%;font-size:15px;padding:11px">
+          ${/* Los campos del editor usan .campos/.campo (16px, 44px, label
+                visible) como el resto del panel: eran cajas de 15px con la
+                etiqueta en MAYÚSCULAS a 12.5px y gris tenue. */ ''}
+          <div class="campos" style="padding-top:14px">
+            <div class="campo campo-ancho">
+              <label for="ed-sede">Cancha</label>
+              <select id="ed-sede" name="sede">
+                ${sedesDeZona.map((s) => `<option value="${esc(s.nombre)}" ${s.nombre === p.sede ? 'selected' : ''}>🏟 ${esc(s.nombre)}</option>`).join('')}
+                <option value="" ${!p.sede || !sedesDeZona.some((s) => s.nombre === p.sede) ? 'selected' : ''}>Otra cancha / por definir</option>
+              </select>
             </div>
-            <div style="flex:1;min-width:120px">
-              <label style="display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px">HORA</label>
-              <input name="hora" value="${esc(p.hora || '')}" placeholder="8-9pm" style="width:100%;font-size:15px;padding:11px">
+            <div class="campo">
+              <label for="ed-fecha">Día</label>
+              <input id="ed-fecha" name="fecha" type="date" value="${esc(p.fecha)}">
             </div>
-          </div>
-
-          <div style="padding:0 14px 14px;display:flex;gap:10px;flex-wrap:wrap">
-            <div style="flex:1;min-width:120px">
-              <label style="display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px">CUPO</label>
-              <input name="cupo" type="number" min="${Math.max(2, ocupados)}" max="60" value="${p.cupo}" style="width:100%;font-size:15px;padding:11px">
-              <div style="font-size:11.5px;color:var(--faint);margin-top:5px">${ocupados ? `No puede bajar de ${ocupados} (los que ya están)` : 'Nadie inscrito todavía'}</div>
+            <div class="campo">
+              <label for="ed-hora">Hora</label>
+              <input id="ed-hora" name="hora" value="${esc(p.hora || '')}" placeholder="8-9pm">
             </div>
-            <div style="flex:1;min-width:120px">
-              <label style="display:block;font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:6px">PRECIO</label>
-              <input name="precio" type="number" step="0.5" value="${p.precio ?? ''}" placeholder="S/ ${esc(neg.zonas[p.zona]?.precio ?? '')}" style="width:100%;font-size:15px;padding:11px">
-              <div style="font-size:11.5px;color:var(--faint);margin-top:5px">Vacío = el de ${esc(z ? z.nombre : p.zona)}</div>
+            <div class="campo">
+              <label for="ed-cupo">Cupo</label>
+              <input id="ed-cupo" name="cupo" type="number" min="${Math.max(2, ocupados)}" max="60" value="${p.cupo}">
+              <small>${ocupados ? `No puede bajar de ${ocupados} (los que ya están)` : 'Nadie inscrito todavía'}</small>
+            </div>
+            <div class="campo">
+              <label for="ed-precio">Precio</label>
+              <input id="ed-precio" name="precio" type="number" step="0.5" value="${p.precio ?? ''}" placeholder="S/ ${esc(neg.zonas[p.zona]?.precio ?? '')}">
+              <small>Vacío = el de ${esc(z ? z.nombre : p.zona)}</small>
             </div>
           </div>
 
           <div style="padding:0 14px 14px">
-            <button style="width:100%;border:none;border-radius:12px;padding:14px;font:inherit;font-weight:800;font-size:15px;cursor:pointer;background:var(--green);color:#fff">
+            <button class="btn-toque btn-guardar" style="width:100%;min-height:var(--tap-lg);font-size:var(--t-l)">
               Guardar cambios
             </button>
-            <div style="font-size:12px;color:var(--faint);margin-top:9px;text-align:center">
+            <div style="font-size:var(--t-s);color:var(--ink-2);margin-top:9px;text-align:center">
               Los ${activas.length} inscritos se mantienen. El bot usa estos datos al responder.
             </div>
           </div>
@@ -2304,8 +2622,8 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
     </details>
     <style>
       .editor summary::-webkit-details-marker{display:none}
-      .editor[open] summary{border-bottom-left-radius:0;border-bottom-right-radius:0;background:var(--inset)}
-      .editor summary:hover{background:var(--inset)}
+      .editor[open] summary{border-bottom-left-radius:0;border-bottom-right-radius:0;background:var(--surface-2)}
+      .editor summary:hover{background:var(--surface-2)}
     </style>`;
 
   return baseHtml(`Partido ${p.fecha} · Pichangueros`, `
@@ -2316,33 +2634,40 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
           <h2>${esc(fechaCompacta(p.fecha, true, false))}</h2>
         </div>
         <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
-          ${p.fecha === hoyLima() ? '<span class="badge" style="background:var(--amber);color:#fff">HOY</span>'
-            : p.fecha === fechaLima(1) ? '<span class="badge" style="background:var(--navy);color:#fff">MAÑANA</span>' : ''}
-          <span class="badge b-zona" style="background:${p.estado === 'abierto' ? 'var(--green)' : 'var(--faint)'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
+          ${/* "HOY" iba en blanco sobre el ámbar claro (2.44:1). Ahora los tres
+                badges son relleno oscuro con blanco encima, todos sobre 5:1. */ ''}
+          ${p.fecha === hoyLima() ? '<span class="badge b-zona" style="background:var(--st-debe-solid)">HOY</span>'
+            : p.fecha === fechaLima(1) ? '<span class="badge b-zona" style="background:var(--navy-9)">MAÑANA</span>' : ''}
+          <span class="badge b-zona" style="background:${p.estado === 'abierto' ? 'var(--st-ok-solid)' : 'var(--st-off-solid)'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
         </span>
       </div>
       ${caja}
 
       ${editor}
 
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
-        ${p.estado === 'abierto' ? cambioEstado('cerrado', '🔒 Cerrar inscripción', 'background:var(--inset);color:var(--muted)') : cambioEstado('abierto', '🔓 Reabrir', 'background:rgba(163,198,20,.14);color:var(--green-d)')}
-        ${p.estado !== 'jugado' ? cambioEstado('jugado', '✅ Marcar jugado', 'background:rgba(163,198,20,.14);color:var(--green-d)') : ''}
-        ${/* Cancelar va apartado (margin-left:auto) y pregunta con el número de
-             inscritos delante: saca el partido de la parrilla del bot y NADIE
-             recibe aviso automático. */ ''}
-        ${p.estado !== 'cancelado' ? `<span style="margin-left:auto">${cambioEstado('cancelado', '✖ Cancelar', 'background:rgba(255,59,48,.12);color:var(--red)',
-          `¿CANCELAR el partido del ${db.fechaBonita(p.fecha, { relativa: false })}? ${activas.length ? `Hay ${activas.length} inscritos y nadie recibe aviso automático: tienes que avisarles tú.` : 'No hay nadie inscrito.'}`)}</span>` : ''}
+      <div style="display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center;margin-bottom:var(--s3)">
+        ${p.estado === 'abierto' ? cambioEstado('cerrado', '🔒 Cerrar inscripción', 'background:var(--surface-2);color:var(--ink);border:1.5px solid var(--line-strong)') : cambioEstado('abierto', '🔓 Reabrir', 'background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink)')}
+        ${p.estado !== 'jugado' ? cambioEstado('jugado', '✅ Marcar jugado', 'background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink)') : ''}
+      </div>
+
+      ${/* Lo destructivo va en su propia fila, separado por 24px y una línea:
+           antes "✖ Cancelar" y "🗑 Eliminar" compartían fila con "Cerrar" y
+           "Marcar jugado", y en 360px eso envuelve — el botón que saca el
+           partido de la parrilla del bot terminaba justo debajo del dedo. */ ''}
+      ${(p.estado !== 'cancelado' || !inscripciones.length) ? `
+      <div class="acc-peligro" style="margin-bottom:16px">
+        ${p.estado !== 'cancelado' ? cambioEstado('cancelado', '✖ Cancelar', 'background:var(--st-alerta-bg);color:var(--st-alerta-ink);border:1.5px solid var(--st-alerta-ink)',
+          `¿CANCELAR el partido del ${db.fechaBonita(p.fecha, { relativa: false })}? ${activas.length ? `Hay ${activas.length} inscritos y nadie recibe aviso automático: tienes que avisarles tú.` : 'No hay nadie inscrito.'}`) : ''}
         ${!inscripciones.length ? `
         <form method="post" action="/admin/partido/eliminar" style="display:inline" onsubmit="return confirm('¿Eliminar este partido? Solo se puede porque no tiene a nadie inscrito.')">
           <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${partidoId}">
-          <button class="btn-toque" style="font-size:13px;background:rgba(255,59,48,.12);color:var(--red)">🗑 Eliminar (está vacío)</button>
+          <button class="btn-toque" style="font-size:var(--t-s);background:var(--st-alerta-bg);color:var(--st-alerta-ink);border:1.5px solid var(--st-alerta-ink)">🗑 Eliminar (está vacío)</button>
         </form>` : ''}
-      </div>
+      </div>` : ''}
 
       <div class="shdr ancla" id="inscritos">Inscritos (${activas.length})</div>
       <div class="group">
-        ${activas.map(filaInsc).join('') || '<p style="padding:14px;color:var(--faint);font-size:14px">Nadie inscrito aún.</p>'}
+        ${activas.map(filaInsc).join('') || '<p style="padding:14px;color:var(--ink-3);font-size:14px">Nadie inscrito aún.</p>'}
         <form class="inline" method="post" action="/admin/partido/inscribir" style="padding-top:10px">
           <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="partido_id" value="${partidoId}">
           <input name="numero" placeholder="Número WhatsApp (o vacío)" style="max-width:200px">
@@ -2355,18 +2680,23 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
       <div class="shdr ancla" id="pagos-sueltos">Pagos confirmados sin partido <small>(asignar a este partido)</small></div>
       <div class="group">
         ${pagosSueltos.map((pg) => `
-          <form method="post" action="/admin/pago/asignar" style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--sep)">
+          <form method="post" action="/admin/pago/asignar" style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)">
             <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="pago_id" value="${pg.id}"><input type="hidden" name="partido_id" value="${partidoId}">
-            <div style="flex:1;font-size:13.5px"><b>${esc(pg.nombre || `+${pg.numero}`)}</b> · S/ ${esc(pg.monto)} ${pg.cupos > 1 ? `(${pg.cupos} cupos)` : ''} · ${horaCorta(pg.creado_en)}</div>
-            <button style="border:none;border-radius:9px;padding:7px 12px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;background:rgba(163,198,20,.14);color:var(--green-d)">Asignar acá</button>
+            <div style="flex:1;min-width:0;font-size:var(--t-m)"><b>${esc(pg.nombre || `+${pg.numero}`)}</b> · S/ ${esc(pg.monto)} ${pg.cupos > 1 ? `(${pg.cupos} cupos)` : ''} · ${horaCorta(pg.creado_en)}</div>
+            <button class="btn-fila" style="background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink)">Asignar acá</button>
           </form>`).join('')}
       </div>` : ''}
 
       <div class="shdr">Lista para el grupo <small>(el bot la arma, tú la pegas)</small></div>
       <div class="group" style="padding:14px">
-        <textarea id="lista" readonly style="width:100%;min-height:${Math.min(420, 90 + (p.cupo + 4) * 21)}px;font:13px/1.6 ui-monospace,monospace;border:1px solid var(--sep);border-radius:11px;padding:12px;background:var(--inset);resize:vertical">${esc(lista)}</textarea>
-        <button onclick="navigator.clipboard.writeText(document.getElementById('lista').value).then(()=>{this.textContent='✅ Copiada'; setTimeout(()=>this.textContent='📋 Copiar lista',1500)})"
-          style="margin-top:10px;width:100%;border:none;border-radius:12px;padding:13px;font:inherit;font-weight:700;font-size:14px;cursor:pointer;background:var(--green);color:#fff">📋 Copiar lista</button>
+        ${/* 16px: al enfocar el textarea (aunque sea readonly) iOS ampliaba la
+              página. La altura sube en proporción para que sigan entrando las
+              mismas líneas. */ ''}
+        <textarea id="lista" readonly style="width:100%;min-height:${Math.min(480, 100 + (p.cupo + 4) * 26)}px;font:var(--t-input)/1.6 var(--font-mono,ui-monospace,monospace);border:1px solid var(--line-strong);border-radius:var(--r2);padding:12px;background:var(--surface-2);color:var(--ink);resize:vertical">${esc(lista)}</textarea>
+        ${/* Tinta navy sobre lima (6.03:1). En blanco daba 1.97:1 — y este es EL
+              botón de la pantalla: el que Clarck toca antes de cada pichanga. */ ''}
+        <button class="btn-toque btn-guardar" onclick="navigator.clipboard.writeText(document.getElementById('lista').value).then(()=>{this.textContent='✅ Copiada'; setTimeout(()=>this.textContent='📋 Copiar lista',1500)})"
+          style="margin-top:10px;width:100%;min-height:var(--tap-lg);font-size:var(--t-l)">📋 Copiar lista</button>
       </div>
 
       <div class="foot">⚽ Pichangueros · Partido #${partidoId}</div>
@@ -2392,13 +2722,13 @@ function paginaConexion(key, conexion) {
     ? `<div class="group" style="text-align:center;padding:26px 20px">
          <div style="font-size:40px;line-height:1">✅</div>
          <div style="font-size:19px;font-weight:800;margin-top:8px">Conectado a WhatsApp</div>
-         <div style="font-size:15px;color:var(--muted);margin-top:4px">Número enlazado</div>
-         <div style="font-size:26px;font-weight:800;font-family:'Big Shoulders',sans-serif;letter-spacing:.02em;margin-top:2px">
+         <div style="font-size:15px;color:var(--ink-2);margin-top:4px">Número enlazado</div>
+         <div style="font-size:26px;font-weight:800;font-family:var(--font-num);letter-spacing:.02em;margin-top:2px">
            ${numero ? `+${esc(numero)}` : 'no disponible'}</div>
        </div>
        <div class="shdr">Cambiar de número / desconectar</div>
        <div class="group" style="padding:16px">
-         <p style="font-size:13.5px;color:var(--muted);line-height:1.45;margin-bottom:14px">
+         <p style="font-size:13.5px;color:var(--ink-2);line-height:1.45;margin-bottom:14px">
            Al desconectar, el bot cierra la sesión actual y muestra un código QR nuevo acá mismo.
            Para enlazar OTRO número, desconecta y escanea el nuevo QR desde ese WhatsApp
            (Ajustes → Dispositivos vinculados → Vincular dispositivo). Mientras tanto el bot no
@@ -2415,18 +2745,18 @@ function paginaConexion(key, conexion) {
        <div class="group" style="text-align:center;padding:22px 20px">
          ${qr
            ? `<img src="${qr}" alt="Código QR de WhatsApp" style="width:280px;max-width:82vw;height:auto;border-radius:12px"/>
-              <div style="font-size:13.5px;color:var(--muted);margin-top:12px;line-height:1.45">
+              <div style="font-size:13.5px;color:var(--ink-2);margin-top:12px;line-height:1.45">
                 Desde el WhatsApp que quieres enlazar:<br><b>Ajustes → Dispositivos vinculados → Vincular dispositivo</b><br>
                 y apunta la cámara a este código.</div>`
            : `<div style="font-size:34px">⏳</div>
-              <div style="font-size:15px;color:var(--muted);margin-top:8px">Generando código QR… esta página se actualiza sola.</div>`}
+              <div style="font-size:15px;color:var(--ink-2);margin-top:8px">Generando código QR… esta página se actualiza sola.</div>`}
        </div>`;
 
   return baseHtml('Conexión · Pichangueros', `
     <div class="px">
       <div class="ltitle"><div><div class="eyebrow">WhatsApp</div><h2>Conexión</h2></div>
-        <span class="live" style="${conectado ? '' : 'background:rgba(255,149,0,.14);color:var(--amber-d)'}">
-          <i style="${conectado ? '' : 'background:var(--amber)'}"></i> ${conectado ? 'En vivo' : esc(estado)}</span></div>
+        <span class="live" style="${conectado ? '' : 'background:var(--st-debe-bg);color:var(--st-debe-ink)'}">
+          <i style="${conectado ? '' : 'background:var(--st-debe-solid)'}"></i> ${conectado ? 'En vivo' : esc(estado)}</span></div>
       ${cuerpo}
       <div class="foot">⚽ Pichangueros · Conexión${conexion ? '' : ' (no disponible)'}</div>
     </div>
