@@ -158,7 +158,7 @@ const srv = app.listen(0, async () => {
     // afuera a los inscritos. De ahí salieron los "Cancelado" vacíos.
     const detalle = await GET(`/admin/leads?key=ux&vista=partidos&partido=${partido}`);
     check('el detalle ofrece "Editar este partido"', /Editar este partido/.test(detalle.html));
-    check('el editor viene plegado (no tapa la lista)', !/<details class="editor" open/.test(detalle.html));
+    check('el editor viene plegado (no tapa la lista)', !/<details class="editor[^"]*"[^>]*\sopen/.test(detalle.html));
 
     const antes = db.getPartido(partido);
     const r = await POST('/admin/partido/editar', {
@@ -189,7 +189,7 @@ const srv = app.listen(0, async () => {
     const conError = await POST('/admin/partido/editar', { key: 'ux', id: lleno, cupo: '2' });
     const pagina = await GET(conError.location.replace(B, ''));
     check('un rechazo vuelve con el aviso visible', /ya hay/.test(pagina.html), 'sin aviso en la página');
-    check('…y deja el editor ABIERTO para corregir', /<details class="editor" open/.test(pagina.html));
+    check('…y deja el editor ABIERTO para corregir', /<details class="editor[^"]*"[^>]*\sopen/.test(pagina.html));
 
     check('editar un partido inexistente no rompe', db.actualizarPartido(999999, { hora: '8pm' }).ok === false);
     check('guardar sin cambios avisa en vez de mentir', db.actualizarPartido(partido, {}).ok === false);
@@ -320,6 +320,147 @@ const srv = app.listen(0, async () => {
 
     const nuevos = (await GET('/admin/leads?key=ux&vista=crm&filtro=nuevos')).html;
     check('el chip Nuevos filtra por los de esta semana', /Hugo Habitual/.test(nuevos));
+  }
+
+  console.log('== 4g · Guardar avisa QUÉ se guardó y vuelve donde estabas ==');
+  {
+    // El pedido que originó esto: "algo más intuitivo para que Clarck modifique
+    // las cosas". Los POST volvían a la vista pelada, sin confirmación y arriba
+    // de todo — en Ajustes, que es un scroll largo, eso significa pegar el link
+    // del grupo de Chorrillos y aparecer en el bloque del canal de WhatsApp.
+    const avisoDe = (loc) => decodeURIComponent((loc.match(/aviso=([^&#]*)/) || [, ''])[1].replace(/\+/g, ' '));
+    const anclaDe = (loc) => (loc.match(/#(.+)$/) || [, ''])[1];
+
+    const rZona = await POST('/admin/config/zona', {
+      key: 'ux', zona: 'comas', precio: '10', grouplink: 'https://chat.whatsapp.com/UX123', nombre_mostrar: 'Comas',
+    });
+    check('guardar una zona nombra el dato concreto, no "guardado" a secas', /link del grupo guardado/.test(avisoDe(rZona.location)), avisoDe(rZona.location));
+    check('…y vuelve al bloque de ESA zona, no al top', anclaDe(rZona.location) === 'zona-comas', anclaDe(rZona.location));
+    const pagZona = await GET(rZona.location);
+    check('…y el aviso se ve en la página que recibe', /link del grupo guardado/.test(pagZona.html));
+    check('…con un destino de ancla que existe de verdad', /id="zona-comas"/.test(pagZona.html));
+    check('el link quedó guardado en la BD', db.getConfigMap().grouplink_comas === 'https://chat.whatsapp.com/UX123');
+
+    // Guardar sin cambiar nada no puede decir "guardado": sería mentir.
+    const rIgual = await POST('/admin/config/zona', { key: 'ux', zona: 'comas', precio: '10', grouplink: 'https://chat.whatsapp.com/UX123', nombre_mostrar: 'Comas' });
+    check('guardar sin cambios lo dice en vez de fingir', /no cambiaste nada/.test(avisoDe(rIgual.location)), avisoDe(rIgual.location));
+
+    const rGen = await POST('/admin/config/general', { key: 'ux', marca: 'Pichangueros', yape_numero: '999111222' });
+    check('los datos del negocio avisan y anclan a su bloque', /guardados/.test(avisoDe(rGen.location)) && anclaDe(rGen.location) === 'general');
+
+    // Rechazos que antes eran mudos: la pantalla recargaba igual y el usuario
+    // no técnico concluye "esto está roto".
+    const rSinNombre = await POST('/admin/config/sede', { key: 'ux', zona: 'brena', nombre: '' });
+    check('una cancha sin nombre explica por qué no entró', /nombre a la cancha/.test(avisoDe(rSinNombre.location)) && /err=1/.test(rSinNombre.location));
+    const rSinFecha = await POST('/admin/partido', { key: 'ux', zona: 'brena', fecha: '' });
+    check('abrir un partido sin día explica por qué no se abrió', /Elige el día/.test(avisoDe(rSinFecha.location)) && /err=1/.test(rSinFecha.location));
+    const rNotaVacia = await POST('/admin/lead/nota', { key: 'ux', numero: L.completo, texto: '  ' });
+    check('una nota vacía avisa en vez de descartarse en silencio', /Escribe algo/.test(avisoDe(rNotaVacia.location)));
+
+    // Inscribir a mano sobre un partido cerrado no hacía NADA: ni inscripción
+    // ni mensaje. Es el caso real de "llega un amigo a la cancha".
+    const cerrado = db.crearPartido({ zona: 'brena', fecha: enDias(2), hora: '8-9pm', cupo: 10 });
+    db.setEstadoPartido(cerrado, 'cerrado');
+    const rCerrado = await POST('/admin/partido/inscribir', { key: 'ux', partido_id: cerrado, nombre: 'Amigo Tardío' });
+    check('inscribir en un partido cerrado dice qué hacer', /Reabrir/.test(avisoDe(rCerrado.location)) && /err=1/.test(rCerrado.location), avisoDe(rCerrado.location));
+    check('…y de verdad no lo inscribió', db.inscripcionesDe(cerrado).length === 0);
+
+    // Pasar lista: 14 toques seguidos, parado en la cancha. Cada uno recargaba
+    // y devolvía arriba de todo, había que volver a bajar hasta donde ibas.
+    const jugado = db.crearPartido({ zona: 'brena', fecha: enDias(-2), hora: '8-9pm', cupo: 10 });
+    const iAsist = db.inscribir(jugado, '51960000001').inscripcion;
+    const rAsist = await POST('/admin/inscripcion/asistencia', { key: 'ux', id: iAsist.id, partido_id: jugado, valor: 'si' });
+    check('marcar asistencia vuelve a LA FILA, no al top', anclaDe(rAsist.location) === `insc-${iAsist.id}`, anclaDe(rAsist.location));
+    const pagAsist = await GET(rAsist.location);
+    check('…y esa fila existe como destino', pagAsist.html.includes(`id="insc-${iAsist.id}"`));
+    check('…y confirma a quién marcaste', /vino/.test(avisoDe(rAsist.location)));
+  }
+
+  console.log('== 4h · Ajustes: campos con etiqueta, no cajas mudas ==');
+  {
+    // Eran 7 <input> con solo placeholder: al editar una sede YA cargada el
+    // placeholder desaparece y quedan siete cajas sin nombre, con "14" y "150"
+    // pegadas sin decir cuál es el cupo y cuál el costo.
+    const cfg = (await GET('/admin/leads?key=ux&vista=config')).html;
+    for (const etiqueta of ['Nombre de la cancha', 'Costo de la cancha (S/)', 'Cupo', 'Link del grupo de WhatsApp', 'Precio por jugador (S/)']) {
+      check(`la etiqueta "${etiqueta}" se ve en pantalla`, cfg.includes(`>${etiqueta}</label>`), 'sin <label>');
+    }
+    const sedeBrena = db.listSedes('brena')[0];
+    check('cada campo tiene su label asociado por for/id', cfg.includes(`for="s${sedeBrena.id}-costo"`) && cfg.includes(`id="s${sedeBrena.id}-costo"`));
+    check('la ayuda del costo ya no vive en un title= (invisible en celular)', !/title="Lo que te cuesta/.test(cfg));
+    check('…sino como texto bajo el campo', /cuesta alquilarla por turno/.test(cfg));
+    check('un link de grupo faltante se señala en su propio campo', /Todavía sin cargar/.test(cfg));
+    check('…y explica cómo conseguirlo', /Invitar por enlace/.test(cfg));
+    check('los bloques de Ajustes son destinos de ancla', /id="general"/.test(cfg) && /id="corte"/.test(cfg) && /id="nuevo-distrito"/.test(cfg));
+  }
+
+  console.log('== 4i · La última cancha de un distrito NO se puede borrar ==');
+  {
+    // Las zonas no son una tabla: se derivan de las sedes (zonasOperativas).
+    // Borrar la última cancha borraba el distrito ENTERO y en silencio — sale
+    // del bot, del CRM y de Partidos, y su precio/link dejan de poder guardarse.
+    const avisoDe = (loc) => decodeURIComponent((loc.match(/aviso=([^&#]*)/) || [, ''])[1].replace(/\+/g, ' '));
+    const unica = db.listSedes('sanborja');
+    check('San Borja tiene una sola cancha (el caso peligroso)', unica.length === 1, String(unica.length));
+
+    const rBloqueo = await POST('/admin/config/sede/eliminar', { key: 'ux', id: unica[0].id });
+    check('el servidor lo RECHAZA (no alcanza un confirm en el cliente)', /err=1/.test(rBloqueo.location));
+    check('…y explica que se llevaría el distrito entero', /única cancha/.test(avisoDe(rBloqueo.location)) && /desaparece el distrito/.test(avisoDe(rBloqueo.location)), avisoDe(rBloqueo.location));
+    check('la cancha sigue ahí', db.listSedes('sanborja').length === 1);
+    check('y el distrito sigue operativo', db.zonasOperativas().includes('sanborja'));
+
+    // Con dos canchas sí se puede: la regla es "la última", no "ninguna".
+    db.addSede({ zona: 'sanborja', nombre: 'Segunda Cancha UX', cupo: 12 });
+    const dos = db.listSedes('sanborja');
+    const rOk = await POST('/admin/config/sede/eliminar', { key: 'ux', id: dos[1].id });
+    check('con dos canchas, borrar una sí funciona', !/err=1/.test(rOk.location) && db.listSedes('sanborja').length === 1);
+    check('…y confirma cuál borró', /Segunda Cancha UX/.test(avisoDe(rOk.location)), avisoDe(rOk.location));
+  }
+
+  console.log('== 4j · "Para que el bot trabaje solo": la deuda a la vista ==');
+  {
+    // El panel nunca decía que faltaba algo. Las cuatro zonas están sin link de
+    // grupo desde el primer día y no había pantalla donde enterarse.
+    db.setConfig({ grouplink_brena: '' });
+    const resumen = (await GET('/admin/leads?key=ux')).html;
+    check('el Resumen muestra qué falta cargar', /Para que el bot trabaje solo/.test(resumen));
+    check('…nombra la zona sin link de grupo', /no tiene link de grupo/.test(resumen));
+    check('…dice qué se desbloquea, no reprocha', /no puede meter a nadie al grupo/.test(resumen));
+    check('…y lleva al campo exacto que lo resuelve', /vista=config#zona-brena/.test(resumen));
+
+    // El link tiene que existir como destino en Ajustes (si no, es un callejón).
+    const destino = (resumen.match(/href="([^"]*vista=config#zona-brena)"/) || [, ''])[1].replace(/&amp;/g, '&');
+    const cfg = await GET(destino);
+    check('el destino del atajo existe y responde', cfg.status === 200 && /id="zona-brena"/.test(cfg.html));
+
+    // Cuando el dato ya está cargado, la fila desaparece: es una lista de
+    // pendientes, no un cartel permanente.
+    db.setConfig({ grouplink_brena: 'https://chat.whatsapp.com/UX-BRENA' });
+    const resumen2 = (await GET('/admin/leads?key=ux')).html;
+    check('al cargar el link, esa fila se va', !/Breña no tiene link de grupo/.test(resumen2));
+    check('las canchas sin costo también se listan', /sin costo de alquiler/.test(resumen2));
+  }
+
+  console.log('== 4k · Lo que se rompe con un toque, pregunta antes ==');
+  {
+    const conGente = db.crearPartido({ zona: 'brena', fecha: enDias(3), hora: '8-9pm', cupo: 10 });
+    db.inscribir(conGente, '51960000011');
+    db.inscribir(conGente, '51960000012');
+    const html = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${conGente}`)).html;
+
+    check('"Baja" pregunta antes (libera cupo y sube a alguien de la espera)',
+      /onsubmit="return confirm\([^)]*Dar de baja/.test(html));
+    check('…y avisa que no se deshace con un botón', /No se puede deshacer con un bot/.test(html));
+    check('"Cancelar" pregunta antes', /onsubmit="return confirm\([^)]*CANCELAR/.test(html));
+    check('…contando los inscritos que quedan colgados', /Hay 2 inscritos/.test(html), 'sin el conteo');
+    check('…y avisando que nadie recibe aviso automático', /nadie recibe aviso autom/.test(html));
+    check('la acción destructiva va separada de las comunes', /class="finsc-peligro"/.test(html));
+    check('los botones de fila son tocables (44px)', /class="btn-fila"/.test(html) && /\.btn-fila\{min-height:44px/.test(html));
+    check('cada inscrito es un destino de ancla para pasar lista', /id="insc-\d+"/.test(html));
+    // Sin JS el confirm no corre, así que el bloqueo REAL vive en el servidor:
+    // eliminar un partido con gente adentro se rechaza igual.
+    const rEliminar = await POST('/admin/partido/eliminar', { key: 'ux', id: conGente });
+    check('borrar un partido con gente se rechaza en el servidor', /err=1/.test(rEliminar.location) && db.getPartido(conGente) !== null);
   }
 
   console.log('== 5 · Sin key, nada existe ==');

@@ -101,50 +101,89 @@ function registrarPanel(app, db, conexion = null) {
     }
     return true;
   };
-  const volverAFicha = (req, res) =>
-    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&numero=${encodeURIComponent((req.body.numero || '').replace(/\D/g, ''))}`);
+  /**
+   * Vuelta de un POST: mensaje concreto de QUÉ pasó + ancla al bloque donde
+   * estaba el usuario.
+   *
+   * Antes casi todos los POST redirigían a la vista pelada: sin decir qué se
+   * guardó y aterrizando arriba de todo. En Ajustes —que es un scroll largo—
+   * eso significaba pegar el link del grupo de Chorrillos, tocar "Guardar" y
+   * aparecer en el bloque del canal de WhatsApp, sin ninguna señal de éxito.
+   * Es la explicación más probable de por qué las cuatro zonas siguen sin link:
+   * Clarck lo intentó, no vio confirmación y asumió que no funcionaba.
+   */
+  const volver = (res, { key, vista, numero, partido, ancla, aviso, err } = {}) => {
+    const p = [`key=${encodeURIComponent(key || '')}`];
+    if (vista) p.push(`vista=${encodeURIComponent(vista)}`);
+    if (numero) p.push(`numero=${encodeURIComponent(numero)}`);
+    if (partido) p.push(`partido=${encodeURIComponent(partido)}`);
+    if (aviso) p.push(`aviso=${encodeURIComponent(String(aviso).slice(0, 300))}`);
+    if (err) p.push('err=1');
+    res.redirect(`/admin/leads?${p.join('&')}${ancla ? `#${ancla}` : ''}`);
+  };
+
+  const numeroDe = (req) => (req.body.numero || '').replace(/\D/g, '');
+  // Cómo nombrar a alguien en un aviso: su nombre si lo tenemos, si no el número.
+  const nombreLead = (numero) => {
+    const l = db.getLead(numero);
+    return (l && l.nombre) || `+${numero}`;
+  };
 
   // --- Acciones CRM (1 toque desde la ficha) -----------------------------------
+  const volverAFicha = (req, res, aviso, ancla, err) =>
+    volver(res, { key: req.body.key, numero: numeroDe(req), aviso, ancla, err });
+
   app.post('/admin/lead/estado', (req, res) => {
     if (!autorizado(req, res)) return;
+    const numero = numeroDe(req);
     const estado = ESTADOS[req.body.estado] ? req.body.estado : null;
-    if (estado) db.setEstado((req.body.numero || '').replace(/\D/g, ''), estado);
-    volverAFicha(req, res);
+    if (!estado) return volverAFicha(req, res, 'Esa etapa no existe.', 'etapa', true);
+    db.setEstado(numero, estado);
+    volverAFicha(req, res, `${nombreLead(numero)} ahora está en "${ESTADOS[estado]}".`, 'etapa');
   });
 
   app.post('/admin/lead/reactivar', (req, res) => {
     if (!autorizado(req, res)) return;
-    db.clearHandoff((req.body.numero || '').replace(/\D/g, ''));
-    volverAFicha(req, res);
+    const numero = numeroDe(req);
+    const quien = nombreLead(numero);
+    db.clearHandoff(numero);
+    volverAFicha(req, res, `El bot vuelve a atender a ${quien}.`);
   });
 
   app.post('/admin/lead/etiquetas', (req, res) => {
     if (!autorizado(req, res)) return;
     const limpio = (req.body.etiquetas || '').split(',').map((t) => t.trim()).filter(Boolean).slice(0, 10).join(',');
-    db.setEtiquetas((req.body.numero || '').replace(/\D/g, ''), limpio);
-    volverAFicha(req, res);
+    db.setEtiquetas(numeroDe(req), limpio);
+    volverAFicha(req, res, limpio ? `Etiquetas guardadas: ${limpio.split(',').join(', ')}.` : 'Etiquetas borradas.', 'etiquetas');
   });
 
   app.post('/admin/lead/seguimiento', (req, res) => {
     if (!autorizado(req, res)) return;
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.body.fecha || '') ? req.body.fecha : null;
-    db.setSeguimiento((req.body.numero || '').replace(/\D/g, ''), fecha, (req.body.nota || '').slice(0, 200));
-    volverAFicha(req, res);
+    const nota = (req.body.nota || '').slice(0, 200);
+    db.setSeguimiento(numeroDe(req), fecha, nota);
+    volverAFicha(req, res, fecha
+      ? `Te lo recordamos el ${fechaCompacta(fecha)}${nota ? `: "${nota}"` : ''}.`
+      : 'Recordatorio quitado (no pusiste fecha).', 'seguimiento');
   });
 
   app.post('/admin/lead/nota', (req, res) => {
     if (!autorizado(req, res)) return;
     const texto = (req.body.texto || '').trim().slice(0, 500);
-    if (texto) db.addNota((req.body.numero || '').replace(/\D/g, ''), texto);
-    volverAFicha(req, res);
+    // Antes una nota vacía se descartaba en silencio y la pantalla volvía igual.
+    if (!texto) return volverAFicha(req, res, 'Escribe algo en la nota para poder guardarla.', 'notas', true);
+    db.addNota(numeroDe(req), texto);
+    volverAFicha(req, res, 'Nota agregada.', 'notas');
   });
 
   // Borra un contacto completo (pruebas internas, spam) — no vuelve a la ficha
   // (quedaría vacía) sino a la lista del CRM.
   app.post('/admin/lead/eliminar', (req, res) => {
     if (!autorizado(req, res)) return;
-    db.deleteLead((req.body.numero || '').replace(/\D/g, ''));
-    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=crm`);
+    const numero = numeroDe(req);
+    const quien = nombreLead(numero);
+    db.deleteLead(numero);
+    volver(res, { key: req.body.key, vista: 'crm', aviso: `${quien} eliminado con todo su historial.` });
   });
 
   // --- Export CSV ----------------------------------------------------------------
@@ -178,26 +217,37 @@ function registrarPanel(app, db, conexion = null) {
   });
 
   // Respaldar a Google Sheet ahora (backup manual desde el panel).
+  // Usa el mismo aviso que todo lo demás: antes volvía con ?sync=N y la única
+  // pantalla que sabía leerlo era el Resumen.
   app.get('/admin/sync-sheet', async (req, res) => {
     if (!autorizado(req, res)) return;
     const r = await sheetsync.syncToSheet(db);
-    res.redirect(`/admin/leads?key=${encodeURIComponent(req.query.key)}&sync=${r.ok ? r.n : 'err'}`);
+    volver(res, {
+      key: req.query.key,
+      aviso: r.ok ? `Respaldado al Google Sheet: ${r.n} contactos.` : 'No se pudo respaldar al Sheet — revisá SHEET_WEBHOOK_URL/SHEET_SECRET.',
+      err: !r.ok,
+    });
   });
 
   // Mandar el respaldo completo por correo ahora mismo (no espera las 24 h).
   app.get('/admin/backup-email', async (req, res) => {
     if (!autorizado(req, res)) return;
     const r = await backup.enviarBackup(db, { motivo: 'manual desde el panel' });
-    res.redirect(`/admin/leads?key=${encodeURIComponent(req.query.key)}&mail=${r.ok ? 'ok' : 'err'}`);
+    volver(res, {
+      key: req.query.key,
+      aviso: r.ok ? 'Respaldo enviado por correo.' : 'No se pudo enviar el respaldo por correo.',
+      err: !r.ok,
+    });
   });
 
   // --- Configuración del negocio (sedes, precios, textos) — sin tocar código ------
-  const volverAConfig = (req, res) => res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=config`);
+  const volverAConfig = (req, res, aviso, ancla, err) =>
+    volver(res, { key: req.body.key, vista: 'config', aviso, ancla, err });
 
   app.post('/admin/config/general', (req, res) => {
     if (!autorizado(req, res)) return;
     db.setConfig(req.body);
-    volverAConfig(req, res);
+    volverAConfig(req, res, 'Datos del negocio guardados. El bot ya responde con estos textos.', 'general');
   });
 
   app.post('/admin/config/sede', (req, res) => {
@@ -214,36 +264,75 @@ function registrarPanel(app, db, conexion = null) {
       // muestra lo que ENTRA pero no lo que queda.
       costo: req.body.costo === '' || req.body.costo == null ? null : Number(req.body.costo),
     };
-    if (campos.nombre) {
-      if (req.body.id) db.updateSede(Number(req.body.id), campos);
-      else db.addSede(campos);
+    const ancla = `zona-${campos.zona}`;
+    const donde = db.nombreDeZona(campos.zona);
+    // Sin nombre no se guardaba nada y la pantalla volvía igual, como si hubiera
+    // funcionado: ahora se dice por qué no entró.
+    if (!campos.nombre) return volverAConfig(req, res, 'Ponle un nombre a la cancha para poder guardarla.', ancla, true);
+    if (req.body.id) {
+      db.updateSede(Number(req.body.id), campos);
+      return volverAConfig(req, res, `Cancha "${campos.nombre}" guardada en ${donde}.`, ancla);
     }
-    volverAConfig(req, res);
+    db.addSede(campos);
+    volverAConfig(req, res, `Cancha "${campos.nombre}" agregada a ${donde}.`, ancla);
   });
 
   app.post('/admin/config/sede/eliminar', (req, res) => {
     if (!autorizado(req, res)) return;
-    db.deleteSede(Number(req.body.id));
-    volverAConfig(req, res);
+    const id = Number(req.body.id);
+    const sede = db.listSedes().find((s) => s.id === id);
+    if (!sede) return volverAConfig(req, res, 'Esa cancha ya no existe.', null, true);
+    const donde = db.nombreDeZona(sede.zona);
+    // BLOQUEO DEL LADO DEL SERVIDOR (no alcanza un confirm en el cliente):
+    // las zonas del sistema NO son una tabla, se derivan de las sedes
+    // (db.zonasOperativas). Borrar la última cancha de un distrito lo borra
+    // ENTERO y en silencio: sale del guion del bot, de los filtros del CRM y
+    // del formulario de partidos, sus leads quedan huérfanos y su precio y su
+    // link de grupo dejan de poder guardarse (setConfig ya no acepta esas
+    // claves). No hay forma de deshacerlo desde el panel.
+    if (db.listSedes(sede.zona).length <= 1) {
+      return volverAConfig(req, res,
+        `"${sede.nombre}" es la única cancha de ${donde}: si la borras desaparece el distrito entero y se pierden su precio y su link de grupo. Agrega otra cancha primero.`,
+        `zona-${sede.zona}`, true);
+    }
+    db.deleteSede(id);
+    volverAConfig(req, res, `Cancha "${sede.nombre}" eliminada de ${donde}.`, `zona-${sede.zona}`);
   });
 
   // Punto de arranque: deja atrás la historia previa al sistema SIN borrarla.
   app.post('/admin/config/corte', (req, res) => {
     if (!autorizado(req, res)) return;
-    db.setCorte(req.body.fecha);
-    volverAConfig(req, res);
+    const f = db.setCorte(req.body.fecha);
+    volverAConfig(req, res, `Punto de arranque: ${fechaCompacta(f)}. Lo anterior queda como historial, no se borró nada.`, 'corte');
   });
 
   // Precio, link de grupo y nombre para mostrar de UNA zona (tarjeta por distrito).
   app.post('/admin/config/zona', (req, res) => {
     if (!autorizado(req, res)) return;
     const zona = db.zonasOperativas().includes(req.body.zona) ? req.body.zona : null;
-    if (zona) db.setConfig({
-      [`precio_${zona}`]: (req.body.precio || '').trim(),
-      [`grouplink_${zona}`]: (req.body.grouplink || '').trim(),
-      [`zonanombre_${zona}`]: (req.body.nombre_mostrar || '').trim(),
+    if (!zona) return volverAConfig(req, res, 'Ese distrito ya no existe.', null, true);
+    const c = db.getConfigMap();
+    const antes = { precio: c[`precio_${zona}`] || '', link: c[`grouplink_${zona}`] || '', nombre: db.nombreDeZona(zona) };
+    const ahora = {
+      precio: (req.body.precio || '').trim(),
+      link: (req.body.grouplink || '').trim(),
+      // Vaciar el nombre para mostrar dejaría al distrito sin cómo llamarse.
+      nombre: (req.body.nombre_mostrar || '').trim() || antes.nombre,
+    };
+    db.setConfig({
+      [`precio_${zona}`]: ahora.precio,
+      [`grouplink_${zona}`]: ahora.link,
+      [`zonanombre_${zona}`]: ahora.nombre,
     });
-    volverAConfig(req, res);
+    // Mensaje concreto: "Guardado" a secas no le dice a Clarck si el link que
+    // acaba de pegar entró o no — que es justo lo que viene a verificar.
+    const cambios = [];
+    if (ahora.link !== antes.link) cambios.push(ahora.link ? 'link del grupo guardado' : 'link del grupo quitado');
+    if (ahora.precio !== antes.precio) cambios.push(`precio S/ ${ahora.precio || '—'}`);
+    if (ahora.nombre !== antes.nombre) cambios.push(`ahora se llama "${ahora.nombre}"`);
+    volverAConfig(req, res,
+      cambios.length ? `${ahora.nombre}: ${cambios.join(' · ')}.` : `${ahora.nombre}: no cambiaste nada.`,
+      `zona-${zona}`);
   });
 
   // Crear un DISTRITO nuevo: nace con su primera sede (la fuente de verdad de
@@ -253,29 +342,35 @@ function registrarPanel(app, db, conexion = null) {
     if (!autorizado(req, res)) return;
     const nombre = (req.body.nombre || '').trim().slice(0, 40);
     const zona = slugZona(nombre);
-    if (zona.length >= 3 && !db.zonasOperativas().includes(zona)) {
-      db.addSede({
-        zona,
-        nombre: (req.body.sede || '').trim().slice(0, 120) || 'Sede por definir',
-        cupo: Math.max(2, Math.min(60, Number(req.body.cupo) || 14)),
-      });
-      db.setConfig({
-        [`zonanombre_${zona}`]: nombre,
-        [`precio_${zona}`]: (req.body.precio || '').trim() || '15',
-      });
+    // Los dos rechazos posibles volvían mudos: la página recargaba igual y el
+    // distrito simplemente no estaba.
+    if (zona.length < 3) return volverAConfig(req, res, 'Escribe el nombre del distrito (al menos 3 letras).', 'nuevo-distrito', true);
+    if (db.zonasOperativas().includes(zona)) {
+      return volverAConfig(req, res, `${db.nombreDeZona(zona)} ya existe — está más arriba en esta misma página.`, `zona-${zona}`, true);
     }
-    volverAConfig(req, res);
+    db.addSede({
+      zona,
+      nombre: (req.body.sede || '').trim().slice(0, 120) || 'Sede por definir',
+      cupo: Math.max(2, Math.min(60, Number(req.body.cupo) || 14)),
+    });
+    db.setConfig({
+      [`zonanombre_${zona}`]: nombre,
+      [`precio_${zona}`]: (req.body.precio || '').trim() || '15',
+    });
+    volverAConfig(req, res, `${nombre} creado. Ya aparece en el bot, en Partidos y en los filtros. Falta cargarle el link del grupo.`, `zona-${zona}`);
   });
 
   // --- Partidos: convocatorias, inscripciones, asistencia ----------------------
-  const volverAPartidos = (req, res, partidoId = null) =>
-    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=partidos${partidoId ? `&partido=${partidoId}` : ''}`);
+  const volverAPartidos = (req, res, partidoId = null, aviso = '', ancla = null, err = false) =>
+    volver(res, { key: req.body.key, vista: 'partidos', partido: partidoId, aviso, ancla, err });
 
   app.post('/admin/partido', (req, res) => {
     if (!autorizado(req, res)) return;
     const zona = db.zonasOperativas().includes(req.body.zona) ? req.body.zona : 'brena';
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.body.fecha || '') ? req.body.fecha : null;
-    if (!fecha) return volverAPartidos(req, res);
+    // Sin fecha volvía a la lista sin partido y sin decir por qué: el usuario
+    // no técnico concluye "esto está roto" y se vuelve a WhatsApp.
+    if (!fecha) return volverAPartidos(req, res, null, 'Elige el día del partido para poder abrirlo.', null, true);
     const id = db.crearPartido({
       zona, fecha,
       hora: (req.body.hora || '').trim().slice(0, 40),
@@ -283,7 +378,9 @@ function registrarPanel(app, db, conexion = null) {
       cupo: Math.max(2, Math.min(60, Number(req.body.cupo) || 14)),
       precio: req.body.precio ? Number(req.body.precio) : null,
     });
-    volverAPartidos(req, res, id);
+    const p = db.getPartido(id);
+    volverAPartidos(req, res, id,
+      `Partido abierto: ${db.fechaBonita(p.fecha)}${p.hora ? ` · ${p.hora}` : ''}. El bot ya lo ofrece a quien pida jugar.`);
   });
 
   // Corregir un partido ya creado. Si db lo rechaza (bajar el cupo por debajo
@@ -300,23 +397,35 @@ function registrarPanel(app, db, conexion = null) {
       cupo: req.body.cupo,
       precio: req.body.precio,
     });
-    const aviso = r.ok ? 'Partido actualizado.' : r.motivo;
-    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=partidos&partido=${id}`
-      + `&aviso=${encodeURIComponent(aviso)}${r.ok ? '' : '&err=1'}`);
+    const aviso = r.ok ? 'Partido actualizado. Los inscritos siguen adentro.' : r.motivo;
+    volverAPartidos(req, res, id, aviso, r.ok ? null : 'editor', !r.ok);
   });
 
   app.post('/admin/partido/estado', (req, res) => {
     if (!autorizado(req, res)) return;
-    db.setEstadoPartido(Number(req.body.id), req.body.estado);
-    volverAPartidos(req, res, Number(req.body.id));
+    const id = Number(req.body.id);
+    const estado = req.body.estado;
+    if (!ESTADOS_PARTIDO[estado]) return volverAPartidos(req, res, id, 'Ese estado no existe.', null, true);
+    db.setEstadoPartido(id, estado);
+    // Cada estado tiene una consecuencia distinta y ninguna era visible.
+    const avisos = {
+      cerrado: 'Inscripción cerrada: el bot deja de ofrecer este partido.',
+      abierto: 'Inscripción reabierta: el bot vuelve a ofrecerlo.',
+      jugado: 'Partido marcado como jugado. Ya cuenta para los recurrentes.',
+      cancelado: 'Partido cancelado. Nadie recibe aviso automático: escríbeles tú.',
+    };
+    volverAPartidos(req, res, id, avisos[estado]);
   });
 
   // Eliminar un partido vacío (duplicado o cargado por error). Con gente
   // adentro db lo rechaza — ahí corresponde "cancelar", no borrar.
   app.post('/admin/partido/eliminar', (req, res) => {
     if (!autorizado(req, res)) return;
-    db.eliminarPartido(Number(req.body.id));
-    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=partidos`);
+    const id = Number(req.body.id);
+    if (!db.eliminarPartido(id)) {
+      return volverAPartidos(req, res, id, 'Este partido tiene gente inscrita: no se borra. Usa "✖ Cancelar".', null, true);
+    }
+    volverAPartidos(req, res, null, 'Partido eliminado (estaba vacío).');
   });
 
   // Inscripción manual desde el panel (jugador con número, o invitado a nombre).
@@ -325,35 +434,71 @@ function registrarPanel(app, db, conexion = null) {
     const partidoId = Number(req.body.partido_id);
     const numero = (req.body.numero || '').replace(/\D/g, '') || null;
     const nombre = (req.body.nombre || '').trim().slice(0, 80) || null;
-    if (numero || nombre) db.inscribir(partidoId, numero, { nombre });
-    volverAPartidos(req, res, partidoId);
+    const fin = (aviso, err) => volverAPartidos(req, res, partidoId, aviso, 'inscritos', err);
+    if (!numero && !nombre) return fin('Escribe el número de WhatsApp o el nombre del invitado.', true);
+    const p = db.getPartido(partidoId);
+    if (!p) return fin('Ese partido ya no existe.', true);
+    // El caso real: cierra la inscripción, llega un amigo a la cancha y el
+    // botón no hacía absolutamente nada, sin explicación.
+    if (p.estado !== 'abierto') {
+      return fin(`El partido está ${(ESTADOS_PARTIDO[p.estado] || p.estado).toLowerCase()}: tócale "🔓 Reabrir" y vuelve a anotarlo.`, true);
+    }
+    const { resultado } = db.inscribir(partidoId, numero, { nombre });
+    const quien = nombre || `+${numero}`;
+    if (resultado === 'espera') return fin(`${quien} entró a la LISTA DE ESPERA: el partido ya está lleno.`);
+    if (resultado === 'ya_inscrito') return fin(`${quien} ya estaba en la lista.`, true);
+    if (!resultado) return fin('No se pudo anotar a nadie.', true);
+    fin(`${quien} anotado. Falta que pague.`);
   });
 
   app.post('/admin/inscripcion/estado', (req, res) => {
     if (!autorizado(req, res)) return;
     const id = Number(req.body.id);
+    const partidoId = Number(req.body.partido_id);
+    const previa = db.inscripcionesDe(partidoId).find((i) => i.id === id);
+    const nombreInsc = (i) => (i ? (i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : 'el jugador')) : 'el jugador');
+    const quien = nombreInsc(previa);
     if (req.body.estado === 'baja') {
       const promovido = db.darDeBaja(id);
       // El que sube de la espera NO se entera solo: el bot no puede iniciarle
       // conversación (131047 fuera de la ventana de 24 h). Se le avisa al
       // número de control para que Clarck le escriba y le pida el Yape.
       const control = (process.env.NOTIFY_NUMBER || '').replace(/\D/g, '');
-      if (promovido && control && conexion && conexion.enviar) {
-        const p = db.getPartido(promovido.partido_id);
+      let subio = '';
+      if (promovido) {
         const lead = promovido.numero ? db.getLead(promovido.numero) : null;
-        const quien = promovido.nombre || (lead && lead.nombre) || (promovido.numero ? `+${promovido.numero}` : 'alguien');
-        Promise.resolve(conexion.enviar(control,
-          `⬆ ${quien} subió de la lista de espera al partido del ${p ? db.fechaBonita(p.fecha) : '?'}${p && p.hora ? ` ${p.hora}` : ''}. Avísale y pídele su Yape${promovido.numero ? `: wa.me/${promovido.numero}` : ''}.`
-        )).catch((e) => console.error('[partido] Aviso de promoción falló:', e.message));
+        const quienProm = promovido.nombre || (lead && lead.nombre) || (promovido.numero ? `+${promovido.numero}` : 'alguien');
+        subio = ` Subió ${quienProm} de la lista de espera: escríbele y pídele su Yape.`;
+        if (control && conexion && conexion.enviar) {
+          const p = db.getPartido(promovido.partido_id);
+          Promise.resolve(conexion.enviar(control,
+            `⬆ ${quienProm} subió de la lista de espera al partido del ${p ? db.fechaBonita(p.fecha) : '?'}${p && p.hora ? ` ${p.hora}` : ''}. Avísale y pídele su Yape${promovido.numero ? `: wa.me/${promovido.numero}` : ''}.`
+          )).catch((e) => console.error('[partido] Aviso de promoción falló:', e.message));
+        }
       }
-    } else db.setEstadoInscripcion(id, req.body.estado);
-    volverAPartidos(req, res, Number(req.body.partido_id));
+      // Tras la baja la fila desaparece de la lista: el ancla va al bloque.
+      return volverAPartidos(req, res, partidoId, `${quien} dado de baja.${subio}`, 'inscritos');
+    }
+    if (!db.setEstadoInscripcion(id, req.body.estado)) {
+      return volverAPartidos(req, res, partidoId, 'Ese cambio no existe.', 'inscritos', true);
+    }
+    const avisos = { pagado: `${quien}: pago marcado ✔`, reservado: `${quien} subió de la espera a la cancha.`, espera: `${quien} pasó a la lista de espera.` };
+    volverAPartidos(req, res, partidoId, avisos[req.body.estado] || 'Listo.', `insc-${id}`);
   });
 
   app.post('/admin/inscripcion/asistencia', (req, res) => {
     if (!autorizado(req, res)) return;
-    db.setAsistencia(Number(req.body.id), req.body.valor);
-    volverAPartidos(req, res, Number(req.body.partido_id));
+    const id = Number(req.body.id);
+    const partidoId = Number(req.body.partido_id);
+    const insc = db.inscripcionesDe(partidoId).find((i) => i.id === id);
+    const quien = insc ? (insc.nombre || insc.lead_nombre || (insc.numero ? `+${insc.numero}` : 'el jugador')) : 'el jugador';
+    const valor = req.body.valor;
+    db.setAsistencia(id, valor);
+    // ANCLA a la fila: pasar lista son 14 toques seguidos, parado en la cancha.
+    // Sin esto cada toque recargaba y devolvía arriba de todo, y había que
+    // volver a bajar hasta donde ibas.
+    volverAPartidos(req, res, partidoId,
+      `${quien}: ${valor === 'si' ? 'vino ✔' : valor === 'no' ? 'faltó ✘' : 'sin marcar'}`, `insc-${id}`);
   });
 
   // Asignar a un partido un pago confirmado que quedó sin vincular.
@@ -361,16 +506,25 @@ function registrarPanel(app, db, conexion = null) {
     if (!autorizado(req, res)) return;
     const partidoId = Number(req.body.partido_id);
     const pago = db.listPagosTodos().find((p) => p.id === Number(req.body.pago_id));
-    if (pago && partidoId) {
-      // Si el pagador YA tiene inscripción activa en este partido, se le
-      // vincula el pago (inscribir devolvería 'ya_inscrito' sin hacer nada y
-      // el botón quedaba muerto — hallazgo del code review 2026-08-11).
-      const activa = pago.numero ? db.inscripcionActiva(partidoId, pago.numero) : null;
-      if (activa) db.pagarInscripcion(activa.id, pago.id);
-      else db.inscribir(partidoId, pago.numero, { estado: 'pagado', pagoId: pago.id });
-      for (let i = 1; i < (pago.cupos || 1); i++) db.inscribir(partidoId, null, { nombre: `Invitado de +${pago.numero}`, estado: 'pagado', pagoId: pago.id });
+    const fin = (aviso, err) => volverAPartidos(req, res, partidoId, aviso, 'pagos-sueltos', err);
+    if (!pago) return fin('Ese pago ya no está disponible.', true);
+    const partido = db.getPartido(partidoId);
+    if (!partido) return fin('Ese partido ya no existe.', true);
+    // Si el pagador YA tiene inscripción activa en este partido, se le
+    // vincula el pago (inscribir devolvería 'ya_inscrito' sin hacer nada y
+    // el botón quedaba muerto — hallazgo del code review 2026-08-11).
+    const activa = pago.numero ? db.inscripcionActiva(partidoId, pago.numero) : null;
+    if (activa) db.pagarInscripcion(activa.id, pago.id);
+    else {
+      // Sobre un partido cerrado, inscribir() devuelve null y el pago se
+      // quedaba suelto sin que nadie lo dijera.
+      if (partido.estado !== 'abierto') {
+        return fin(`El partido está ${(ESTADOS_PARTIDO[partido.estado] || partido.estado).toLowerCase()}: reábrelo para poder asignarle este pago.`, true);
+      }
+      db.inscribir(partidoId, pago.numero, { estado: 'pagado', pagoId: pago.id });
     }
-    volverAPartidos(req, res, partidoId);
+    for (let i = 1; i < (pago.cupos || 1); i++) db.inscribir(partidoId, null, { nombre: `Invitado de +${pago.numero}`, estado: 'pagado', pagoId: pago.id });
+    fin(`Pago de ${pago.nombre || `+${pago.numero}`} (S/ ${pago.monto}) asignado a este partido.`);
   });
 
   // --- Conexión (WhatsApp): desconectar / cambiar de número --------------------
@@ -387,7 +541,7 @@ function registrarPanel(app, db, conexion = null) {
   app.post('/admin/conexion/desconectar', async (req, res) => {
     if (!autorizado(req, res)) return;
     if (conexion) await conexion.desconectar();
-    res.redirect(`/admin/leads?key=${encodeURIComponent(req.body.key)}&vista=conexion`);
+    volverAConfig(req, res, 'Canal desconectado.', 'canal');
   });
 
   // --- Vistas ----------------------------------------------------------------------
@@ -395,11 +549,13 @@ function registrarPanel(app, db, conexion = null) {
     if (!autorizado(req, res)) return;
     const key = encodeURIComponent(req.query.key);
     const numero = (req.query.numero || '').replace(/\D/g, '');
-    if (numero) return res.send(paginaFicha(db, key, numero));
+    // Ficha y Ajustes también reciben la query: ahí viven los avisos de
+    // "guardado" que antes no tenían dónde mostrarse.
+    if (numero) return res.send(paginaFicha(db, key, numero, req.query));
     if (req.query.vista === 'crm') return res.send(paginaCRM(db, key, req.query));
     if (req.query.vista === 'pagos') return res.send(paginaPagos(db, key, req.query));
     if (req.query.vista === 'partidos') return res.send(paginaPartidos(db, key, req.query));
-    if (req.query.vista === 'config') return res.send(paginaConfig(db, key, conexion));
+    if (req.query.vista === 'config') return res.send(paginaConfig(db, key, conexion, req.query));
     // La vista de conexión dejó de existir (era el QR de Baileys, que con el
     // canal oficial no llega nunca). Se redirige en vez de 404: hay links
     // viejos en el historial de Clarck y en mensajes que ya le mandamos.
@@ -411,7 +567,24 @@ function registrarPanel(app, db, conexion = null) {
 // ==============================================================================
 //  Base HTML + sistema de diseño iOS
 // ==============================================================================
-function baseHtml(titulo, cuerpo, { refresh = false, activo = '', key = '', tabbarMobile = true } = {}) {
+/**
+ * Aviso de resultado de una acción ("guardado", "no se pudo", "X dado de baja").
+ *
+ * Va arriba de la página y PEGADO al viewport (sticky): después de guardar se
+ * vuelve con #ancla al bloque donde estaba el usuario, así que un banner metido
+ * en el flujo del documento quedaría fuera de pantalla justo cuando hace falta.
+ * Sticky y no fixed para que ocupe su lugar y no tape el título de la vista.
+ */
+function bannerAviso(query = {}) {
+  const texto = (query.aviso || '').toString().slice(0, 300);
+  if (!texto) return '';
+  const err = query.err === '1';
+  return `<div class="aviso ${err ? 'aviso-err' : 'aviso-ok'}" role="status">
+    <span class="aviso-ic">${err ? '⚠️' : '✅'}</span><span class="aviso-tx">${esc(texto)}</span>
+  </div>`;
+}
+
+function baseHtml(titulo, cuerpo, { refresh = false, activo = '', key = '', tabbarMobile = true, aviso = null } = {}) {
   return `<!doctype html><html lang="es"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${esc(titulo)}</title>
@@ -593,6 +766,66 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
   .stack>*+*{margin-top:6px}
   .foot{color:var(--faint);font-size:12px;text-align:center;padding:22px 16px 6px}
 
+  /* --- Avisos de resultado (guardado / error) --------------------------------
+     Sticky arriba: tras guardar volvemos con #ancla al bloque donde estaba el
+     usuario, y un aviso en el flujo normal quedaría fuera de pantalla. */
+  .aviso{position:sticky;top:0;z-index:80;display:flex;gap:9px;align-items:flex-start;
+    padding:13px 16px;margin:0 0 12px;font-size:13.5px;font-weight:600;line-height:1.4;
+    box-shadow:var(--sombra)}
+  .aviso-ok{background:#eafaf0;color:#1c6b3a;border-bottom:1px solid #b7ebca}
+  .aviso-err{background:#fdecea;color:#a3241a;border-bottom:1px solid #f3c2bd}
+  .aviso-ic{flex:0 0 auto}
+  .aviso-tx{flex:1;min-width:0}
+  /* Los destinos de ancla se paran DEBAJO del aviso pegado, no atrás. */
+  .ancla{scroll-margin-top:92px}
+
+  /* --- Campos de formulario con etiqueta visible ----------------------------
+     Los formularios de Ajustes eran <input> con solo placeholder: al abrir una
+     sede YA cargada el placeholder desaparece (el campo tiene valor) y quedan
+     cajas mudas — "14" y "150" pegadas sin decir cuál es el cupo y cuál el
+     costo. La ayuda va en <small>, no en title=: en celular el title no existe,
+     y el celular es donde Clarck usa esto. */
+  .campos{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:13px;padding:0 14px 14px}
+  .campo{display:flex;flex-direction:column;gap:5px;min-width:0}
+  .campo-ancho{grid-column:1/-1}
+  .campo label{font-size:12px;font-weight:700;color:var(--muted)}
+  /* 16px a propósito: por debajo de eso iOS hace zoom solo al enfocar. */
+  .campo input,.campo textarea,.campo select{width:100%;background:var(--inset);border:1px solid var(--sep);
+    border-radius:11px;padding:11px 13px;color:var(--ink);font:inherit;font-size:16px;outline:none;min-height:44px}
+  .campo textarea{min-height:100px;resize:vertical;line-height:1.45}
+  .campo small{font-size:11.5px;color:var(--faint);line-height:1.35}
+  .campo .falta{color:var(--amber-d);font-weight:600}
+  .campos-tit{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--faint);padding:13px 14px 2px}
+
+  /* Botones tocables: mínimo 44px de alto (dedo, una mano, de noche). */
+  .btn-toque{min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    border:none;border-radius:11px;padding:0 16px;font:inherit;font-weight:700;font-size:14px;cursor:pointer}
+  .btn-guardar{background:var(--lime);color:var(--navy);border:1px solid var(--sep)}
+  .btn-peligro{background:none;border:1px dashed var(--red);color:var(--red);font-weight:600;font-size:13px}
+  .pie-form{padding:0 14px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+
+  /* Bloque de una sede dentro de la tarjeta del distrito. */
+  .sede{border-top:1px solid var(--sep)}
+  .sede-tit{font-size:14px;font-weight:700;padding:14px 14px 0}
+
+  /* "Para que el bot trabaje solo": qué falta cargar, con el link al campo. */
+  .prow{display:flex;align-items:center;gap:12px;padding:13px 15px;border-bottom:1px solid var(--sep)}
+  .prow:last-child{border-bottom:none}
+  .pico2{flex:0 0 auto;font-size:19px}
+  .ptxt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .ptxt b{font-size:14px;font-weight:600}
+  .ptxt small{font-size:12px;color:var(--muted);line-height:1.35}
+  .pcta{flex:0 0 auto;font-size:12.5px;font-weight:700;color:var(--green-d);white-space:nowrap}
+
+  /* Fila de inscrito: acciones comunes a la izquierda, la destructiva aparte. */
+  .finsc{display:flex;align-items:center;gap:9px;padding:11px 14px;border-bottom:1px solid var(--sep);flex-wrap:wrap}
+  .finsc:last-of-type{border-bottom:none}
+  .finsc-acc{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  .finsc-peligro{margin-left:auto;padding-left:10px;border-left:1px solid var(--sep)}
+  .btn-fila{min-height:44px;min-width:44px;border:none;border-radius:10px;padding:0 12px;
+    font:inherit;font-size:13px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+
   /* tab bar */
   /* Barra clara como la propuesta v2: la navegación no compite con el
      contenido. Estaba en navy con borde negro de 3px — pesaba más que la
@@ -668,7 +901,7 @@ ${refresh ? `<meta http-equiv="refresh" content="${typeof refresh === 'number' ?
     .app{padding:28px 56px 56px}
   }
 </style></head><body>
-<div class="shell">${key ? sidebar(key, activo) : ''}<div class="app">${cuerpo}</div></div>
+<div class="shell">${key ? sidebar(key, activo) : ''}<div class="app">${bannerAviso(aviso || {})}${cuerpo}</div></div>
 ${tabbarMobile && activo ? tabbar(key, activo) : ''}</body></html>`;
 }
 
@@ -873,6 +1106,59 @@ function paginaResumen(db, key, query = {}) {
           Monto que no calza, comprobante repetido o ilegible — tócalo para verlos.</div></a>`
     : '';
 
+  /**
+   * "Para que el bot trabaje solo" — la deuda de configuración, a la vista.
+   *
+   * El panel nunca decía que faltaba algo: las cuatro zonas están sin link de
+   * grupo desde el primer día y en ninguna pantalla aparecía esa deuda, así que
+   * no había manera de enterarse salvo bajar por Ajustes campo por campo.
+   * Cada fila lleva al campo EXACTO que la resuelve (?vista=config#zona-X) y
+   * dice qué se desbloquea, no qué se hizo mal.
+   */
+  const cfg = db.getConfigMap();
+  const pendientes = [];
+  const aConfig = (ancla) => `/admin/leads?key=${key}&vista=config#${ancla}`;
+  for (const z of db.zonasOperativas()) {
+    const nombre = esc(db.nombreDeZona(z));
+    if (!(cfg[`grouplink_${z}`] || '').trim()) {
+      pendientes.push({
+        ico: '🔗', que: `${nombre} no tiene link de grupo`,
+        para: 'El bot no puede meter a nadie al grupo de este distrito.',
+        href: aConfig(`zona-${z}`), cta: 'Cargarlo',
+      });
+    }
+    if (!(Number(cfg[`precio_${z}`]) > 0)) {
+      pendientes.push({
+        ico: '💰', que: `${nombre} no tiene precio`,
+        para: 'El bot no sabe cuánto cobrar cuando preguntan por esta zona.',
+        href: aConfig(`zona-${z}`), cta: 'Ponerlo',
+      });
+    }
+  }
+  const sinCosto = db.listSedes().filter((s) => s.costo == null);
+  if (sinCosto.length) {
+    pendientes.push({
+      ico: '🏟', que: `${sinCosto.length} cancha${sinCosto.length === 1 ? '' : 's'} sin costo de alquiler`,
+      para: 'Sin ese dato la caja del partido muestra lo que entra, no lo que queda.',
+      href: aConfig(`zona-${sinCosto[0].zona}`), cta: 'Completar',
+    });
+  }
+  if (!(cfg.yape_numero || '').trim()) {
+    pendientes.push({
+      ico: '📲', que: 'Falta el número de Yape',
+      para: 'Es el número que el bot le pasa a cada jugador para cobrarle.',
+      href: aConfig('general'), cta: 'Ponerlo',
+    });
+  }
+  const bloquePendientes = pendientes.length ? `
+      <div class="shdr">Para que el bot trabaje solo <small>· ${pendientes.length} dato${pendientes.length === 1 ? '' : 's'} por cargar</small></div>
+      <div class="zlist">
+        ${pendientes.slice(0, 6).map((p) => `<a class="prow" href="${p.href}">
+          <span class="pico2">${p.ico}</span>
+          <span class="ptxt"><b>${p.que}</b><small>${p.para}</small></span>
+          <span class="pcta">${p.cta} ›</span></a>`).join('')}
+      </div>` : '';
+
   const abiertos = db.partidosAbiertos();
   const prox = abiertos[0] || null;
   const heroPartido = prox
@@ -891,10 +1177,10 @@ function paginaResumen(db, key, query = {}) {
       <span class="live"><i></i> En vivo</span>
     </div>
     <div class="px">
-      ${query.sync ? `<div class="banner ${query.sync === 'err' ? '' : 'ok'}" style="margin:0 0 12px"><div class="bic">☁</div><div class="btxt">${query.sync === 'err' ? 'No se pudo respaldar al Sheet — revisá SHEET_WEBHOOK_URL/SHEET_SECRET.' : `<b>Respaldado al Google Sheet</b> · ${esc(query.sync)} leads.`}</div></div>` : ''}
       ${heroPartido}
       ${alertaPagos}
       ${bannerSeguro}
+      ${bloquePendientes}
 
       <div class="dash">
       <div class="dcol">
@@ -954,7 +1240,7 @@ function paginaResumen(db, key, query = {}) {
       </div>
       <div class="foot">Se actualiza solo cada 90 s · <a href="/admin/leads.csv?key=${key}" style="color:var(--green-d)">⬇ exportar CSV</a></div>
     </div>
-  `, { refresh: true, activo: 'resumen', key });
+  `, { refresh: true, activo: 'resumen', key, aviso: query });
 }
 
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
@@ -1112,7 +1398,7 @@ function paginaPagos(db, key, query = {}) {
 
       <div class="foot">La IA lee cada comprobante (monto, remitente, nº de operación y app/banco).<br>Se actualiza solo cada 90 s.</div>
     </div>
-  `, { refresh: true, activo: 'pagos', key });
+  `, { refresh: true, activo: 'pagos', key, aviso: query });
 }
 
 // ==============================================================================
@@ -1302,13 +1588,13 @@ function paginaCRM(db, key, query) {
       ${lista}
       <div class="foot">Se actualiza solo cada 90 s · toca un lead para abrir su ficha</div>
     </div>
-  `, { refresh: true, activo: 'crm', key });
+  `, { refresh: true, activo: 'crm', key, aviso: query });
 }
 
 // ==============================================================================
 //  Vista 3 · FICHA (contacto)
 // ==============================================================================
-function paginaFicha(db, key, numero) {
+function paginaFicha(db, key, numero, query = {}) {
   const lead = db.getOrCreateLead(numero);
   const msgs = db.getHistory(numero, 200);
   const notas = db.getNotas(numero);
@@ -1411,12 +1697,12 @@ function paginaFicha(db, key, numero) {
           <button class="wabtn btn-rojo" style="width:100%;justify-content:center;border:none;padding:13px;font-size:14px">🔓 Reactivar el bot para este contacto</button>
         </form>` : ''}
 
-        <div>
+        <div class="ancla" id="etapa">
           <div class="shdr">Etapa</div>
           <div class="group"><div class="pipe">${botonesEtapa}</div></div>
         </div>
 
-        <div>
+        <div class="ancla" id="etiquetas">
           <div class="shdr">Etiquetas <small>(separadas por coma)</small></div>
           <div class="group"><form class="inline" method="post" action="/admin/lead/etiquetas">
             <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
@@ -1425,7 +1711,7 @@ function paginaFicha(db, key, numero) {
           </form></div>
         </div>
 
-        <div>
+        <div class="ancla" id="seguimiento">
           <div class="shdr">Próxima acción</div>
           <div class="group"><form class="inline" method="post" action="/admin/lead/seguimiento">
             <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
@@ -1450,7 +1736,7 @@ function paginaFicha(db, key, numero) {
           </div>
         </div>` : ''}
 
-        <div>
+        <div class="ancla" id="notas">
           <div class="shdr">Notas</div>
           <div class="group">
             <form class="inline" method="post" action="/admin/lead/nota">
@@ -1475,90 +1761,176 @@ function paginaFicha(db, key, numero) {
       </div>
       <div class="foot">⚽ Pichangueros CRM</div>
     </div>
-  `, { refresh: false, activo: 'crm', key, tabbarMobile: false });
+  `, { refresh: false, activo: 'crm', key, tabbarMobile: false, aviso: query });
 }
 
 // ==============================================================================
 //  Config — sedes, precios y textos del negocio (editable, sin tocar código)
 // ==============================================================================
-function paginaConfig(db, key, conexion = null) {
+function paginaConfig(db, key, conexion = null, query = {}) {
   const keyRaw = decodeURIComponent(key);
   const c = db.getConfigMap();
   // Zonas dinámicas: las mismas que ve el bot (siguen a las sedes).
   const zonasOp = db.zonasOperativas();
   const sedesPorZona = Object.fromEntries(zonasOp.map((z) => [z, db.listSedes(z)]));
 
-  const filaSede = (zona, s) => `
-    <form class="inline" method="post" action="/admin/config/sede">
-      <input type="hidden" name="key" value="${esc(keyRaw)}">
-      <input type="hidden" name="zona" value="${esc(zona)}">
-      ${s ? `<input type="hidden" name="id" value="${s.id}">` : ''}
-      <input name="nombre" value="${esc(s?.nombre || '')}" placeholder="Nombre de la sede" required>
-      <input name="cancha" value="${esc(s?.cancha || '')}" placeholder="Cancha (opcional)">
-      <input name="cupo" type="number" min="1" value="${esc(s?.cupo ?? '')}" placeholder="Cupo" style="max-width:90px">
-      <input name="costo" type="number" min="0" step="0.5" value="${esc(s?.costo ?? '')}" placeholder="S/ cancha" title="Lo que te cuesta alquilar esta cancha por turno" style="max-width:110px">
-      <input name="ubicacion" value="${esc(s?.ubicacion || '')}" placeholder="Link de ubicación">
-      <input name="horario" value="${esc(s?.horario || '')}" placeholder="Horario">
-      <input name="estacionamiento" value="${esc(s?.estacionamiento || '')}" placeholder="Estacionamiento (opcional)">
-      <button>${s ? 'Guardar' : '+ Agregar sede'}</button>
-    </form>
-    ${s ? `<form method="post" action="/admin/config/sede/eliminar" style="padding:0 14px 12px">
-      <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${s.id}">
-      <button class="btn-rojo" style="border:none;border-radius:11px;color:#fff;padding:8px 14px;font:inherit;font-size:13px" onclick="return confirm('¿Eliminar esta sede?')">Eliminar</button>
-    </form>` : ''}`;
-
-  // Una TARJETA por distrito: precio + grupo + nombre + sus sedes, todo junto.
-  const bloqueZona = (zona) => `
-    <div class="shdr">📍 ${esc(db.nombreDeZona(zona))} <small>· precio, grupo y sedes de este distrito</small></div>
-    <div class="group" style="border-left:6px solid ${colorZona(zona)}">
-      <form class="inline" method="post" action="/admin/config/zona">
-        <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="zona" value="${esc(zona)}">
-        <label>Precio por jugador (S/)</label>
-        <input name="precio" type="number" step="0.5" value="${esc(c[`precio_${zona}`] || '')}" style="max-width:110px">
-        <label>Link del grupo de WhatsApp <small>(el bot lo entrega a los que se unen)</small></label>
-        <input name="grouplink" value="${esc(c[`grouplink_${zona}`] || '')}" placeholder="https://chat.whatsapp.com/…">
-        <label>Nombre para mostrar</label>
-        <input name="nombre_mostrar" value="${esc(db.nombreDeZona(zona))}" style="max-width:200px">
-        <button>Guardar ${esc(db.nombreDeZona(zona))}</button>
-      </form>
-      ${sedesPorZona[zona].map((s) => filaSede(zona, s)).join('') || '<p style="padding:0 14px 10px;color:var(--faint);font-size:14px">Sin sedes todavía.</p>'}
-      ${filaSede(zona, null)}
+  /**
+   * Un campo = etiqueta visible + control + ayuda debajo.
+   *
+   * Antes eran <input> con solo placeholder. El placeholder desaparece en
+   * cuanto el campo tiene valor, que es SIEMPRE al editar algo ya cargado: la
+   * pantalla quedaba en siete cajas mudas. Y la poca ayuda que había vivía en
+   * title=, que en celular no se puede ver.
+   */
+  const campo = (id, etiqueta, control, ayuda = '', ancho = false) => `
+    <div class="campo${ancho ? ' campo-ancho' : ''}">
+      <label for="${id}">${etiqueta}</label>
+      ${control}
+      ${ayuda ? `<small>${ayuda}</small>` : ''}
     </div>`;
+
+  const filaSede = (zona, s) => {
+    const uid = s ? `s${s.id}` : `nueva-${esc(zona)}`;
+    const v = (campoNombre) => esc(s?.[campoNombre] ?? '');
+    return `
+    <div class="sede">
+      <div class="sede-tit">${s ? `🏟 ${esc(s.nombre)}` : '➕ Agregar otra cancha a este distrito'}</div>
+      <form method="post" action="/admin/config/sede">
+        <input type="hidden" name="key" value="${esc(keyRaw)}">
+        <input type="hidden" name="zona" value="${esc(zona)}">
+        ${s ? `<input type="hidden" name="id" value="${s.id}">` : ''}
+
+        <div class="campos-tit">Identidad</div>
+        <div class="campos">
+          ${campo(`${uid}-nombre`, 'Nombre de la cancha',
+            `<input id="${uid}-nombre" name="nombre" value="${v('nombre')}" placeholder="Ej. Complejo Melgar" required>`,
+            'Así la nombra el bot en el chat y en la lista del grupo.')}
+          ${campo(`${uid}-cancha`, 'Campo o número de cancha',
+            `<input id="${uid}-cancha" name="cancha" value="${v('cancha')}" placeholder="Ej. Cancha 2">`,
+            'Opcional, si el local tiene varias.')}
+          ${campo(`${uid}-ubicacion`, 'Link de ubicación',
+            `<input id="${uid}-ubicacion" name="ubicacion" value="${v('ubicacion')}" placeholder="https://maps.app.goo.gl/…" inputmode="url">`,
+            'El bot lo manda cuando preguntan dónde queda.', true)}
+        </div>
+
+        <div class="campos-tit">Operación</div>
+        <div class="campos">
+          ${campo(`${uid}-cupo`, 'Cupo',
+            `<input id="${uid}-cupo" name="cupo" type="number" min="1" max="60" inputmode="numeric" value="${v('cupo')}" placeholder="14">`,
+            'Cuántos jugadores entran por turno.')}
+          ${campo(`${uid}-costo`, 'Costo de la cancha (S/)',
+            `<input id="${uid}-costo" name="costo" type="number" min="0" step="0.5" inputmode="decimal" value="${v('costo')}" placeholder="150">`,
+            s && s.costo == null
+              ? '<span class="falta">Falta cargarlo.</span> Es lo que te cuesta alquilarla por turno: sin esto el panel muestra lo que entra, no lo que queda.'
+              : 'Lo que te cuesta alquilarla por turno. Con esto el partido te dice cuánto queda.')}
+          ${campo(`${uid}-horario`, 'Horario',
+            `<input id="${uid}-horario" name="horario" value="${v('horario')}" placeholder="Ej. Lun a Vie 7-11pm">`,
+            'El bot responde con esto cuando preguntan a qué hora se juega.')}
+          ${campo(`${uid}-estacionamiento`, 'Estacionamiento',
+            `<input id="${uid}-estacionamiento" name="estacionamiento" value="${v('estacionamiento')}" placeholder="Ej. Sí, gratis">`,
+            'Opcional.')}
+        </div>
+
+        <div class="pie-form">
+          <button class="btn-toque btn-guardar">${s ? 'Guardar cancha' : '➕ Agregar cancha'}</button>
+        </div>
+      </form>
+      ${s ? `<form method="post" action="/admin/config/sede/eliminar" class="pie-form"
+        onsubmit="return confirm('¿Eliminar esta cancha? Los partidos ya creados no se tocan.')">
+        <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${s.id}">
+        <button class="btn-toque btn-peligro">🗑 Eliminar esta cancha</button>
+      </form>` : ''}
+    </div>`;
+  };
+
+  // Una TARJETA por distrito: precio + grupo + nombre + sus canchas, todo junto.
+  // El id="zona-<slug>" es el destino al que vuelven los guardados y al que
+  // apunta el bloque "Para que el bot trabaje solo" del Resumen.
+  const bloqueZona = (zona) => {
+    const nombre = db.nombreDeZona(zona);
+    const link = c[`grouplink_${zona}`] || '';
+    return `
+    <div class="ancla" id="zona-${esc(zona)}">
+      <div class="shdr">📍 ${esc(nombre)} <small>· precio, grupo y canchas de este distrito</small></div>
+      <div class="group" style="border-left:6px solid ${colorZona(zona)}">
+        <form method="post" action="/admin/config/zona">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="zona" value="${esc(zona)}">
+          <div class="campos">
+            ${campo(`z-${esc(zona)}-precio`, 'Precio por jugador (S/)',
+              `<input id="z-${esc(zona)}-precio" name="precio" type="number" step="0.5" inputmode="decimal" value="${esc(c[`precio_${zona}`] || '')}" placeholder="15">`,
+              'Lo que el bot cobra por cupo en este distrito.')}
+            ${campo(`z-${esc(zona)}-nombre`, 'Nombre para mostrar',
+              `<input id="z-${esc(zona)}-nombre" name="nombre_mostrar" value="${esc(nombre)}">`,
+              'Como lo ve el jugador en el chat.')}
+            ${campo(`z-${esc(zona)}-link`, 'Link del grupo de WhatsApp',
+              `<input id="z-${esc(zona)}-link" name="grouplink" value="${esc(link)}" placeholder="https://chat.whatsapp.com/…" inputmode="url">`,
+              link
+                ? 'El bot se lo entrega a los que se suman a este distrito.'
+                : '<span class="falta">Todavía sin cargar: el bot no puede meter a nadie al grupo.</span> Para copiarlo: abre el grupo en WhatsApp → toca el nombre del grupo → Invitar por enlace → Copiar enlace.',
+              true)}
+          </div>
+          <div class="pie-form">
+            <button class="btn-toque btn-guardar">Guardar ${esc(nombre)}</button>
+          </div>
+        </form>
+        <div class="campos-tit">Canchas de ${esc(nombre)}</div>
+        ${sedesPorZona[zona].map((s) => filaSede(zona, s)).join('')
+          || '<p style="padding:0 14px 12px;color:var(--faint);font-size:14px">Sin canchas todavía.</p>'}
+        ${filaSede(zona, null)}
+      </div>
+    </div>`;
+  };
 
   const corteActual = db.getCorte();
   const bloqueCorte = `
-    <div class="shdr">🚦 Punto de arranque <small>· desde cuándo cuentan las colas de trabajo</small></div>
-    <div class="group">
-      <form class="inline" method="post" action="/admin/config/corte">
-        <input type="hidden" name="key" value="${esc(keyRaw)}">
-        <p style="flex-basis:100%;font-size:13.5px;color:var(--muted);line-height:1.45;margin-bottom:4px">
-          Los pagos y las derivaciones <b>anteriores</b> a esta fecha quedan como historial: la plata se sigue
-          sumando y las conversaciones siguen ahí, pero <b>no aparecen como pendientes</b> (esos partidos ya se
-          jugaron y esas derivaciones ya las atendiste). <b>No se borra nada.</b>
-        </p>
-        <label>Cuenta desde</label>
-        <input name="fecha" type="date" value="${esc(corteActual || hoyLima())}" max="${hoyLima()}">
-        <button>🚦 Empezar en limpio desde esta fecha</button>
-        <p style="flex-basis:100%;font-size:12.5px;color:var(--faint);margin-top:2px">
-          ${corteActual ? `Actualmente el sistema cuenta desde el <b>${esc(corteActual)}</b>.` : 'Todavía no hay punto de arranque: las colas incluyen toda la historia.'}
-        </p>
-      </form>
+    <div class="ancla" id="corte">
+      <div class="shdr">🚦 Punto de arranque <small>· desde cuándo cuentan las colas de trabajo</small></div>
+      <div class="group">
+        <form method="post" action="/admin/config/corte">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <p style="padding:13px 14px 0;font-size:13.5px;color:var(--muted);line-height:1.45">
+            Los pagos y las derivaciones <b>anteriores</b> a esta fecha quedan como historial: la plata se sigue
+            sumando y las conversaciones siguen ahí, pero <b>no aparecen como pendientes</b> (esos partidos ya se
+            jugaron y esas derivaciones ya las atendiste). <b>No se borra nada.</b>
+          </p>
+          <div class="campos">
+            ${campo('corte-fecha', 'Cuenta desde',
+              `<input id="corte-fecha" name="fecha" type="date" value="${esc(corteActual || hoyLima())}" max="${hoyLima()}">`,
+              corteActual
+                ? `Ahora el sistema cuenta desde el ${esc(fechaCompacta(corteActual))}.`
+                : 'Todavía no hay punto de arranque: las colas incluyen toda la historia.')}
+          </div>
+          <div class="pie-form">
+            <button class="btn-toque btn-guardar">🚦 Empezar en limpio desde esta fecha</button>
+          </div>
+        </form>
+      </div>
     </div>`;
 
   const nuevoDistrito = `
-    <div class="shdr">➕ Nuevo distrito <small>· al crearlo aparece en el bot, los partidos y esta página</small></div>
-    <div class="group" style="border:2.5px dashed var(--trazo);box-shadow:none">
-      <form class="inline" method="post" action="/admin/config/zona/nueva">
-        <input type="hidden" name="key" value="${esc(keyRaw)}">
-        <label>Nombre del distrito</label>
-        <input name="nombre" placeholder="Ej. Miraflores" required style="max-width:220px">
-        <label>Precio (S/)</label>
-        <input name="precio" type="number" step="0.5" value="15" style="max-width:100px">
-        <label>Primera cancha <small>(puedes editarla después)</small></label>
-        <input name="sede" placeholder="Nombre de la sede">
-        <input name="cupo" type="number" min="2" max="60" value="14" style="max-width:84px" title="Cupo">
-        <button>➕ Crear distrito</button>
-      </form>
+    <div class="ancla" id="nuevo-distrito">
+      <div class="shdr">➕ Nuevo distrito <small>· al crearlo aparece en el bot, los partidos y esta página</small></div>
+      <div class="group" style="border:2.5px dashed var(--trazo);box-shadow:none">
+        <form method="post" action="/admin/config/zona/nueva">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <div class="campos">
+            ${campo('nd-nombre', 'Nombre del distrito',
+              '<input id="nd-nombre" name="nombre" placeholder="Ej. Miraflores" required>',
+              'Así lo van a ver los jugadores.')}
+            ${campo('nd-precio', 'Precio por jugador (S/)',
+              '<input id="nd-precio" name="precio" type="number" step="0.5" inputmode="decimal" value="15">')}
+            ${campo('nd-sede', 'Primera cancha',
+              '<input id="nd-sede" name="sede" placeholder="Nombre de la cancha">',
+              'Puedes cambiarla después.')}
+            ${campo('nd-cupo', 'Cupo',
+              '<input id="nd-cupo" name="cupo" type="number" min="2" max="60" inputmode="numeric" value="14">',
+              'Cuántos jugadores entran por turno.')}
+          </div>
+          <div class="pie-form">
+            <button class="btn-toque btn-guardar">➕ Crear distrito</button>
+          </div>
+        </form>
+      </div>
     </div>`;
 
   // Lo único vivo que quedaba en la pestaña "Conexión": qué número está
@@ -1568,7 +1940,7 @@ function paginaConfig(db, key, conexion = null) {
   const numeroCanal = conexion ? conexion.numero() : null;
   const enLinea = estadoCanal === 'ready';
   const bloqueCanal = `
-    <div class="shdr">Canal de WhatsApp</div>
+    <div class="shdr ancla" id="canal">Canal de WhatsApp</div>
     <div class="group" style="display:flex;align-items:center;gap:13px;padding:15px">
       <span style="flex:0 0 auto;width:11px;height:11px;border-radius:50%;background:${enLinea ? 'var(--green)' : 'var(--amber)'}"></span>
       <div style="flex:1;min-width:0">
@@ -1589,32 +1961,57 @@ function paginaConfig(db, key, conexion = null) {
 
       ${bloqueCanal}
 
-      <div class="shdr">General <small>(no requiere redesplegar)</small></div>
-      <div class="group">
-        <form class="inline" method="post" action="/admin/config/general">
-          <input type="hidden" name="key" value="${esc(keyRaw)}">
-          <label>Marca</label>
-          <input name="marca" value="${esc(c.marca)}">
-          <label>Yape — número</label>
-          <input name="yape_numero" value="${esc(c.yape_numero)}">
-          <label>Yape — titular</label>
-          <input name="yape_titular" value="${esc(c.yape_titular)}">
-          <label>Regla de llegada <small>(relativa, vale para todo horario y sede — ej. "15 minutos antes del inicio de tu turno". Si una cancha necesita algo especial, ponlo en el horario de esa sede)</small></label>
-          <input name="hora_llegada" value="${esc(c.hora_llegada)}">
-          <label>Emojis de la casa <small>(separados por coma)</small></label>
-          <input name="emojis" value="${esc(c.emojis)}">
-          <label>Política de pago</label>
-          <textarea name="pago">${esc(c.pago)}</textarea>
-          <label>Política de devoluciones</label>
-          <textarea name="devoluciones">${esc(c.devoluciones)}</textarea>
-          <label>Reglas de convivencia</label>
-          <textarea name="convivencia">${esc(c.convivencia)}</textarea>
-          <label>Mecánica para jugar <small>(el bot la manda tal cual)</small></label>
-          <textarea name="mecanica" style="min-height:110px">${esc(c.mecanica)}</textarea>
-          <label>Mensaje de bienvenida <small>(el bot lo manda tal cual)</small></label>
-          <textarea name="bienvenida" style="min-height:110px">${esc(c.bienvenida)}</textarea>
-          <button>Guardar cambios generales</button>
-        </form>
+      <div class="ancla" id="general">
+        <div class="shdr">El negocio <small>· lo que el bot dice y cómo cobra</small></div>
+        <div class="group">
+          <form method="post" action="/admin/config/general">
+            <input type="hidden" name="key" value="${esc(keyRaw)}">
+
+            <div class="campos-tit">Cómo cobras</div>
+            <div class="campos">
+              ${campo('g-yape-numero', 'Yape — número',
+                `<input id="g-yape-numero" name="yape_numero" value="${esc(c.yape_numero)}" inputmode="tel">`,
+                'El bot le pasa este número a cada jugador para cobrarle.')}
+              ${campo('g-yape-titular', 'Yape — titular',
+                `<input id="g-yape-titular" name="yape_titular" value="${esc(c.yape_titular)}">`,
+                'El nombre que le aparece al jugador al yapear.')}
+            </div>
+
+            <div class="campos-tit">Identidad</div>
+            <div class="campos">
+              ${campo('g-marca', 'Marca',
+                `<input id="g-marca" name="marca" value="${esc(c.marca)}">`,
+                'Cómo se presenta el bot.')}
+              ${campo('g-emojis', 'Emojis de la casa',
+                `<input id="g-emojis" name="emojis" value="${esc(c.emojis)}">`,
+                'Separados por coma. El bot los usa al escribir.')}
+              ${campo('g-llegada', 'Regla de llegada',
+                `<input id="g-llegada" name="hora_llegada" value="${esc(c.hora_llegada)}">`,
+                'Relativa, vale para todo horario y cancha — ej. "15 minutos antes del inicio de tu turno". Si una cancha necesita algo especial, ponlo en el horario de esa cancha.',
+                true)}
+            </div>
+
+            <div class="campos-tit">Textos que el bot manda tal cual</div>
+            <div class="campos">
+              ${campo('g-bienvenida', 'Mensaje de bienvenida',
+                `<textarea id="g-bienvenida" name="bienvenida">${esc(c.bienvenida)}</textarea>`,
+                'Lo primero que recibe alguien que escribe por primera vez.', true)}
+              ${campo('g-mecanica', 'Mecánica para jugar',
+                `<textarea id="g-mecanica" name="mecanica">${esc(c.mecanica)}</textarea>`,
+                'La respuesta a "¿cómo funciona?".', true)}
+              ${campo('g-pago', 'Política de pago',
+                `<textarea id="g-pago" name="pago">${esc(c.pago)}</textarea>`, '', true)}
+              ${campo('g-devoluciones', 'Política de devoluciones',
+                `<textarea id="g-devoluciones" name="devoluciones">${esc(c.devoluciones)}</textarea>`, '', true)}
+              ${campo('g-convivencia', 'Reglas de convivencia',
+                `<textarea id="g-convivencia" name="convivencia">${esc(c.convivencia)}</textarea>`, '', true)}
+            </div>
+
+            <div class="pie-form">
+              <button class="btn-toque btn-guardar">Guardar los datos del negocio</button>
+            </div>
+          </form>
+        </div>
       </div>
 
       ${bloqueCorte}
@@ -1623,7 +2020,7 @@ function paginaConfig(db, key, conexion = null) {
 
       <div class="foot">⚽ Pichangueros · Config</div>
     </div>
-  `, { refresh: false, activo: 'config', key });
+  `, { refresh: false, activo: 'config', key, aviso: query });
 }
 
 // ==============================================================================
@@ -1733,7 +2130,7 @@ function paginaPartidos(db, key, query = {}) {
 
       <div class="foot">⚽ Pichangueros · Partidos</div>
     </div>
-  `, { refresh: false, activo: 'partidos', key });
+  `, { refresh: false, activo: 'partidos', key, aviso: query });
 }
 
 function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
@@ -1748,36 +2145,56 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   const lista = db.textoLista(partidoId);
   const pagosSueltos = db.pagosSinPartido();
 
-  const accion = (i, estado, etiqueta, estilo = '') => `
-    <form method="post" action="/admin/inscripcion/estado" style="display:inline">
+  // Texto seguro para meter dentro de un confirm('…') que vive en un atributo
+  // HTML: primero se escapan las comillas simples para JS, después esc() para
+  // el atributo (el &#39; resultante se decodifica a \' antes de evaluarse).
+  const jsTxt = (t) => esc(String(t ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+
+  const accion = (i, estado, etiqueta, estilo = '', confirmar = '') => `
+    <form method="post" action="/admin/inscripcion/estado" style="display:inline"${confirmar ? ` onsubmit="return confirm('${jsTxt(confirmar)}')"` : ''}>
       <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${i.id}"><input type="hidden" name="partido_id" value="${partidoId}"><input type="hidden" name="estado" value="${estado}">
-      <button style="border:none;border-radius:9px;padding:6px 10px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;${estilo}">${etiqueta}</button>
+      <button class="btn-fila" style="${estilo}">${etiqueta}</button>
     </form>`;
   const btnAsist = (i, valor, etiqueta, on) => `
     <form method="post" action="/admin/inscripcion/asistencia" style="display:inline">
       <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${i.id}"><input type="hidden" name="partido_id" value="${partidoId}"><input type="hidden" name="valor" value="${i.asistencia === valor ? '' : valor}">
-      <button style="border:none;border-radius:9px;padding:6px 10px;font:inherit;font-size:12px;font-weight:700;cursor:pointer;background:${on ? (valor === 'si' ? 'var(--green)' : 'var(--red)') : 'var(--inset)'};color:${on ? '#fff' : 'var(--muted)'}">${etiqueta}</button>
+      <button class="btn-fila" style="background:${on ? (valor === 'si' ? 'var(--green)' : 'var(--red)') : 'var(--inset)'};color:${on ? '#fff' : 'var(--muted)'}">${etiqueta}</button>
     </form>`;
 
+  /**
+   * Fila de inscrito.
+   *
+   * Dos cambios de seguridad: la fila lleva id (el POST de asistencia vuelve
+   * con #insc-N, porque pasar lista son 14 toques seguidos parado en la cancha
+   * y cada uno devolvía arriba de todo), y "Baja" —que libera el cupo, promueve
+   * al primero de la espera y dispara un WhatsApp, sin deshacer— sale del
+   * amontonamiento de botones: va apartada a la derecha y pregunta antes.
+   */
   const filaInsc = (i) => {
     const nombre = i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : '¿?');
-    return `<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--sep);flex-wrap:wrap">
+    const puedeMarcar = p.estado === 'jugado' || p.fecha <= hoyLima();
+    return `<div class="finsc ancla" id="insc-${i.id}">
       <div style="flex:1;min-width:140px">
         <div style="font-weight:700;font-size:14.5px">${i.numero ? `<a href="/admin/leads?key=${key}&numero=${i.numero}">${esc(nombre)}</a>` : esc(nombre)}</div>
         <div style="font-size:12px;color:var(--faint)">${esc(ESTADOS_INSC[i.estado] || i.estado)}${i.pago_id ? ` · pago #${i.pago_id}` : ''}</div>
       </div>
       ${i.estado !== 'baja' ? `
+      <div class="finsc-acc">
         ${i.estado !== 'pagado' ? accion(i, 'pagado', '💰 Pagó', 'background:rgba(163,198,20,.14);color:var(--green-d)') : ''}
         ${i.estado === 'espera' ? accion(i, 'reservado', '⬆ Subir', 'background:var(--inset);color:var(--muted)') : ''}
-        ${p.estado === 'jugado' || p.fecha <= hoyLima() ? `${btnAsist(i, 'si', '✔ Vino', i.asistencia === 'si')}${btnAsist(i, 'no', '✘ Faltó', i.asistencia === 'no')}` : ''}
-        ${accion(i, 'baja', '🗑 Baja', 'background:rgba(255,59,48,.12);color:var(--red)')}` : ''}
+        ${puedeMarcar ? `${btnAsist(i, 'si', '✔ Vino', i.asistencia === 'si')}${btnAsist(i, 'no', '✘ Faltó', i.asistencia === 'no')}` : ''}
+      </div>
+      <div class="finsc-peligro">
+        ${accion(i, 'baja', '🗑 Baja', 'background:rgba(255,59,48,.12);color:var(--red)',
+          `¿Dar de baja a ${nombre}? Libera su cupo y sube al primero de la lista de espera. No se puede deshacer con un botón.`)}
+      </div>` : ''}
     </div>`;
   };
 
-  const cambioEstado = (estado, etiqueta, clase) => `
-    <form method="post" action="/admin/partido/estado" style="display:inline">
+  const cambioEstado = (estado, etiqueta, clase, confirmar = '') => `
+    <form method="post" action="/admin/partido/estado" style="display:inline"${confirmar ? ` onsubmit="return confirm('${jsTxt(confirmar)}')"` : ''}>
       <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${partidoId}"><input type="hidden" name="estado" value="${estado}">
-      <button style="border:none;border-radius:11px;padding:9px 14px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;${clase}">${etiqueta}</button>
+      <button class="btn-toque" style="font-size:13px;${clase}">${etiqueta}</button>
     </form>`;
 
   // La caja del partido (propuesta v2): la pantalla mostraba cuánta gente hay,
@@ -1821,19 +2238,17 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
       </div>` : ''}
     </div>`;
 
-  // Resultado de la última edición. Un guardado que falla en silencio es peor
-  // que no tener el botón: uno se va creyendo que cambió el dato.
-  const textoAviso = (query.aviso || '').toString().slice(0, 200);
+  // El aviso de resultado ahora lo pinta baseHtml (mismo banner en todas las
+  // vistas). Acá solo interesa si hubo error, para dejar el editor ABIERTO:
+  // un rechazo con el editor plegado esconde justo el campo que hay que
+  // corregir.
   const esError = query.err === '1';
-  const aviso = textoAviso ? `<div style="margin:0 0 14px;padding:12px 14px;border-radius:12px;font-size:13.5px;font-weight:600;
-      background:${esError ? 'rgba(255,59,48,.10)' : 'rgba(163,198,20,.16)'};color:${esError ? 'var(--red)' : 'var(--green-d)'}">
-      ${esError ? '⚠️' : '✅'} ${esc(textoAviso)}</div>` : '';
 
   // Editor plegado. <details> nativo: se expande al tocar "Editar", no necesita
   // JS y el navegador ya sabe hacerlo accesible con teclado.
   const sedesDeZona = db.listSedes(p.zona);
   const editor = `
-    <details class="editor" ${esError ? 'open' : ''} style="margin-bottom:14px">
+    <details class="editor ancla" id="editor" ${esError ? 'open' : ''} style="margin-bottom:14px">
       <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:14px;
         border:1px solid var(--sep);border-radius:14px;background:#fff;font-weight:700;font-size:15px">
         <span style="font-size:18px">✏️</span>
@@ -1908,22 +2323,24 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
       </div>
       ${caja}
 
-      ${aviso}
-
       ${editor}
 
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
         ${p.estado === 'abierto' ? cambioEstado('cerrado', '🔒 Cerrar inscripción', 'background:var(--inset);color:var(--muted)') : cambioEstado('abierto', '🔓 Reabrir', 'background:rgba(163,198,20,.14);color:var(--green-d)')}
         ${p.estado !== 'jugado' ? cambioEstado('jugado', '✅ Marcar jugado', 'background:rgba(163,198,20,.14);color:var(--green-d)') : ''}
-        ${p.estado !== 'cancelado' ? cambioEstado('cancelado', '✖ Cancelar', 'background:rgba(255,59,48,.12);color:var(--red)') : ''}
+        ${/* Cancelar va apartado (margin-left:auto) y pregunta con el número de
+             inscritos delante: saca el partido de la parrilla del bot y NADIE
+             recibe aviso automático. */ ''}
+        ${p.estado !== 'cancelado' ? `<span style="margin-left:auto">${cambioEstado('cancelado', '✖ Cancelar', 'background:rgba(255,59,48,.12);color:var(--red)',
+          `¿CANCELAR el partido del ${db.fechaBonita(p.fecha, { relativa: false })}? ${activas.length ? `Hay ${activas.length} inscritos y nadie recibe aviso automático: tienes que avisarles tú.` : 'No hay nadie inscrito.'}`)}</span>` : ''}
         ${!inscripciones.length ? `
         <form method="post" action="/admin/partido/eliminar" style="display:inline" onsubmit="return confirm('¿Eliminar este partido? Solo se puede porque no tiene a nadie inscrito.')">
           <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${partidoId}">
-          <button style="border:none;border-radius:11px;padding:9px 14px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;background:rgba(255,59,48,.12);color:var(--red)">🗑 Eliminar (está vacío)</button>
+          <button class="btn-toque" style="font-size:13px;background:rgba(255,59,48,.12);color:var(--red)">🗑 Eliminar (está vacío)</button>
         </form>` : ''}
       </div>
 
-      <div class="shdr">Inscritos (${activas.length})</div>
+      <div class="shdr ancla" id="inscritos">Inscritos (${activas.length})</div>
       <div class="group">
         ${activas.map(filaInsc).join('') || '<p style="padding:14px;color:var(--faint);font-size:14px">Nadie inscrito aún.</p>'}
         <form class="inline" method="post" action="/admin/partido/inscribir" style="padding-top:10px">
@@ -1935,7 +2352,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
       </div>
 
       ${pagosSueltos.length ? `
-      <div class="shdr">Pagos confirmados sin partido <small>(asignar a este partido)</small></div>
+      <div class="shdr ancla" id="pagos-sueltos">Pagos confirmados sin partido <small>(asignar a este partido)</small></div>
       <div class="group">
         ${pagosSueltos.map((pg) => `
           <form method="post" action="/admin/pago/asignar" style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--sep)">
@@ -1954,7 +2371,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
 
       <div class="foot">⚽ Pichangueros · Partido #${partidoId}</div>
     </div>
-  `, { refresh: false, activo: 'partidos', key });
+  `, { refresh: false, activo: 'partidos', key, aviso: query });
 }
 
 // ==============================================================================
