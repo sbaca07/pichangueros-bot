@@ -163,7 +163,22 @@ async function enviarTexto(sock, jid, texto) {
   return sent;
 }
 
-async function notificarControl(sock, texto) {
+/**
+ * Aviso al número de control (Clarck). Si se pasa `asunto`, además sale por correo.
+ *
+ * Por qué el correo: Cloud API solo deja mandar mensajes libres dentro de las
+ * 24 h desde que el destinatario escribió al número. Pasado ese plazo Meta lo
+ * rechaza con 131047 — y el rechazo NO llega como excepción acá: la API
+ * responde 200 con su wamid y el fallo aparece después, por webhook
+ * (`meta.js`, statuses[].status='failed'). Es decir: desde este código un aviso
+ * perdido es indistinguible de uno entregado, así que no hay forma de
+ * reintentar a tiempo. Pasó el 13/08 con un handoff. Por eso lo CRÍTICO
+ * (handoffs y pagos por revisar) sale por los dos canales, igual que la alerta
+ * de salud de la cuenta: WhatsApp es best-effort, el correo es el que llega.
+ */
+async function notificarControl(sock, texto, asunto = null) {
+  // Primero el correo: no depende de NOTIFY_NUMBER ni de la ventana de 24 h.
+  if (asunto) Promise.resolve(backup.avisar(asunto, texto)).catch(() => {});
   if (!NOTIFY_NUMBER) return;
   try {
     await enviarTexto(sock, `${NOTIFY_NUMBER}@s.whatsapp.net`, texto);
@@ -382,7 +397,8 @@ async function manejarMensaje(sock, msg) {
           if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
           await enviarTexto(sock, destino, resultado.respuesta);
           db.saveMessage(numero, 'assistant', resultado.respuesta);
-          if (resultado.handoff) await notificarControl(sock, `💸 Revisar pago de wa.me/${numero}: ${resultado.motivoHandoff}`);
+          // Crítico: hay plata de por medio y el cupo queda en el limbo hasta que Clarck mire.
+          if (resultado.handoff) await notificarControl(sock, `💸 Revisar pago de wa.me/${numero}: ${resultado.motivoHandoff}`, 'Pago por revisar');
         } else {
           console.log(`[SAFE_MODE] ${numero}: voucher procesado sin responder.`);
         }
@@ -454,7 +470,10 @@ async function manejarMensaje(sock, msg) {
     db.setHandoff(numero, decision.handoff_motivo);
     if (!modoSilencio) await notificarControl(
       sock,
-      `🔔 Para Clarck — ${decision.handoff_motivo || 'caso especial'}\nContacto: ${actualizado.nombre || 'sin nombre'} · wa.me/${numero}\nÚltimo mensaje: "${body}"\n(El bot dejó de responderle. Para reactivarlo: kipi reactivar ${numero})`
+      `🔔 Para Clarck — ${decision.handoff_motivo || 'caso especial'}\nContacto: ${actualizado.nombre || 'sin nombre'} · wa.me/${numero}\nÚltimo mensaje: "${body}"\n(El bot dejó de responderle. Para reactivarlo: kipi reactivar ${numero})`,
+      // Crítico: el bot ya se calló con ese contacto. Si el aviso se pierde,
+      // el jugador queda esperando a alguien que no sabe que tiene que ir.
+      `Caso para Clarck — ${decision.handoff_motivo || 'caso especial'}`
     );
   }
 
