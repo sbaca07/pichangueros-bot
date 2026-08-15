@@ -489,7 +489,7 @@ async function manejarMensaje(sock, msg) {
       // write (o el ID no existe): NUNCA mandar el reply que promete la
       // reserva — el jugador pagaría por un cupo que no está en ninguna lista.
       console.warn(`[partido] Inscripción rechazada: partido ${decision.inscribir_partido} no está abierto (${numero}).`);
-      decision.reply = db.partidosAbiertos().length
+      decision.reply = db.partidosAbiertos(null, { vigentes: true }).length
         ? 'Uy, esa pichanga ya no tiene inscripción abierta 🙈 Pregúntame "¿qué pichangas hay?" y te paso las que sí están disponibles ⚽'
         : 'Uy, esa pichanga ya no tiene inscripción abierta 🙈 Apenas se abra la próxima convocatoria te avisamos por acá ⚽';
     }
@@ -541,6 +541,13 @@ async function manejarMensaje(sock, msg) {
       ? db.getNegocio().zonas[actualizado.zona]?.groupLink : null;
     if (linkZona && decision.reply.includes(linkZona) && actualizado.estado !== 'invitado_grupo') {
       db.setEstado(numero, 'invitado_grupo');
+    } else if (!linkZona && actualizado.zona && actualizado.zona !== 'otra'
+               && actualizado.estado !== 'invitado_grupo' && !actualizado.proxima_accion) {
+      // Sin link cargado para su zona, sumarlo al grupo es trabajo a mano de
+      // Clarck. Antes eso no quedaba en ningún lado y el jugador se perdía;
+      // ahora cae en la cola de pendientes del panel, con fecha de hoy.
+      db.setSeguimiento(numero, db.hoyLima(), `Sumarlo al grupo de ${db.nombreDeZona(actualizado.zona) || actualizado.zona} (no hay link cargado)`);
+      console.log(`[grupo] ${numero} espera el link de ${actualizado.zona} — anotado como pendiente para Clarck.`);
     }
   } else if (modoSilencio) {
     console.log(`[SAFE_MODE] ${numero}: datos extraídos sin responder.`);

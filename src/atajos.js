@@ -30,7 +30,7 @@ const nombreZona = (neg, z) =>
  * próximos; con completa=true, la semana entera (intención "semana").
  */
 function textoParrilla({ completa = false } = {}) {
-  const abiertos = db.partidosAbiertos();
+  const abiertos = db.partidosAbiertos(null, { vigentes: true });
   if (!abiertos.length) return null; // sin partidos cargados → que responda la IA
   const neg = db.getNegocio();
 
@@ -58,7 +58,7 @@ function textoPrecios() {
   for (const [z, datos] of Object.entries(neg.zonas)) {
     if (datos.precio) porZona.set(nombreZona(neg, z), datos.precio);
   }
-  for (const p of db.partidosAbiertos()) {
+  for (const p of db.partidosAbiertos(null, { vigentes: true })) {
     const n = nombreZona(neg, p.zona);
     if (!porZona.has(n) && p.precio) porZona.set(n, p.precio);
   }

@@ -737,7 +737,17 @@ function listPartidos() {
 }
 
 /** Partidos abiertos de hoy en adelante, con cupo restante — es lo que ve el cerebro. */
-function partidosAbiertos(zona = null) {
+/**
+ * Partidos con inscripción abierta.
+ *
+ * `vigentes: true` descarta además los de HOY que YA EMPEZARON. Va en todo lo
+ * que ve el jugador: el 15/08 a las 10:40 el bot ofrecía "Breña 9am y 10am,
+ * Comas 9am" — los tres habían arrancado, porque acá solo se filtraba por
+ * FECHA. NO se filtra para el panel (Clarck necesita ver el partido en curso
+ * para pasar lista) ni para el emparejado de pagos (un Yape que entra con el
+ * partido ya empezado quedaría huérfano).
+ */
+function partidosAbiertos(zona = null, { vigentes = false } = {}) {
   const filas = db.prepare(`
     SELECT p.*,
       (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id AND i.estado IN ${OCUPAN}) AS ocupados
@@ -745,10 +755,15 @@ function partidosAbiertos(zona = null) {
     WHERE p.estado = 'abierto' AND p.fecha >= ? ${zona ? 'AND p.zona = ?' : ''}
     ORDER BY p.fecha, p.id
   `).all(...(zona ? [hoyLimaDb(), zona] : [hoyLimaDb()]));
-  return filas
+  const lista = filas
     .map((p) => ({ ...p, restante: Math.max(0, p.cupo - p.ocupados) }))
     // Dentro del día, por hora de inicio (la BD solo ordena por fecha e id).
     .sort((a, b) => (a.fecha === b.fecha ? ordenHora(a.hora) - ordenHora(b.hora) : a.fecha < b.fecha ? -1 : 1));
+  if (!vigentes) return lista;
+  const hoy = hoyLimaDb();
+  const horaAhora = Number(new Date(Date.now() - 5 * 3600e3).toISOString().slice(11, 13));
+  // Sin hora cargada, ordenHora devuelve 99: ante la duda se sigue ofreciendo.
+  return lista.filter((p) => p.fecha > hoy || ordenHora(p.hora) > horaAhora);
 }
 
 function inscripcionesDe(partidoId) {

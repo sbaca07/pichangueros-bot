@@ -89,16 +89,21 @@ function describirZonas(negocio) {
       const sedes = z.sedes
         .map((s) => `  - ${s.nombre}${s.cancha ? ` (${s.cancha})` : ''}: cupo ${s.cupo} jugadores, ${s.horario}. Ubicación: ${s.ubicacion}${s.estacionamiento ? `. ${s.estacionamiento}` : ''}`)
         .join('\n');
+      // Un "te paso el link en un momento" que nadie cumple: hasta el 15/08
+      // ninguna zona tenía link cargado, así que los 230 leads que llegaron a
+      // datos_completos quedaron esperando (1 solo llegó a invitado_grupo).
+      // Mientras no haya link, el bot NO promete: deriva a Clarck, y el lead
+      // queda con la tarea anotada en el panel (ver index.js).
       const link = z.groupLink
         ? `Link del grupo: ${z.groupLink}`
-        : 'Link del grupo: AÚN NO CONFIGURADO — no inventes un link; dile que le envías el link del grupo en un momento.';
+        : 'Link del grupo: AÚN NO CONFIGURADO — no inventes uno y NO prometas mandarlo "en un momento" (nadie lo manda). Dile que Clarck en persona lo suma al grupo y le escribe por acá.';
       return `${z.nombre} — S/ ${z.precio} por jugador\n${sedes}\n${link}`;
     })
     .join('\n\n');
 }
 
 function describirPartidos(negocio) {
-  const abiertos = db.partidosAbiertos();
+  const abiertos = db.partidosAbiertos(null, { vigentes: true });
   if (!abiertos.length) {
     return 'No hay partidos con inscripción abierta cargados ahora mismo. Si alguien quiere inscribirse, dile que le confirmas el cupo en un momento (Clarck ve la notificación) y deja inscribir_partido en null.';
   }
