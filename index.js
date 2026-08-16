@@ -473,7 +473,12 @@ async function manejarMensaje(sock, msg) {
 
   if (decision.handoff) {
     db.setHandoff(numero, decision.handoff_motivo);
-    if (!modoSilencio) await notificarControl(
+    // El aviso sale SIEMPRE, también en modo silencio. El handoff se marcaba
+    // igual pero el aviso vivía dentro del !modoSilencio: con SAFE_MODE
+    // encendido el bot dejaba de atender a alguien y nadie se enteraba nunca.
+    // Y no se deshace solo — un lead en handoff sigue silenciado después de
+    // apagar el modo seguro. Así se juntaron 103 contactos mudos.
+    await notificarControl(
       sock,
       `🔔 Para Clarck — ${decision.handoff_motivo || 'caso especial'}\nContacto: ${actualizado.nombre || 'sin nombre'} · wa.me/${numero}\nÚltimo mensaje: "${body}"\n(El bot dejó de responderle. Para reactivarlo: kipi reactivar ${numero})`,
       // Crítico: el bot ya se calló con ese contacto. Si el aviso se pierde,

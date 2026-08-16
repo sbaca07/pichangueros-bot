@@ -74,7 +74,26 @@ check('borrado el contacto, el cupo se libera', ocupados(p2) === 0);
 check('y no queda una inscripción apuntando a un pago borrado',
   !db.inscripcionesDe(p2).some((i) => i.pago_id === pagoF));
 
-console.log('== 5 · La caja no devuelve NaN cuando falta el precio ==');
+console.log('== 5 · La caja ve la plata cobrada a mano ==');
+// "💰 Pagó" marca la inscripción pagada sin enganchar un pago: esa plata no
+// entraba en cobrado (suma vouchers) ni en porCobrar (cuenta reservados).
+const pc = db.crearPartido({ zona: 'brena', fecha: enDias(4), hora: '8-9pm', cupo: 14, precio: 15 });
+db.getOrCreateLead('51900000106');
+const rc = db.inscribir(pc, '51900000106', { nombre: 'Cobrado a mano' });
+check('reservado: la plata está en porCobrar', db.cajaPartido(pc).porCobrar === 15);
+db.setEstadoInscripcion(rc.inscripcion.id, 'pagado');
+const caja1 = db.cajaPartido(pc);
+check('marcado pagado a mano: la plata pasa a cobrado', caja1.cobrado === 15);
+check('y ya no figura como por cobrar', caja1.porCobrar === 0);
+check('se distingue de lo verificado por voucher', caja1.cobradoAMano === 15 && caja1.cobradoVerificado === 0);
+
+console.log('== 6 · El costo de cancha no depende de que el nombre calce exacto ==');
+db.addSede({ zona: 'comas', nombre: 'Politécnico Estados Unidos', cupo: 12, costo: 150 });
+const pn = db.crearPartido({ zona: 'comas', fecha: enDias(5), hora: '8-9pm', sede: 'Politecnico', cupo: 12, precio: 10 });
+check('con el nombre tipeado distinto, igual encuentra el costo de la zona',
+  db.cajaPartido(pn).costoCancha === 150);
+
+console.log('== 7 · La caja no devuelve NaN cuando falta el precio ==');
 // p.precio ?? Number(cfg[...]) ?? 0 → el ?? no atrapa NaN y la caja salía NaN.
 const p3 = db.crearPartido({ zona: 'comas', fecha: enDias(3), hora: '8-9pm', cupo: 10 });
 db.setConfig('precio_comas', '');

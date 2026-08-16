@@ -590,29 +590,37 @@ function normalizarHora(hora) {
 function horaInput(hora) {
   const t = (hora || '').trim();
   if (!t) return '';
-  const m = /^(\d{1,2})(?::(\d{2}))?/.exec(t);
+  // Mismo cuidado que ordenHora: el meridiano del PRIMER bloque.
+  const m = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(t);
   if (!m) return '';
+  const suf = (m[3] || (/(am|pm)\s*$/i.exec(t) || [])[1] || '').toLowerCase();
   let h = Number(m[1]);
-  if (/am|pm/i.test(t)) {
-    h %= 12;
-    if (/pm/i.test(t)) h += 12;
-  }
+  if (suf) h = (h % 12) + (suf === 'pm' ? 12 : 0);
   if (h > 23) return '';
   return `${String(h).padStart(2, '0')}:${m[2] || '00'}`;
 }
 
 /** '8-9pm' → 20 · '9-10am' → 9 — para ordenar los turnos dentro del día. */
+/**
+ * Hora de INICIO en 0-23.
+ *
+ * Ojo con el meridiano: hay que mirar el del PRIMER bloque, no el de la cadena
+ * entera. '11am-12pm' contiene "pm" al final y se leía como las 23 — o sea que
+ * el turno de las 11 de la mañana se seguía ofreciendo hasta las 11 de la
+ * noche, aceptaba Yapes toda la tarde y, al abrir y guardar el editor, se
+ * mudaba solo a las 11pm. Lo introdujo el propio formato "11am-12pm" que
+ * genera normalizarHora para los turnos que cruzan el mediodía.
+ */
 function ordenHora(hora) {
   const t = (hora || '').trim();
-  const m = /^(\d{1,2})/.exec(t);
+  const m = /^(\d{1,2})(?::\d{2})?\s*(am|pm)?/i.exec(t);
   if (!m) return 99;
   const n = Number(m[1]);
-  // Sin am/pm es formato de 24 h ('20:00' del reloj, o una hora suelta): va tal
-  // cual. Hacerle el %12 era el bug que convertía las 20:00 en las 8am.
-  if (!/am|pm/i.test(t)) return Math.min(n, 23);
-  let h = n % 12;
-  if (/pm/i.test(t)) h += 12;
-  return h;
+  // El sufijo propio del primer bloque manda; si no tiene, el del final sirve
+  // ('8-9pm'). Sin ninguno es formato de 24 h ('20:00') y va tal cual.
+  const suf = (m[2] || (/(am|pm)\s*$/i.exec(t) || [])[1] || '').toLowerCase();
+  if (!suf) return Math.min(n, 23);
+  return (n % 12) + (suf === 'pm' ? 12 : 0);
 }
 
 // Migración (2026-08-11, una vez): normalizar horas ya guardadas ('9pm' → '9-10pm').
@@ -751,24 +759,41 @@ function cajaPartido(id) {
   const precioZona = Number(getConfigMap()[`precio_${p.zona}`]);
   const precio = p.precio ?? (Number.isFinite(precioZona) ? precioZona : 0);
 
-  const cobrado = db.prepare(`
+  const verificado = db.prepare(`
     SELECT COALESCE(SUM(monto), 0) AS s FROM pagos WHERE estado = 'confirmado' AND id IN (
       SELECT DISTINCT pago_id FROM inscripciones WHERE partido_id = ? AND pago_id IS NOT NULL
     )`).get(id).s;
+
+  // Cobrado A MANO: el botón "💰 Pagó" del panel marca la inscripción como
+  // pagada pero no le engancha ningún pago, así que esa plata no entraba en
+  // `cobrado` (que suma vouchers) NI en `porCobrar` (que cuenta reservados):
+  // desaparecía de las dos columnas. La caja decía "faltan S/150" con el
+  // partido cobrado entero — y es el recuadro que Clarck mira en la cancha.
+  const aMano = db.prepare(
+    "SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ? AND estado = 'pagado' AND pago_id IS NULL"
+  ).get(id).n;
 
   const porPagar = db.prepare(
     "SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ? AND estado = 'reservado'"
   ).get(id).n;
 
   // El costo va por sede (una cancha de Comas no cuesta lo que una de Breña).
-  const sede = p.sede
+  // Si el nombre guardado en el partido no calza con ninguna sede —porque se
+  // renombró la cancha, o se tipeó distinto— se cae al costo de la sede de esa
+  // zona antes que quedarse sin dato: el Resumen decía "cancha sin costo" y en
+  // Ajustes el costo estaba puesto, una tarea imposible de cerrar.
+  const sede = (p.sede
     ? db.prepare('SELECT costo FROM sedes WHERE zona = ? AND nombre = ?').get(p.zona, p.sede)
-    : null;
+    : null)
+    || db.prepare('SELECT costo FROM sedes WHERE zona = ? AND costo IS NOT NULL ORDER BY orden, id LIMIT 1').get(p.zona);
 
+  const precioNum = Number(precio) || 0;
   return {
     precio,
-    cobrado,
-    porCobrar: porPagar * (Number(precio) || 0),
+    cobrado: verificado + aMano * precioNum,
+    cobradoVerificado: verificado,
+    cobradoAMano: aMano * precioNum,
+    porCobrar: porPagar * precioNum,
     porPagar,
     costoCancha: sede && sede.costo != null ? Number(sede.costo) : null,
   };

@@ -120,6 +120,13 @@ const comoTexto = (h) => `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`;
 
   // El bug que hacía invisible un partido: ordenHora leía "20:00" como las 8am,
   // así que el filtro de vigentes lo descartaba a media mañana.
+  // '11am-12pm' termina en "pm": mirar la cadena entera lo leía como las 23, y
+  // el turno de las 11 de la mañana se ofrecía hasta las 11 de la noche.
+  check('un turno que cruza el mediodía se lee por su PRIMER bloque', db.ordenHora('11am-12pm') === 11);
+  check('y precarga el reloj a las 11, no a las 23', db.horaInput('11am-12pm') === '11:00');
+  check('el editor no lo muda de hora al guardar', db.horaInput(db.normalizarHora('11:00')) === '11:00');
+  check('un turno de verdad nocturno sigue siendo nocturno', db.ordenHora('11-12pm') === 23);
+  check('mediodía en punto', db.ordenHora('12-1pm') === 12);
   check('ordenHora lee 20:00 como las 20, no como las 8', db.ordenHora('20:00') === 20);
   check('y sigue leyendo bien "8-9pm"', db.ordenHora('8-9pm') === 20);
   check('"12am" es medianoche', db.ordenHora('12am') === 0);
