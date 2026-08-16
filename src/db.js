@@ -380,7 +380,11 @@ function ultimosRoles() {
 function stats() {
   return {
     leads: db.prepare('SELECT COUNT(*) AS n FROM leads').get().n,
-    completos: db.prepare("SELECT COUNT(*) AS n FROM leads WHERE estado != 'nuevo'").get().n,
+    // "Con datos" se mide por los DATOS, no por la etapa. Desde que un pago
+    // mueve la etapa a 'activo', `estado != 'nuevo'` contaba como registrados a
+    // los 265 pagadores que nunca dieron un dato — y eso salía en `kipi estado`
+    // y en el correo de respaldo.
+    completos: db.prepare("SELECT COUNT(*) AS n FROM leads WHERE nombre IS NOT NULL AND edad IS NOT NULL AND distrito IS NOT NULL").get().n,
     enHandoff: db.prepare('SELECT COUNT(*) AS n FROM leads WHERE handoff = 1').get().n,
     porZona: db.prepare('SELECT zona, COUNT(*) AS n FROM leads WHERE zona IS NOT NULL GROUP BY zona').all(),
   };

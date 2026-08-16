@@ -461,7 +461,11 @@ async function manejarMensaje(sock, msg) {
 
   const actualizado = db.getOrCreateLead(numero);
   const datosCompletos = actualizado.nombre && actualizado.edad && actualizado.distrito;
-  if (datosCompletos && lead.estado === 'nuevo') {
+  // Solo se avanza desde 'nuevo': completar datos NUNCA puede degradar a quien
+  // ya es cliente. Antes decía `lead.estado === 'nuevo'` a secas, y con la
+  // etapa por pago un pagador que después daba sus datos se quedaba sin
+  // registrar el hecho — el precio de meter dos ejes en una sola escalera.
+  if (datosCompletos && ['nuevo'].includes(lead.estado)) {
     const estado = actualizado.zona === 'otra' ? 'lista_espera' : 'datos_completos';
     db.updateLead(numero, { estado });
     // Sin aviso a Clarck: un lead nuevo NO le pide hacer nada (el bot ya lo
@@ -548,9 +552,16 @@ async function manejarMensaje(sock, msg) {
 
     // Si la respuesta incluyó el link del grupo de su zona, el lead ya quedó
     // invitado → se marca solo (alimenta el embudo del Resumen).
+    //
+    // Solo se sube desde 'nuevo' o 'datos_completos'. Un 'activo' NO se toca:
+    // recibir el link es un paso hacia adelante para un desconocido y hacia
+    // ATRÁS para un cliente que ya paga. Hoy no explota porque ninguna zona
+    // tiene link cargado, pero el día que Clarck cargue el primero, esta línea
+    // degradaría a Jugador ⭐ a todo el que lo reciba.
     const linkZona = actualizado.zona && actualizado.zona !== 'otra'
       ? db.getNegocio().zonas[actualizado.zona]?.groupLink : null;
-    if (linkZona && decision.reply.includes(linkZona) && actualizado.estado !== 'invitado_grupo') {
+    if (linkZona && decision.reply.includes(linkZona)
+        && ['nuevo', 'datos_completos', 'lista_espera'].includes(actualizado.estado)) {
       db.setEstado(numero, 'invitado_grupo');
     } else if (!linkZona && actualizado.zona && actualizado.zona !== 'otra') {
       // Sin link cargado para su zona, sumarlo al grupo es trabajo a mano. El

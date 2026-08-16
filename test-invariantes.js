@@ -111,6 +111,14 @@ db.updateLead('51900000107', { estado: 'inactivo' });
 db.registrarPago({ numero: '51900000107', monto: 15, numero_operacion: 'OP-INV-11', estado: 'confirmado' });
 check('un inactivo que vuelve a pagar, revive', db.getLead('51900000107').estado === 'activo');
 
+// Meter "cuánto sabemos de alguien" y "qué tan cliente es" en una sola escalera
+// hace que avanzar en un eje borre el otro. Hasta que se separen, al menos que
+// no retrocedan: un cliente no vuelve a ser un desconocido.
+check('"con datos" se mide por los DATOS, no por la etapa',
+  db.stats().completos === db.listLeads().filter((l) => l.nombre && l.edad && l.distrito).length);
+check('un pagador sin datos NO cuenta como registrado',
+  !db.listLeads().some((l) => l.numero === '51900000107' && l.nombre));
+
 console.log('== 8 · La caja no devuelve NaN cuando falta el precio ==');
 // p.precio ?? Number(cfg[...]) ?? 0 → el ?? no atrapa NaN y la caja salía NaN.
 const p3 = db.crearPartido({ zona: 'comas', fecha: enDias(3), hora: '8-9pm', cupo: 10 });
