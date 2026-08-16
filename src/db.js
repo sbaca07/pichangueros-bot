@@ -436,6 +436,31 @@ function setConfig(campos) {
   }
 }
 
+/**
+ * Marcadores internos del sistema (última vez que corrió algo, etc.).
+ * Van aparte de setConfig, que tiene lista blanca porque lo alimenta un
+ * formulario del panel: esto no lo edita nadie a mano.
+ */
+const getMarca = (clave) => (db.prepare('SELECT valor FROM config WHERE clave = ?').get(`marca_${clave}`) || {}).valor || null;
+const setMarca = (clave, valor) => db.prepare(
+  'INSERT INTO config (clave, valor) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor'
+).run(`marca_${clave}`, String(valor));
+
+/**
+ * Contactos derivados a Clarck desde un momento dado — la materia prima del
+ * resumen por correo. Se lee de la BD en vez de una cola en memoria: así un
+ * reinicio de Render (o un deploy) no se lleva puestos los avisos pendientes.
+ */
+function handoffsDesde(ts) {
+  const corte = getCorte() || '0000-00-00';
+  return db.prepare(`
+    SELECT numero, nombre, handoff_motivo, actualizado_en
+    FROM leads
+    WHERE handoff = 1 AND actualizado_en > ? AND substr(actualizado_en, 1, 10) >= ?
+    ORDER BY actualizado_en
+  `).all(ts || '0000-00-00', corte);
+}
+
 function listSedes(zona) {
   return zona
     ? db.prepare('SELECT * FROM sedes WHERE zona = ? ORDER BY orden, id').all(zona)
@@ -1202,4 +1227,5 @@ module.exports = {
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
   hoyLima: hoyLimaDb, ordenHora, horaInput, normalizarHora,
+  getMarca, setMarca, handoffsDesde,
 };

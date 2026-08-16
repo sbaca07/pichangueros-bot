@@ -85,18 +85,20 @@ const aControl = () => enviados.filter((e) => e.a === CONTROL);
   await escribe(A, 'puedo pagarte en efectivo?');
   await sleep(1800);
   check('le avisó a Clarck por WhatsApp', aControl().some((e) => /Para Clarck/.test(e.texto)));
-  check('y también por correo', correos.length === 1);
-  check('el asunto dice el motivo', /efectivo/i.test(correos[0]?.asunto || ''));
-  check('el correo lleva el mismo detalle que el WhatsApp',
-    /wa\.me\/51900222333/.test(correos[0]?.cuerpo || '') && /kipi reactivar/.test(correos[0]?.cuerpo || ''));
+  check('el WhatsApp trae el contacto y cómo reactivarlo',
+    aControl().some((e) => /wa\.me\/51900222333/.test(e.texto) && /kipi reactivar/.test(e.texto)));
   check('el contacto quedó en handoff', Boolean(require('./src/db').getLead(A)?.handoff));
+  // Por correo NO va uno por uno: se marcan ~41 handoffs por día y 41 correos
+  // diarios se ignoran. Van juntos en el resumen de backup.js, 3 veces al día
+  // (test-resumen.js). Acá solo se fija que no salga el correo inmediato.
+  check('NO manda un correo por cada handoff', correos.length === 0);
 
-  console.log('== 2 · Aviso blando: WhatsApp y nada más ==');
+  console.log('== 2 · El derivado que insiste: WhatsApp y nada más ==');
   const antes = aControl().length;
   await escribe(A, 'sigues ahi?'); // ya está en handoff → re-aviso a control
   await sleep(1500);
   check('re-avisó por WhatsApp', aControl().length > antes);
-  check('NO mandó un segundo correo', correos.length === 1);
+  check('sigue sin mandar correo', correos.length === 0);
 
   console.log(`\n${fallos ? '❌' : '✅'} ${ok} checks OK, ${fallos} fallos`);
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {}

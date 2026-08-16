@@ -473,17 +473,18 @@ async function manejarMensaje(sock, msg) {
 
   if (decision.handoff) {
     db.setHandoff(numero, decision.handoff_motivo);
-    // El aviso sale SIEMPRE, también en modo silencio. El handoff se marcaba
-    // igual pero el aviso vivía dentro del !modoSilencio: con SAFE_MODE
-    // encendido el bot dejaba de atender a alguien y nadie se enteraba nunca.
-    // Y no se deshace solo — un lead en handoff sigue silenciado después de
-    // apagar el modo seguro. Así se juntaron 103 contactos mudos.
+    // El WhatsApp sale SIEMPRE, también en modo silencio: el aviso es para
+    // Clarck, no para el jugador, y antes vivía dentro del !modoSilencio — el
+    // bot dejaba de atender a alguien y nadie se enteraba. Así se juntaron 105
+    // contactos mudos.
+    //
+    // Por correo NO va uno por uno: se marcan ~41 handoffs por día y 41 correos
+    // diarios no se leen. Van juntos en el resumen de backup.js, tres veces al
+    // día. Lo que sí sale al correo al instante es lo que tiene plata adentro
+    // (pagos por revisar, pagos sin asignar), que son pocos.
     await notificarControl(
       sock,
-      `🔔 Para Clarck — ${decision.handoff_motivo || 'caso especial'}\nContacto: ${actualizado.nombre || 'sin nombre'} · wa.me/${numero}\nÚltimo mensaje: "${body}"\n(El bot dejó de responderle. Para reactivarlo: kipi reactivar ${numero})`,
-      // Crítico: el bot ya se calló con ese contacto. Si el aviso se pierde,
-      // el jugador queda esperando a alguien que no sabe que tiene que ir.
-      `Caso para Clarck — ${decision.handoff_motivo || 'caso especial'}`
+      `🔔 Para Clarck — ${decision.handoff_motivo || 'caso especial'}\nContacto: ${actualizado.nombre || 'sin nombre'} · wa.me/${numero}\nÚltimo mensaje: "${body}"\n(El bot dejó de responderle. Para reactivarlo: kipi reactivar ${numero})`
     );
   }
 
@@ -807,6 +808,7 @@ sheet.programarSync(db);
 
 // Respaldo REAL de la BD (leads + mensajes + pagos) por correo, cada 24 h.
 backup.programarBackup(db);
+backup.programarResumen(db);
 
 app.get('/qr', (_req, res) => {
   if (connectionState === 'ready') {
