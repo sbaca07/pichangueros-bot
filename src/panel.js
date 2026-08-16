@@ -2097,12 +2097,12 @@ function paginaFicha(db, key, numero, query = {}) {
           </form></div>
         </div>
 
-        <!-- "Próxima acción" (fecha + nota) se retiró el 16/08: era un
-             recordatorio que no recordaba nada. No mandaba ni WhatsApp ni
-             correo; solo pintaba una etiqueta y alimentaba un filtro que había
-             que ir a mirar. Para lo accionable de verdad están los avisos y el
-             resumen de derivados; para lo demás, las Notas. -->
-
+${/* "Próxima acción" (fecha + nota) se retiró el 16/08: era un recordatorio que
+      no recordaba nada — no mandaba WhatsApp ni correo, solo pintaba una
+      etiqueta y alimentaba un filtro que había que ir a mirar. Para lo
+      accionable están los avisos y el resumen de derivados; para el resto, las
+      Notas. Va como comentario de JS y no de HTML: un <!-- --> se lo lleva el
+      navegador en cada carga. */ ''}
         ${pagosLead.length ? `<div>
           <div class="shdr">Pagos (Yape)</div>
           <div class="group">
