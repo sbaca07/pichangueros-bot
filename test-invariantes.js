@@ -93,7 +93,25 @@ const pn = db.crearPartido({ zona: 'comas', fecha: enDias(5), hora: '8-9pm', sed
 check('con el nombre tipeado distinto, igual encuentra el costo de la zona',
   db.cajaPartido(pn).costoCancha === 150);
 
-console.log('== 7 · La caja no devuelve NaN cuando falta el precio ==');
+console.log('== 7 · Quien paga deja de ser "Nuevo" ==');
+// Luiggi llevaba 3 pagos y S/30 y seguía en "Nuevo": el embudo solo avanzaba
+// con nombre+edad+distrito y con el link del grupo, así que el que paga sin
+// registrarse —el que deja plata— se caía del modelo.
+db.getOrCreateLead('51900000107');
+check('arranca en nuevo', db.getLead('51900000107').estado === 'nuevo');
+db.registrarPago({ numero: '51900000107', monto: 15, numero_operacion: 'OP-INV-9', estado: 'confirmado' });
+check('con un pago confirmado pasa a Jugador', db.getLead('51900000107').estado === 'activo');
+check('sin haber dado un solo dato', !db.getLead('51900000107').nombre);
+
+db.getOrCreateLead('51900000108');
+db.registrarPago({ numero: '51900000108', monto: 15, numero_operacion: 'OP-INV-10', estado: 'revisar' });
+check('un pago POR REVISAR no lo mueve', db.getLead('51900000108').estado === 'nuevo');
+
+db.updateLead('51900000107', { estado: 'inactivo' });
+db.registrarPago({ numero: '51900000107', monto: 15, numero_operacion: 'OP-INV-11', estado: 'confirmado' });
+check('un inactivo que vuelve a pagar, revive', db.getLead('51900000107').estado === 'activo');
+
+console.log('== 8 · La caja no devuelve NaN cuando falta el precio ==');
 // p.precio ?? Number(cfg[...]) ?? 0 → el ?? no atrapa NaN y la caja salía NaN.
 const p3 = db.crearPartido({ zona: 'comas', fecha: enDias(3), hora: '8-9pm', cupo: 10 });
 db.setConfig('precio_comas', '');

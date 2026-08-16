@@ -17,7 +17,6 @@
  *   POST /admin/lead/estado            → cambia etapa del pipeline (1 toque)
  *   POST /admin/lead/reactivar         → saca del handoff (el bot vuelve a atender)
  *   POST /admin/lead/etiquetas         → guarda etiquetas (separadas por coma)
- *   POST /admin/lead/seguimiento       → fecha + nota de próxima acción
  *   POST /admin/lead/nota              → agrega una nota al historial
  */
 const sheetsync = require('./sheetsync');
@@ -183,15 +182,6 @@ function registrarPanel(app, db, conexion = null) {
     volverAFicha(req, res, limpio ? `Etiquetas guardadas: ${limpio.split(',').join(', ')}.` : 'Etiquetas borradas.', 'etiquetas');
   });
 
-  app.post('/admin/lead/seguimiento', (req, res) => {
-    if (!autorizado(req, res)) return;
-    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.body.fecha || '') ? req.body.fecha : null;
-    const nota = (req.body.nota || '').slice(0, 200);
-    db.setSeguimiento(numeroDe(req), fecha, nota);
-    volverAFicha(req, res, fecha
-      ? `Te lo recordamos el ${fechaCompacta(fecha)}${nota ? `: "${nota}"` : ''}.`
-      : 'Recordatorio quitado (no pusiste fecha).', 'seguimiento');
-  });
 
   app.post('/admin/lead/nota', (req, res) => {
     if (!autorizado(req, res)) return;
@@ -216,13 +206,13 @@ function registrarPanel(app, db, conexion = null) {
   app.get('/admin/leads.csv', (req, res) => {
     if (!autorizado(req, res)) return;
     const filas = db.listLeads().map((l) =>
-      [l.numero, l.nombre, l.edad, l.distrito, l.zona, l.estado, l.handoff, l.handoff_motivo, l.etiquetas, l.proxima_accion, l.creado_en]
+      [l.numero, l.nombre, l.edad, l.distrito, l.zona, l.estado, l.handoff, l.handoff_motivo, l.etiquetas, l.creado_en]
         .map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`)
         .join(',')
     );
     res.set('Content-Type', 'text/csv; charset=utf-8');
     res.set('Content-Disposition', 'attachment; filename="pichangueros-leads.csv"');
-    res.send(['numero,nombre,edad,distrito,zona,estado,handoff,handoff_motivo,etiquetas,proxima_accion,creado_en', ...filas].join('\n'));
+    res.send(['numero,nombre,edad,distrito,zona,estado,handoff,handoff_motivo,etiquetas,creado_en', ...filas].join('\n'));
   });
 
   // Export Excel — bonito y de marca (vs. el CSV plano), mismos datos.
@@ -1264,12 +1254,10 @@ const sidebar = (key, activo) => `<aside class="sidebar">
 
 function badges(l, sinResponder) {
   const z = ZONAS[l.zona];
-  const vencido = l.proxima_accion && l.proxima_accion <= hoyLima();
   const tags = (l.etiquetas || '').split(',').filter(Boolean);
   return `
     ${l.handoff ? `<span class="badge b-hand">🔔 ${esc(l.handoff_motivo || 'derivado')}</span>` : ''}
     ${sinResponder ? '<span class="badge b-wait">📥 sin responder</span>' : ''}
-    ${vencido ? `<span class="badge b-wait">⏰ ${esc(l.proxima_nota || 'seguimiento')}</span>` : ''}
     ${z ? `<span class="badge b-zona" style="background:${z.color}">${z.nombre}</span>` : ''}
     <span class="badge b-new">${esc(ESTADOS[l.estado] || l.estado)}</span>
     ${tags.map((t) => `<span class="badge b-new">${esc(t)}</span>`).join('')}`;
@@ -1332,7 +1320,6 @@ function paginaResumen(db, key, query = {}) {
 
   const colaResp = todos.filter(sinResp).length;
   const enHandoff = todos.filter((l) => l.handoff).length;
-  const paraHoy = todos.filter((l) => l.proxima_accion && l.proxima_accion <= hoy).length;
   const pagosRevisar = db.pagosPorRevisar();
 
   // Por zona (las clasificadas + las que faltan).
@@ -1583,8 +1570,6 @@ function paginaResumen(db, key, query = {}) {
       </div>
       <div class="foot" style="padding:8px 2px 0">"Escribieron" cuenta a <b>todos</b> los que chatean al número (también conocidos y jugadores antiguos), no solo interesados nuevos.</div>
 
-      ${paraHoy ? `<a class="banner px" href="/admin/leads?key=${key}&vista=crm&filtro=hoy" style="margin-top:12px;text-decoration:none"><div class="bic">⏰</div><div class="btxt"><b>${paraHoy} seguimiento${paraHoy === 1 ? '' : 's'} para hoy.</b> Toca para verlos.</div></a>` : ''}
-
 
       </div>
       </div>
@@ -1790,7 +1775,6 @@ function paginaCRM(db, key, query) {
   if (zona) leads = leads.filter((l) => l.zona === zona);
   if (filtro === 'handoff') leads = leads.filter((l) => l.handoff);
   if (filtro === 'responder') leads = leads.filter(sinResp);
-  if (filtro === 'hoy') leads = leads.filter((l) => l.proxima_accion && l.proxima_accion <= hoy);
   // Recurrente = más de 5 partidos jugados (definición de Clarck). Nuevo = llegó
   // esta semana, la misma ventana que usa "Esta semana" en el Resumen.
   if (filtro === 'recurrentes') leads = leads.filter((l) => (jugadosPor[l.numero] || 0) >= db.RECURRENTE_DESDE);
@@ -1875,7 +1859,6 @@ function paginaCRM(db, key, query) {
     ['recurrentes', '⭐ Solo recurrentes', nPor((l) => (jugadosPor[l.numero] || 0) >= db.RECURRENTE_DESDE)],
     ['responder', '📥 Sin responder', nPor(sinResp)],
     ['handoff', '🔔 Derivados a Clarck', nPor((l) => l.handoff)],
-    ['hoy', '⏰ Con seguimiento para hoy', nPor((l) => l.proxima_accion && l.proxima_accion <= hoy)],
   ];
 
   // 2 · ZONA — dinámica. Las zonas se crean desde Ajustes: escribirlas a mano
@@ -1932,17 +1915,6 @@ function paginaCRM(db, key, query) {
   // Seguimientos vencidos o de hoy, arriba de todo (propuesta v2). Estaban solo
   // detrás de un chip: si nadie lo tocaba, la promesa de "llamar a este el
   // jueves" se perdía. Es lo único de la pantalla con fecha de vencimiento.
-  const paraHoyCrm = todos.filter((l) => l.proxima_accion && l.proxima_accion <= hoy);
-  const seguimientos = (!dia && !filtro && paraHoyCrm.length)
-    ? `<div class="shdr">📌 Seguimientos para hoy <small>· lo que prometiste hacer</small></div>
-       <div class="llist">${paraHoyCrm.map((l) => `
-         <a class="lrow" href="/admin/leads?key=${key}&numero=${esc(l.numero)}">
-           <span class="ava" style="background:${avatarColor(l.numero)}">${esc(iniciales(l.nombre, l.numero))}</span>
-           <span class="lbody"><span class="lname">${esc(l.nombre || 'Sin nombre')}</span>
-             <span class="lsub">${esc(l.proxima_nota || 'sin nota')}</span></span>
-           <span class="lmeta"><span class="badge ${l.proxima_accion < hoy ? 'b-hand' : 'b-wait'}">${l.proxima_accion < hoy ? 'vencido' : 'hoy'}</span></span>
-           ${SVG.chev}</a>`).join('')}</div>`
-    : '';
 
   // Con filtro de día, la agrupación útil es nuevos vs recurrentes de ese día.
   const lista = dia
@@ -1950,7 +1922,7 @@ function paginaCRM(db, key, query) {
       ? grupo('🟢 Nuevos ese día', leads.filter(esNuevoEse)) + grupo('🔵 Recurrentes · ya estaban registrados', leads.filter((l) => !esNuevoEse(l)))
       : '<p class="vacio">Nadie escribió ese día ⚽</p>')
     : ((urgentes.length || resto.length)
-      ? seguimientos + grupo('Necesitan tu atención ahora', urgentes) + grupo('Todos los contactos', resto)
+      ? grupo('Necesitan tu atención ahora', urgentes) + grupo('Todos los contactos', resto)
       : `<p class="vacio">${Object.keys(query).some((k) => ['filtro', 'zona', 'estado', 'distrito', 'q'].includes(k))
           ? 'Ningún pichanguero calza con este filtro ⚽<br><a style="color:var(--lime-ink);font-weight:600" href="/admin/leads?key=' + key + '&vista=crm">Ver todos</a>'
           : 'Todavía no hay pichangueros registrados ⚽<br>Cuando alguien escriba al número, aparece acá.'}</p>`);
@@ -2125,15 +2097,11 @@ function paginaFicha(db, key, numero, query = {}) {
           </form></div>
         </div>
 
-        <div class="ancla" id="seguimiento">
-          <div class="shdr">Próxima acción</div>
-          <div class="group"><form class="inline" method="post" action="/admin/lead/seguimiento">
-            <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
-            <input type="date" name="fecha" value="${esc(lead.proxima_accion || '')}">
-            <input name="nota" value="${esc(lead.proxima_nota || '')}" placeholder="ej. avisarle del cupo del viernes">
-            <button>Guardar</button>
-          </form></div>
-        </div>
+        <!-- "Próxima acción" (fecha + nota) se retiró el 16/08: era un
+             recordatorio que no recordaba nada. No mandaba ni WhatsApp ni
+             correo; solo pintaba una etiqueta y alimentaba un filtro que había
+             que ir a mirar. Para lo accionable de verdad están los avisos y el
+             resumen de derivados; para lo demás, las Notas. -->
 
         ${pagosLead.length ? `<div>
           <div class="shdr">Pagos (Yape)</div>

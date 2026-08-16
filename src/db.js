@@ -161,7 +161,10 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'tz_migrado_v2_2026_07'"
 // Migración suave del CRM (2026-06-10): agrega columnas si la BD es anterior.
 const colsLeads = db.prepare('PRAGMA table_info(leads)').all().map((c) => c.name);
 if (!colsLeads.includes('etiquetas')) db.exec('ALTER TABLE leads ADD COLUMN etiquetas TEXT');
-if (!colsLeads.includes('proxima_accion')) db.exec('ALTER TABLE leads ADD COLUMN proxima_accion TEXT'); // fecha YYYY-MM-DD
+// proxima_accion / proxima_nota: en desuso desde el 16/08 (ver panel.js). Las
+// columnas se quedan —borrarlas en SQLite obliga a rehacer la tabla— pero ya
+// no las escribe ni las lee nadie.
+if (!colsLeads.includes('proxima_accion')) db.exec('ALTER TABLE leads ADD COLUMN proxima_accion TEXT');
 if (!colsLeads.includes('proxima_nota')) db.exec('ALTER TABLE leads ADD COLUMN proxima_nota TEXT');
 
 // Costo de la cancha (2026-08-12): sin esto el panel muestra lo que ENTRA pero
@@ -184,6 +187,19 @@ db.exec(`
   UPDATE leads SET nombre = NULL WHERE lower(trim(nombre)) IN ('null', 'undefined', 'none', '');
   UPDATE leads SET distrito = NULL WHERE lower(trim(distrito)) IN ('null', 'undefined', 'none', '');
 `);
+
+// Migración (2026-08-16, una vez): el que ya pagó pasa a "Jugador ⭐". El
+// embudo solo avanzaba con datos y con el link del grupo, así que los clientes
+// de verdad —los que yapean sin registrarse— quedaban en "Nuevo" para siempre.
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'etapa_por_pago_2026_08'").get()) {
+  const r = db.prepare(`
+    UPDATE leads SET estado = 'activo'
+    WHERE estado != 'activo'
+      AND numero IN (SELECT numero FROM pagos WHERE estado = 'confirmado')
+  `).run();
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('etapa_por_pago_2026_08', '1')").run();
+  if (r.changes) console.log(`[etapas] ${r.changes} contactos con pago confirmado pasaron a "Jugador".`);
+}
 
 const stmtGetLead = db.prepare('SELECT * FROM leads WHERE numero = ?');
 // OJO: los DEFAULT de las columnas creado_en/actualizado_en quedaron fijados en
@@ -273,6 +289,14 @@ function registrarPago({ numero, monto, titular, numero_operacion, estado, motiv
   const r = db.prepare(
     "INSERT INTO pagos (numero, monto, titular, numero_operacion, estado, motivo, medio, cupos, creado_en) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
   ).run(numero, monto ?? null, titular || null, numero_operacion || null, estado || 'confirmado', motivo || null, medio || 'yape', cupos || 1);
+  // Quien paga es CLIENTE, aunque nunca haya dado sus datos. Antes ninguna
+  // etapa se movía con la plata: Luiggi llevaba 3 pagos y S/30 y seguía en
+  // "Nuevo", porque el embudo solo avanzaba con nombre+edad+distrito y con el
+  // link del grupo. El que paga sin registrarse —el que deja plata— se caía
+  // del modelo. 'inactivo' también se revive: si vuelve a pagar, volvió.
+  if ((estado || 'confirmado') === 'confirmado') {
+    db.prepare("UPDATE leads SET estado = 'activo', actualizado_en = datetime('now', '-5 hours') WHERE numero = ? AND estado != 'activo'").run(numero);
+  }
   return Number(r.lastInsertRowid);
 }
 
@@ -326,10 +350,6 @@ function setEtiquetas(numero, etiquetas) {
   db.prepare("UPDATE leads SET etiquetas = ?, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?").run(etiquetas || null, numero);
 }
 
-function setSeguimiento(numero, fecha, nota) {
-  db.prepare("UPDATE leads SET proxima_accion = ?, proxima_nota = ?, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?")
-    .run(fecha || null, nota || null, numero);
-}
 
 function addNota(numero, texto) {
   db.prepare("INSERT INTO notas (numero, texto, creado_en) VALUES (?, ?, datetime('now', '-5 hours'))").run(numero, texto);
@@ -1218,7 +1238,7 @@ function asistenciasDe(numero) {
 
 module.exports = {
   getLead, getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
-  setEstado, setEtiquetas, setSeguimiento, addNota, getNotas, ultimosRoles, deleteLead, actividadPorDia,
+  setEstado, setEtiquetas, addNota, getNotas, ultimosRoles, deleteLead, actividadPorDia,
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,

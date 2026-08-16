@@ -106,8 +106,12 @@ const comoTexto = (h) => `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`;
   await sleep(3000);
   const lead = db.getLead(A);
   check('el lead quedó con su zona', lead?.zona === 'brena');
-  check('y con una tarea pendiente para hoy', lead?.proxima_accion === hoy);
-  check('que dice sumarlo al grupo', /Sumarlo al grupo/i.test(lead?.proxima_nota || ''));
+  // El pendiente por contacto ("sumarlo al grupo") se retiró con "próxima
+  // acción": la causa es que la ZONA no tiene link, y eso ya lo dice el bloque
+  // "Para que el bot trabaje solo" del Resumen. Una fila por zona se resuelve;
+  // doscientas por contacto, no.
+  check('el bot NO le prometió un link que nadie manda',
+    !/link|grupo de/i.test(enviados.find((e) => e.a === A)?.texto || ''));
 
   console.log('== 3 · La hora entra por reloj (24 h) y sale legible para el jugador ==');
   check('20:00 se guarda como "8-9pm"', db.normalizarHora('20:00') === '8-9pm');

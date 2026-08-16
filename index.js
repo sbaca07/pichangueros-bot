@@ -552,13 +552,13 @@ async function manejarMensaje(sock, msg) {
       ? db.getNegocio().zonas[actualizado.zona]?.groupLink : null;
     if (linkZona && decision.reply.includes(linkZona) && actualizado.estado !== 'invitado_grupo') {
       db.setEstado(numero, 'invitado_grupo');
-    } else if (!linkZona && actualizado.zona && actualizado.zona !== 'otra'
-               && actualizado.estado !== 'invitado_grupo' && !actualizado.proxima_accion) {
-      // Sin link cargado para su zona, sumarlo al grupo es trabajo a mano de
-      // Clarck. Antes eso no quedaba en ningún lado y el jugador se perdía;
-      // ahora cae en la cola de pendientes del panel, con fecha de hoy.
-      db.setSeguimiento(numero, db.hoyLima(), `Sumarlo al grupo de ${db.nombreDeZona(actualizado.zona) || actualizado.zona} (no hay link cargado)`);
-      console.log(`[grupo] ${numero} espera el link de ${actualizado.zona} — anotado como pendiente para Clarck.`);
+    } else if (!linkZona && actualizado.zona && actualizado.zona !== 'otra') {
+      // Sin link cargado para su zona, sumarlo al grupo es trabajo a mano. El
+      // pendiente por contacto se retiró junto con "próxima acción": el bloque
+      // "Para que el bot trabaje solo" del Resumen ya avisa que la zona no
+      // tiene link, que es la causa — y una fila por zona se resuelve, doscientas
+      // por contacto no.
+      console.log(`[grupo] ${numero} espera el link de ${actualizado.zona} (la zona no lo tiene cargado).`);
     }
   } else if (modoSilencio) {
     console.log(`[SAFE_MODE] ${numero}: datos extraídos sin responder.`);

@@ -34,7 +34,6 @@ db.updateLead(L.pagador, { nombre: 'Pablo Pagador', zona: 'comas', estado: 'invi
 db.updateLead(L.espera, { nombre: 'Elsa Espera', zona: 'otra', estado: 'lista_espera' });
 db.setHandoff(L.handoff, 'Queja de prueba');
 db.setEtiquetas(L.completo, 'casero,VIP');
-db.setSeguimiento(L.completo, enDias(0), 'llamarla');
 db.addNota(L.completo, 'nota de prueba');
 const partido = db.crearPartido({ zona: 'brena', fecha: enDias(1), hora: '8-9pm', sede: 'Melgar UX', cupo: 2 });
 db.inscribir(partido, L.completo);
@@ -95,7 +94,7 @@ const srv = app.listen(0, async () => {
   check('los chips COMBINAN sin romperse', crmCombo.length > 500);
   const ficha = (await GET(`/admin/leads?key=ux&numero=${L.completo}`)).html;
   check('ficha: botón WhatsApp con wa.me', ficha.includes(`wa.me/${L.completo}`));
-  check('ficha: muestra chat, etiquetas, nota y seguimiento', ficha.includes('hola') && ficha.includes('casero') && ficha.includes('nota de prueba') && ficha.includes('llamarla'));
+  check('ficha: muestra chat, etiquetas y notas', ficha.includes('hola') && ficha.includes('casero') && ficha.includes('nota de prueba'));
   const detalle = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${partido}`)).html;
   check('detalle del partido: inscritos con link a su ficha', detalle.includes(`numero=${L.completo}`));
   check('detalle: la espera y la lista copiable presentes', detalle.includes('Elsa Espera') && detalle.includes('Copiar lista'));
@@ -133,7 +132,6 @@ const srv = app.listen(0, async () => {
   const posts = [
     ['/admin/lead/estado', { key: 'ux', numero: L.completo, estado: 'activo' }],
     ['/admin/lead/etiquetas', { key: 'ux', numero: L.completo, etiquetas: 'vip' }],
-    ['/admin/lead/seguimiento', { key: 'ux', numero: L.completo, fecha: enDias(2), nota: 'x' }],
     ['/admin/lead/nota', { key: 'ux', numero: L.completo, texto: 'otra nota' }],
     ['/admin/lead/reactivar', { key: 'ux', numero: L.handoff }],
     ['/admin/partido', { key: 'ux', zona: 'comas', fecha: enDias(3), hora: '9pm', cupo: 10 }],
@@ -264,10 +262,6 @@ const srv = app.listen(0, async () => {
     const crmNueva = (await GET('/admin/leads?key=ux&vista=crm&zona=sanborja')).html;
     check('filtrar por un distrito nuevo devuelve solo a los suyos', /Zona Nueva/.test(crmNueva) && !/Pablo Pagador/.test(crmNueva));
 
-    db.setSeguimiento(L.pagador, enDias(-1), 'llamarlo, quedó en confirmar');
-    const crm = (await GET('/admin/leads?key=ux&vista=crm')).html;
-    check('los seguimientos del día salen arriba, no detrás de un chip', /Seguimientos para hoy/.test(crm));
-    check('…y un seguimiento pasado se marca vencido', /vencido/.test(crm));
 
     // FICHA: mostraba quién es, no qué ha hecho.
     const pgF = db.registrarPago({ numero: L.completo, monto: 45, numero_operacion: 'FICHA-1', estado: 'confirmado' });
