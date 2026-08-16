@@ -101,7 +101,9 @@ const comoTexto = (h) => `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`;
   const zonas = db.getNegocio().zonas;
   check('la zona de prueba no tiene link cargado', !zonas.brena?.groupLink);
   await escribe(A, 'hola, soy de Breña');
-  await sleep(1800);
+  // 3 s, no 1.8: el primer arranque siembra la config y corre migraciones, y
+  // con 1.8 el check llegaba antes que el flujo (flaky solo en frío).
+  await sleep(3000);
   const lead = db.getLead(A);
   check('el lead quedó con su zona', lead?.zona === 'brena');
   check('y con una tarea pendiente para hoy', lead?.proxima_accion === hoy);
@@ -141,6 +143,9 @@ const comoTexto = (h) => `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`;
   // candidato de Comas era el de ese mismo día 9-10am, terminado hacía una
   // hora — y ahí quedaron él y su invitado.
   if (horaAhora >= 3 && horaAhora <= 20) {
+    // Una BD nueva solo trae brena y comas; chorrillos necesita su sede para
+    // ser zona operativa (desde el 16/08 crearPartido valida la zona).
+    db.addSede({ zona: 'chorrillos', nombre: 'La 13 Test', cupo: 14 });
     const termino = db.crearPartido({ zona: 'chorrillos', fecha: hoy, hora: comoTexto(horaAhora - 2), sede: 'La 13', cupo: 14, precio: 15 });
     const enCurso = db.crearPartido({ zona: 'chorrillos', fecha: hoy, hora: comoTexto(horaAhora), sede: 'La 13', cupo: 14, precio: 15 });
     const idsDe = (opts) => db.partidosAbiertos('chorrillos', opts).map((p) => p.id);

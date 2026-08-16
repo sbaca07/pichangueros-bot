@@ -404,7 +404,10 @@ function registrarPanel(app, db, conexion = null) {
       cupo: Math.max(2, Math.min(60, Number(req.body.cupo) || 14)),
       precio: req.body.precio ? Number(req.body.precio) : null,
     });
-    const p = db.getPartido(id);
+    const p = id ? db.getPartido(id) : null;
+    // crearPartido rechaza zonas que no son operativas. Acá no debería pasar
+    // (la zona ya se sanea arriba), pero si pasa vale más decirlo que romper.
+    if (!p) return volverAPartidos(req, res, null, 'No se pudo abrir el partido: revisa el distrito.', null, true);
     volverAPartidos(req, res, id,
       `Partido abierto: ${db.fechaBonita(p.fecha)}${p.hora ? ` · ${p.hora}` : ''}. El bot ya lo ofrece a quien pida jugar.`);
   });
@@ -469,11 +472,15 @@ function registrarPanel(app, db, conexion = null) {
     if (p.estado !== 'abierto') {
       return fin(`El partido está ${(ESTADOS_PARTIDO[p.estado] || p.estado).toLowerCase()}: tócale "🔓 Reabrir" y vuelve a anotarlo.`, true);
     }
-    const { resultado } = db.inscribir(partidoId, numero, { nombre });
+    const { resultado, motivo } = db.inscribir(partidoId, numero, { nombre });
     const quien = nombre || `+${numero}`;
     if (resultado === 'espera') return fin(`${quien} entró a la LISTA DE ESPERA: el partido ya está lleno.`);
     if (resultado === 'ya_inscrito') return fin(`${quien} ya estaba en la lista.`, true);
-    if (!resultado) return fin('No se pudo anotar a nadie.', true);
+    if (!resultado) {
+      return fin(motivo === 'no_existe'
+        ? 'Ese partido ya no existe.'
+        : `No se pudo anotar a ${quien}: el partido está ${(ESTADOS_PARTIDO[motivo] || motivo || '?').toLowerCase()}.`, true);
+    }
     fin(`${quien} anotado. Falta que pague.`);
   });
 
@@ -505,7 +512,15 @@ function registrarPanel(app, db, conexion = null) {
       // Tras la baja la fila desaparece de la lista: el ancla va al bloque.
       return volverAPartidos(req, res, partidoId, `${quien} dado de baja.${subio}`, 'inscritos');
     }
-    if (!db.setEstadoInscripcion(id, req.body.estado)) {
+    const cambio = db.setEstadoInscripcion(id, req.body.estado);
+    if (cambio.motivo === 'lleno') {
+      // Antes esto sobrevendía la cancha en silencio: el UPDATE pasaba igual y
+      // quedaban 15 jugadores en un cupo de 14.
+      return volverAPartidos(req, res, partidoId,
+        `La cancha está llena: ${quien} se queda en la lista de espera. Da de baja a alguien primero, o sube el cupo.`,
+        `insc-${id}`, true);
+    }
+    if (!cambio.inscripcion) {
       return volverAPartidos(req, res, partidoId, 'Ese cambio no existe.', 'inscritos', true);
     }
     const avisos = { pagado: `${quien}: pago marcado ✔`, reservado: `${quien} subió de la espera a la cancha.`, espera: `${quien} pasó a la lista de espera.` };

@@ -251,6 +251,11 @@ function clearHandoff(numero) {
 
 /** Borra un contacto completo (leads, mensajes, notas, pagos) — ej. pruebas internas o spam. */
 function deleteLead(numero) {
+  // Las inscripciones se dan de BAJA antes de borrar al contacto. Si no, su
+  // cupo quedaba ocupado por un jugador fantasma —sin nombre y sin ficha— con
+  // el pago_id apuntando a un pago recién borrado.
+  db.prepare("UPDATE inscripciones SET estado = 'baja' WHERE numero = ? AND estado != 'baja'").run(numero);
+  db.prepare('UPDATE inscripciones SET pago_id = NULL WHERE pago_id IN (SELECT id FROM pagos WHERE numero = ?)').run(numero);
   db.prepare('DELETE FROM mensajes WHERE numero = ?').run(numero);
   db.prepare('DELETE FROM notas WHERE numero = ?').run(numero);
   db.prepare('DELETE FROM pagos WHERE numero = ?').run(numero);
@@ -644,7 +649,14 @@ function fechaBonita(ymd, { relativa = true } = {}) {
 // Cupos que ocupan lugar en cancha (la espera y las bajas no cuentan).
 const OCUPAN = "('reservado','pagado')";
 
+/**
+ * Crea un partido. La zona tiene que ser una operativa: `actualizarPartido` ya
+ * lo validaba y acá no, así que un partido con zona inválida nacía invisible
+ * para el bot (no entra en ninguna zona del prompt) y sin precio de referencia.
+ * @returns {number|null} el id, o null si la zona no existe.
+ */
 function crearPartido({ zona, fecha, hora, sede, cupo, precio }) {
+  if (!zonasOperativas().includes(zona)) return null;
   const r = db.prepare(
     "INSERT INTO partidos (zona, fecha, hora, sede, cupo, precio, creado_en) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
   ).run(zona, fecha, normalizarHora(hora) || null, sede || null, cupo || 14, precio ?? null);
@@ -726,7 +738,11 @@ function setEstadoPartido(id, estado) {
 function cajaPartido(id) {
   const p = getPartido(id);
   if (!p) return null;
-  const precio = p.precio ?? Number(getConfigMap()[`precio_${p.zona}`]) ?? 0;
+  // Ojo con el ??: Number(undefined) es NaN, y NaN ?? 0 sigue siendo NaN — el
+  // respaldo nunca corría y la caja entera salía NaN si a la zona le faltaba
+  // el precio. Con 4 canchas sin costo cargado, no es hipotético.
+  const precioZona = Number(getConfigMap()[`precio_${p.zona}`]);
+  const precio = p.precio ?? (Number.isFinite(precioZona) ? precioZona : 0);
 
   const cobrado = db.prepare(`
     SELECT COALESCE(SUM(monto), 0) AS s FROM pagos WHERE estado = 'confirmado' AND id IN (
@@ -848,7 +864,10 @@ function inscripcionActiva(partidoId, numero) {
  */
 function inscribir(partidoId, numero, { nombre = null, estado = null, pagoId = null } = {}) {
   const p = getPartido(partidoId);
-  if (!p || p.estado !== 'abierto') return { inscripcion: null, resultado: null };
+  // El motivo importa: sin él el panel solo podía decir "no se pudo anotar a
+  // nadie", que para Clarck es indistinguible de "está roto".
+  if (!p) return { inscripcion: null, resultado: null, motivo: 'no_existe' };
+  if (p.estado !== 'abierto') return { inscripcion: null, resultado: null, motivo: p.estado };
   if (numero) {
     const previa = inscripcionActiva(partidoId, numero);
     if (previa) return { inscripcion: previa, resultado: 'ya_inscrito' };
@@ -862,10 +881,34 @@ function inscribir(partidoId, numero, { nombre = null, estado = null, pagoId = n
   return { inscripcion: insc, resultado: insc.estado };
 }
 
+/** Cuántos cupos ocupa hoy un partido (reservados + pagados). */
+function ocupadosDe(partidoId) {
+  return db.prepare(`SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ? AND estado IN ${OCUPAN}`).get(partidoId).n;
+}
+
+/**
+ * Cambia el estado de una inscripción.
+ *
+ * Pasar a 'reservado' o 'pagado' OCUPA un lugar en la cancha, así que se
+ * verifica el cupo: era un UPDATE pelado y subir a alguien de la lista de
+ * espera con la cancha llena metía 15 jugadores en 14. `inscribir` y
+ * `vincularPago` ya cuidaban esto; este camino —el botón del panel— no.
+ *
+ * @returns {{inscripcion: object|null, motivo: string|null}} motivo='lleno' si
+ *   no entraba: el panel necesita poder explicar por qué no pasó nada.
+ */
 function setEstadoInscripcion(id, estado) {
-  if (!['reservado', 'pagado', 'espera', 'baja'].includes(estado)) return null;
+  if (!['reservado', 'pagado', 'espera', 'baja'].includes(estado)) return { inscripcion: null, motivo: 'estado_invalido' };
+  const actual = db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(id);
+  if (!actual) return { inscripcion: null, motivo: 'no_existe' };
+  const ocupaAhora = ['reservado', 'pagado'].includes(actual.estado);
+  const vaAOcupar = ['reservado', 'pagado'].includes(estado);
+  if (vaAOcupar && !ocupaAhora) {
+    const p = getPartido(actual.partido_id);
+    if (p && ocupadosDe(actual.partido_id) >= p.cupo) return { inscripcion: actual, motivo: 'lleno' };
+  }
   db.prepare('UPDATE inscripciones SET estado = ? WHERE id = ?').run(estado, id);
-  return db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(id);
+  return { inscripcion: db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(id), motivo: null };
 }
 
 /**
@@ -1029,16 +1072,24 @@ const despuesDelCorte = (ts) => { const c = getCorte(); return !c || (ts || '').
  *  Solo los del período operativo: posteriores al punto de arranque y de las
  *  últimas 48 h — un pago de la semana pasada pertenece a un partido que ya
  *  se jugó, no es una tarea de hoy. */
-function pagosSinPartido(horas = 48) {
+/**
+ * Pagos confirmados que todavía no cubren ningún cupo — la cola de trabajo.
+ *
+ * Antes se filtraba además por una ventana de 48 h: pasados dos días, un Yape
+ * cobrado y sin cupo DESAPARECÍA de la cola para siempre. Plata adentro, sin
+ * lugar en ninguna lista y sin tarea que lo recordara. La tarea ahora vive
+ * hasta que se asigne; para darla por saldada está el punto de arranque
+ * (corte_operativo), que es el "empezar en limpio" explícito de Clarck.
+ */
+function pagosSinPartido(limite = 30) {
   const corte = getCorte() || '0000-00-00';
   return db.prepare(`
     SELECT p.*, l.nombre, l.zona FROM pagos p LEFT JOIN leads l ON l.numero = p.numero
     WHERE p.estado = 'confirmado'
       AND p.id NOT IN (SELECT pago_id FROM inscripciones WHERE pago_id IS NOT NULL)
-      AND p.creado_en >= datetime('now', '-5 hours', ?)
       AND substr(p.creado_en, 1, 10) >= ?
-    ORDER BY p.id DESC LIMIT 15
-  `).all(`-${horas} hours`, corte);
+    ORDER BY p.id DESC LIMIT ?
+  `).all(corte, limite);
 }
 
 /** Último pago confirmado RECIENTE de un contacto que quedó sin partido. */
@@ -1052,8 +1103,22 @@ function pagoSueltoDe(numero, horas = 48) {
 }
 
 /** Marca una inscripción como pagada con su pago (cierra un pago suelto). */
+/**
+ * Marca pagada una inscripción. Si estaba en ESPERA y la cancha está llena, el
+ * pago queda registrado pero NO la sube a la cancha: pagar no puede sobrevender
+ * (mismo criterio que vincularPago). Devuelve si logró ocupar lugar.
+ */
 function pagarInscripcion(inscripcionId, pagoId) {
+  const insc = db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(inscripcionId);
+  if (!insc) return { ok: false, motivo: 'no_existe' };
+  const p = getPartido(insc.partido_id);
+  const ocupaAhora = ['reservado', 'pagado'].includes(insc.estado);
+  if (!ocupaAhora && p && ocupadosDe(insc.partido_id) >= p.cupo) {
+    db.prepare('UPDATE inscripciones SET pago_id = ? WHERE id = ?').run(pagoId, inscripcionId);
+    return { ok: true, motivo: 'lleno_queda_en_espera' };
+  }
   db.prepare("UPDATE inscripciones SET estado = 'pagado', pago_id = ? WHERE id = ?").run(pagoId, inscripcionId);
+  return { ok: true, motivo: null };
 }
 
 /** Texto de la lista para pegar en el grupo de WhatsApp. */

@@ -118,6 +118,9 @@ check('sin reserva se sigue validando contra la zona del contacto', (() => {
 
 console.log('== Pago suelto se pega a la inscripción posterior ==');
 // Zona propia con DOS partidos próximos al mismo precio: ambigüedad real.
+// Necesita una sede: desde el 16/08 crearPartido rechaza zonas que no son
+// operativas (antes nacían partidos invisibles para el bot y sin precio).
+db.addSede({ zona: 'surco', nombre: 'Cancha Surco Test', cupo: 10 });
 const p4 = db.crearPartido({ zona: 'surco', fecha: enUnosDias(1), cupo: 10, precio: 15 });
 const p5 = db.crearPartido({ zona: 'surco', fecha: enUnosDias(2), cupo: 10, precio: 15 });
 db.getOrCreateLead('51900000030');
