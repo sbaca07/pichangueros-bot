@@ -392,6 +392,11 @@ async function manejarMensaje(sock, msg) {
       const resultado = await pagos.procesarVoucher(numero, lead.zona, buffer);
       if (resultado) {
         if (resultado.handoff) db.setHandoff(numero, resultado.motivoHandoff || 'Revisar comprobante de pago');
+        // Un pago confirmado que no se pudo asignar solo se avisa SIEMPRE, aun
+        // en modo silencio: el aviso es para Clarck, no para el jugador, y la
+        // plata ya entró. Justo el caso de Anthony el 15/08 — con SAFE_MODE
+        // encendido nadie se enteró de que el pago se fue al partido de otro día.
+        if (resultado.alerta) await notificarControl(sock, `${resultado.alerta}\nwa.me/${numero}`, 'Pago sin partido asignado');
         if (!modoSilencio) {
           try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
           if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);

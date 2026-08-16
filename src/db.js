@@ -901,7 +901,39 @@ function setAsistencia(id, valor) {
  * Los cupos extra (amigos) se agregan al mismo partido.
  * @returns {null | {partido: object, inscripciones: object[]}}
  */
-function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null) {
+/**
+ * Partidos a los que PODRÍA corresponder un pago suelto: los de su zona que
+ * todavía no terminaron, dentro de los próximos 3 días, y cuyo precio calza
+ * con lo pagado (1 a 10 cupos).
+ *
+ * Se expone aparte para que pagos.js pueda ver la ambigüedad ANTES de decidir:
+ * con un solo candidato alcanza la aritmética, con cero o con varios hay que
+ * leer la conversación.
+ */
+function candidatosDePago(zona, monto = null) {
+  const limite = new Date(Date.now() - 5 * 3600e3 + 3 * 86400e3).toISOString().slice(0, 10);
+  let candidatos = (zona ? partidosAbiertos(zona, { vigentes: true, incluirEnCurso: true }) : [])
+    .filter((p) => p.fecha <= limite);
+  if (monto != null && candidatos.length > 1) {
+    const neg = getNegocio();
+    const calzan = candidatos.filter((p) => {
+      const precio = p.precio ?? neg.zonas[p.zona]?.precio;
+      if (!precio) return false;
+      const n = Math.round(monto / precio);
+      return n >= 1 && n <= 10 && Math.abs(monto - n * precio) <= 0.5;
+    });
+    if (calzan.length) candidatos = calzan;
+  }
+  return candidatos;
+}
+
+/**
+ * @param {object} [opciones]
+ * @param {number} [opciones.partidoId] Partido decidido afuera (p. ej. leyendo
+ *   la conversación). Manda sobre la aritmética, pero NUNCA sobre una reserva
+ *   previa del jugador: si ya tenía cupo reservado, el pago va ahí.
+ */
+function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null, { partidoId = null } = {}) {
   let partido = null;
   // La misma preferencia que la validación: con varias reservas activas, el
   // pago se aplica a la reserva cuyo precio calza con el monto.
@@ -923,29 +955,21 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null) {
     db.prepare('UPDATE inscripciones SET estado = ?, pago_id = ? WHERE id = ?').run(nuevoEstado, pagoId, activaEnAbierto.id);
     hechas.push(db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(activaEnAbierto.id));
   } else {
-    // Sin reserva previa (el flujo de siempre: yapean directo). La gente paga
-    // para un partido PRÓXIMO, así que se busca entre los de su zona en los
-    // siguientes 3 días y con precio que calce con lo pagado. Si queda
-    // exactamente uno, se asigna; si hay varios o ninguno, NO se adivina — el
-    // bot pregunta y, si está callado, Clarck lo asigna desde el panel.
-    const limite = new Date(Date.now() - 5 * 3600e3 + 3 * 86400e3).toISOString().slice(0, 10);
-    const neg = getNegocio();
-    // Se acepta el partido EN CURSO (el Yape entra minutos después de arrancar)
-    // pero no el ya terminado: ese pago es para otro día, no para el de la
-    // mañana. Sin esto, un partido viejo se comía el pago del que viene.
-    let candidatos = (zona ? partidosAbiertos(zona, { vigentes: true, incluirEnCurso: true }) : [])
-      .filter((p) => p.fecha <= limite);
-    if (monto != null && candidatos.length > 1) {
-      const calzan = candidatos.filter((p) => {
-        const precio = p.precio ?? neg.zonas[p.zona]?.precio;
-        if (!precio) return false;
-        const n = Math.round(monto / precio);
-        return n >= 1 && n <= 10 && Math.abs(monto - n * precio) <= 0.5;
-      });
-      if (calzan.length) candidatos = calzan;
+    // Sin reserva previa (el flujo de siempre: yapean directo). Si la
+    // aritmética deja UN solo candidato se asigna; si hay varios o ninguno, NO
+    // se adivina acá — quien llama puede haber leído la conversación y pasar
+    // `partidoId`; si tampoco, el pago queda suelto y Clarck lo asigna.
+    // Si afuera ya se decidió a qué partido va (leyendo la conversación), se
+    // respeta — pero solo si sigue abierto: nunca se mete gente a un partido
+    // cerrado o cancelado.
+    const elegido = partidoId ? getPartido(partidoId) : null;
+    if (elegido && elegido.estado === 'abierto') {
+      partido = elegido;
+    } else {
+      const candidatos = candidatosDePago(zona, monto);
+      if (candidatos.length !== 1) return null;
+      partido = candidatos[0];
     }
-    if (candidatos.length !== 1) return null;
-    partido = candidatos[0];
     const { inscripcion } = inscribir(partido.id, numero, { estado: 'pagado', pagoId });
     if (!inscripcion) return null;
     hechas.push(inscripcion);
@@ -1077,7 +1101,7 @@ module.exports = {
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
   crearPartido, getPartido, actualizarPartido, cajaPartido, partidosJugadosPorNumero, RECURRENTE_DESDE, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
-  inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago,
+  inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago, candidatosDePago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
   hoyLima: hoyLimaDb, ordenHora, horaInput, normalizarHora,

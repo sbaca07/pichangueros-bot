@@ -115,6 +115,96 @@ async function leerVoucher(imageBuffer) {
   }
 }
 
+const SCHEMA_INTENCION = {
+  name: 'para_que_es_el_pago',
+  strict: true,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      partido_id: {
+        type: ['integer', 'null'],
+        description: 'ID del partido de la lista al que corresponde el pago. null si ninguno calza o no hay forma de saberlo.',
+      },
+      cupos: { type: ['integer', 'null'], description: 'Cuántos jugadores cubre el pago según la conversación (él solo = 1).' },
+      confianza: { type: 'string', enum: ['alta', 'media', 'baja'], description: 'alta solo si la conversación lo dice sin ambigüedad.' },
+      motivo: { type: 'string', description: 'Una frase corta citando lo que lo dice, para que Clarck lo verifique de un vistazo.' },
+      partido_no_cargado: {
+        type: 'boolean',
+        description: 'true si de la conversación se desprende que paga por un partido (día/hora/sede concretos) que NO está en la lista.',
+      },
+    },
+    required: ['partido_id', 'cupos', 'confianza', 'motivo', 'partido_no_cargado'],
+  },
+};
+
+/**
+ * Para qué es este pago, leyendo la conversación.
+ *
+ * La aritmética (zona + monto + ventana de 3 días) solo acierta cuando queda un
+ * único candidato. El 15/08 Anthony yapeó S/20 por dos cupos del domingo y el
+ * único partido de Comas era el de ESE día 9-10am, ya terminado: se los comió.
+ * A un getHistory() de distancia estaba Clarck escribiéndole "me quedan dos
+ * cupos para este domingo 6pm" y él contestando "para reservar los cupos del
+ * domingo… son dos verdad". Un humano lo resuelve leyendo; el emparejador no
+ * leía.
+ *
+ * Corre SOLO cuando la aritmética no alcanza: con un candidato claro no se
+ * gasta una llamada.
+ *
+ * @returns {Promise<null | {partido_id, cupos, confianza, motivo, partido_no_cargado}>}
+ */
+async function interpretarPago(historial, partidos, monto) {
+  const openai = getClient();
+  if (!openai || !Array.isArray(partidos) || !historial?.length) return null;
+  const lista = partidos.length
+    ? partidos.map((p) => `- ID ${p.id}: ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''} · ${db.nombreDeZona(p.zona)}${p.sede ? ` (${p.sede})` : ''} · S/ ${p.precio ?? '?'} · ${p.restante} cupos libres`).join('\n')
+    : '(no hay ningún partido con inscripción abierta)';
+  const charla = historial.map((m) => `${m.rol === 'user' ? 'JUGADOR' : 'PICHANGUEROS'}: ${m.texto}`).join('\n');
+
+  const params = {
+    messages: [
+      {
+        role: 'system',
+        content: `Eres el asistente de Pichangueros (pichangas de fútbol en Lima). Un jugador acaba de mandar un comprobante de pago y hay que averiguar PARA QUÉ PARTIDO es, leyendo la conversación.
+
+Partidos con inscripción abierta:
+${lista}
+
+Reglas:
+- Fíjate en lo que dijeron los DOS. "PICHANGUEROS" puede ser el bot o Clarck escribiendo a mano: sus promesas valen igual ("tengo para mañana domingo a las 6pm").
+- Prioriza lo ÚLTIMO que acordaron por sobre lo que se habló antes.
+- El monto pagado fue S/ ${monto ?? '?'}. Sirve para deducir cuántos cupos cubre, pero NO alcanza para elegir partido por sí solo.
+- confianza "alta" SOLO si la conversación nombra el día, la hora o la sede sin ambigüedad. Ante la duda, "baja": es plata, y equivocarse mete a alguien en el partido de otro día.
+- Si acordaron un partido concreto que NO está en la lista, pon partido_no_cargado=true y partido_id=null. Ese caso importa: significa que se vendió un cupo de un partido que nadie cargó al sistema.
+- En motivo, cita la frase que te convenció. Corto.`,
+      },
+      { role: 'user', content: `Conversación (lo más reciente al final):\n${charla}` },
+    ],
+    response_format: { type: 'json_schema', json_schema: SCHEMA_INTENCION },
+    temperature: 0.2,
+    max_tokens: 700,
+    ...(ES_GOOGLE ? { reasoning_effort: 'low' } : {}),
+  };
+  const t0 = Date.now();
+  try {
+    let completion;
+    try {
+      completion = await openai.chat.completions.create({ model: MODEL, ...params });
+    } catch (e) {
+      if (![429, 503].includes(e.status) || !MODEL_RESPALDO) throw e;
+      await espera(1500);
+      completion = await openai.chat.completions.create({ model: MODEL_RESPALDO, ...params });
+    }
+    const r = JSON.parse(completion.choices[0].message.content);
+    console.log(`[pagos] intención en ${Date.now() - t0} ms: partido=${r.partido_id ?? '-'} cupos=${r.cupos ?? '-'} confianza=${r.confianza}${r.partido_no_cargado ? ' · PARTIDO NO CARGADO' : ''} — ${r.motivo}`);
+    return r;
+  } catch (e) {
+    console.error(`[pagos] No se pudo leer la intención tras ${Date.now() - t0} ms:`, e.message);
+    return null;
+  }
+}
+
 /**
  * Decide qué hacer con una lectura ya hecha (sin llamadas a red — testeable).
  * @param {string} numero
@@ -232,9 +322,32 @@ async function procesarVoucher(numero, zona, imageBuffer) {
   // abierto en su zona (sin adivinar). Si no se puede vincular, el pago queda
   // "sin partido" y Clarck lo asigna desde el panel — la respuesta no cambia.
   let respuesta = r.respuesta;
+  let alerta = null; // corazonada para Clarck cuando no se pudo asignar solo
   if (r.estado === 'confirmado') {
     try {
-      const v = db.vincularPago(numero, pagoId, r.cupos || 1, zona, r.monto);
+      // Primero la aritmética: si deja UN candidato, no hace falta leer nada.
+      // Solo cuando hay cero o varios se gasta una llamada en la conversación.
+      let partidoId = null;
+      let cupos = r.cupos || 1;
+      const candidatos = db.candidatosDePago(zona, r.monto);
+      if (candidatos.length !== 1) {
+        const intencion = await module.exports.interpretarPago(
+          db.getHistory(numero, 20), db.partidosAbiertos(null, { vigentes: true, incluirEnCurso: true }), r.monto
+        );
+        if (intencion) {
+          // Solo se asigna solo con confianza alta: es plata, y meter a alguien
+          // en el partido de otro día es peor que dejar el pago suelto.
+          if (intencion.partido_id && intencion.confianza === 'alta') {
+            partidoId = intencion.partido_id;
+            if (intencion.cupos > 0) cupos = intencion.cupos;
+          } else {
+            alerta = intencion.partido_no_cargado
+              ? `🆕 ${nombreCorto(numero)} pagó S/ ${r.monto} por un partido que NO está cargado en el sistema.\n${intencion.motivo}\nCárgalo y asígnale el pago, o el jugador va a llegar a una cancha que nadie reservó.`
+              : `❓ No sé a qué partido va el pago de S/ ${r.monto} de ${nombreCorto(numero)}.\nCorazonada: ${intencion.motivo}\nAsígnalo desde el panel → Pagos.`;
+          }
+        }
+      }
+      const v = db.vincularPago(numero, pagoId, cupos, zona, r.monto, { partidoId });
       if (v) {
         const enCancha = v.inscripciones.filter((i) => i.estado === 'pagado').length;
         const p = v.partido;
@@ -251,7 +364,16 @@ async function procesarVoucher(numero, zona, imageBuffer) {
       }
     } catch (e) { console.error('[pagos] Error vinculando pago a partido:', e.message); }
   }
-  return { respuesta, handoff: r.handoff, motivoHandoff: r.motivoHandoff };
+  return { respuesta, handoff: r.handoff, motivoHandoff: r.motivoHandoff, alerta };
 }
 
-module.exports = { leerVoucher, evaluarVoucher, procesarVoucher, mimeDeImagen, cerebroActivo: () => Boolean(process.env.OPENAI_API_KEY) };
+/** Nombre del contacto para los avisos, o su número si todavía no lo dio. */
+function nombreCorto(numero) {
+  const l = db.getLead(numero);
+  return (l && l.nombre) || `+${numero}`;
+}
+
+module.exports = {
+  leerVoucher, evaluarVoucher, procesarVoucher, interpretarPago, mimeDeImagen,
+  cerebroActivo: () => Boolean(process.env.OPENAI_API_KEY),
+};
