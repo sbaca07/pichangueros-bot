@@ -286,8 +286,15 @@ function listPagos(numero) {
   return db.prepare('SELECT * FROM pagos WHERE numero = ? ORDER BY id DESC').all(numero);
 }
 
+/**
+ * Pagos por revisar que TODAVÍA son trabajo. Respeta el punto de arranque: si
+ * no, el Resumen seguía anunciando "33 pagos por revisar" justo después de un
+ * corte en limpio — que es exactamente lo contrario de lo que el corte promete.
+ * La lista de la vista Pagos ya lo respetaba; el contador del Resumen no.
+ */
 function pagosPorRevisar() {
-  return db.prepare("SELECT COUNT(*) AS n FROM pagos WHERE estado = 'revisar'").get().n;
+  const corte = getCorte() || '0000-00-00';
+  return db.prepare("SELECT COUNT(*) AS n FROM pagos WHERE estado = 'revisar' AND substr(creado_en, 1, 10) >= ?").get(corte).n;
 }
 
 /** Cuántas personas distintas tienen al menos un pago confirmado (para el embudo). */
