@@ -1653,7 +1653,13 @@ function paginaPagos(db, key, query = {}) {
   const pagos = fEstado
     ? alcance.filter((p) => (fEstado === 'conf' ? p.estado === 'confirmado' : p.estado === 'revisar'))
     : alcance;
-  const hayFiltro = Boolean(fEstado || fMedio || fPeriodo || fDia);
+  // "Hay filtro" = hay algo DISTINTO del estado por defecto. `fPeriodo` siempre
+  // vale algo (arranca en '7d'), así que incluirlo tal cual daba `true` siempre:
+  // el botón "✕ Limpiar filtros" estaba permanentemente encendido y al tocarlo
+  // no cambiaba nada —volvía al mismo 7d—, y la tarjeta decía "Cobrado (filtro)"
+  // aun sin ningún filtro puesto.
+  const PERIODO_DEFECTO = '7d';
+  const hayFiltro = Boolean(fEstado || fMedio || fDia || fPeriodo !== PERIODO_DEFECTO);
 
   const qs = (over) => {
     const p = { estado: fEstado, medio: fMedio, periodo: fPeriodo, dia: fDia, ...over };
@@ -1731,15 +1737,20 @@ function paginaPagos(db, key, query = {}) {
         </select>
         <select name="medio" onchange="this.form.submit()">
           <option value="">Medio: todos</option>
-          ${Object.entries(MEDIOS).map(([k, m]) => `<option value="${k}"${fMedio === k ? ' selected' : ''}>${m.nombre}</option>`).join('')}
+          ${/* "Medio: Yape" y no "Yape" a secas: cerrado, el texto del elegido
+               es lo único visible y tiene que decir de qué filtro se trata. */ ''}
+          ${Object.entries(MEDIOS).map(([k, m]) => `<option value="${k}"${fMedio === k ? ' selected' : ''}>Medio: ${m.nombre}</option>`).join('')}
         </select>
         <select name="periodo" onchange="this.form.submit()">
-          <option value="hoy"${fPeriodo === 'hoy' ? ' selected' : ''}>Hoy</option>
+          <option value="hoy"${fPeriodo === 'hoy' ? ' selected' : ''}>Solo hoy</option>
           <option value="7d"${fPeriodo === '7d' ? ' selected' : ''}>Últimos 7 días</option>
           <option value="30d"${fPeriodo === '30d' ? ' selected' : ''}>Últimos 30 días</option>
           <option value="todo"${fPeriodo === 'todo' ? ' selected' : ''}>Todo el histórico</option>
         </select>
-        <input type="date" name="dia" value="${fDia}" max="${hoy}" onchange="this.form.submit()">
+        <input type="date" name="dia" value="${fDia}" max="${hoy}" onchange="this.form.submit()" aria-label="Filtrar por día">
+        ${/* Sin JS, el onchange no corre y no había forma de aplicar nada:
+             la barra de Pagos no tenía botón de envío. */ ''}
+        <button class="btn-toque btn-guardar">Filtrar</button>
       </form>
       ${hayFiltro ? `<div style="padding:6px 2px 0"><a class="fchip" href="/admin/leads?key=${key}&vista=pagos">✕ Limpiar filtros</a></div>` : ''}
       ${rev.length ? `
@@ -1795,9 +1806,12 @@ function paginaCRM(db, key, query) {
     if (tipo === 'recurrentes') leads = leads.filter((l) => !esNuevoEse(l));
   }
   if (distritoF) leads = leads.filter((l) => normTexto(l.distrito) === distritoF);
+  // Se sube acá porque lo usan dos cosas: el filtro "pagaron" y el conteo del
+  // desplegable de etapa. Antes se consultaba dentro del if y había que
+  // repetir la query para poder contar.
+  const pagaronSet = new Set(db.numerosPagadores());
   if (estadoF === 'pago') {
-    const pagaron = new Set(db.numerosPagadores());
-    leads = leads.filter((l) => pagaron.has(l.numero));
+    leads = leads.filter((l) => pagaronSet.has(l.numero));
   } else if (estadoF === 'con_datos') {
     leads = leads.filter((l) => l.estado && l.estado !== 'nuevo');
   } else if (estadoF) {
@@ -1828,16 +1842,67 @@ function paginaCRM(db, key, query) {
   const urgentes = leads.filter((l) => handoffActivo(l) || sinResp(l));
   const resto = leads.filter((l) => !(handoffActivo(l) || sinResp(l)));
 
-  // Los chips COMBINAN filtros (no se pisan); tocar uno activo lo quita.
+  // Los filtros COMBINAN (no se pisan): esto reconstruye la URL cambiando uno.
   const qsCrm = (over) => {
     const p = { q: query.q || '', zona, filtro, estado: estadoF, dia, tipo, distrito: distritoF, ...over };
     return Object.entries(p).filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('');
   };
-  const chip = (campo, valor, label, cls = '') => {
-    const actual = { zona, filtro, estado: estadoF }[campo];
-    const on = actual === valor;
-    return `<a class="fchip ${cls}${on ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ [campo]: on ? '' : valor })}">${label}</a>`;
-  };
+
+  /**
+   * Los 14 chips en tres filas se volvieron tres desplegables.
+   *
+   * Ocupaban media pantalla antes del primer contacto (peor en 360px), y como
+   * cada familia es EXCLUYENTE —el código ya guardaba un solo valor por
+   * `filtro`, `zona` y `estado`— la fila de chips prometía una combinatoria
+   * que no existía. Un <select> dice la verdad: elegís uno.
+   *
+   * Cada <option> se lee solo ("Zona: Breña", no "Breña"): cerrado, el texto
+   * del elegido es lo ÚNICO visible, así que tiene que decir de qué familia es.
+   * El número entre paréntesis evita tener que abrirlo para saber si vale la
+   * pena: "Sin responder (0)" se descarta sin tocar nada.
+   */
+  const nPor = (pred) => todos.filter(pred).length;
+  const selectorFiltro = (campo, actual, todosLabel, opciones) => `
+    <select name="${campo}" aria-label="${esc(todosLabel)}" onchange="this.form.submit()">
+      <option value="">${esc(todosLabel)}</option>
+      ${opciones.map(([v, label, n]) =>
+        `<option value="${esc(v)}"${actual === v ? ' selected' : ''}>${esc(label)}${n == null ? '' : ` (${n})`}</option>`).join('')}
+    </select>`;
+
+  // 1 · ATENCIÓN — por qué mirarías a alguien HOY. Es la familia más usada, va primera.
+  const opcAtencion = [
+    ['nuevos', '🌱 Solo nuevos (esta semana)', nPor((l) => (l.creado_en || '').slice(0, 10) >= fechaLima(-6))],
+    ['recurrentes', '⭐ Solo recurrentes', nPor((l) => (jugadosPor[l.numero] || 0) >= db.RECURRENTE_DESDE)],
+    ['responder', '📥 Sin responder', nPor(sinResp)],
+    ['handoff', '🔔 Derivados a Clarck', nPor((l) => l.handoff)],
+    ['hoy', '⏰ Con seguimiento para hoy', nPor((l) => l.proxima_accion && l.proxima_accion <= hoy)],
+  ];
+
+  // 2 · ZONA — dinámica. Las zonas se crean desde Ajustes: escribirlas a mano
+  // acá dejaría afuera a cualquier distrito nuevo, que es el bug que ya se
+  // arregló una vez en el filtrado y volvería a aparecer en el formulario.
+  const cZona = {};
+  for (const l of todos) if (l.zona) cZona[l.zona] = (cZona[l.zona] || 0) + 1;
+  const opcZona = zonasVivas.map((z) => [
+    z, `Zona: ${z === 'otra' ? 'sin sede cerca' : db.nombreDeZona(z)}`, cZona[z] || 0,
+  ]);
+
+  // 3 · ETAPA — las OCHO que el filtro acepta (línea del estadoF), no las cinco
+  // que mostraban los chips. Con los chips, entrar desde el embudo del Resumen
+  // con estado=activo filtraba la lista pero ningún chip quedaba marcado: la
+  // pantalla mostraba 12 contactos "de 912" sin decir por qué.
+  const opcEtapa = [
+    ['nuevo', 'Etapa: sin datos aún', nPor((l) => l.estado === 'nuevo')],
+    ['con_datos', 'Etapa: dejaron sus datos', nPor((l) => l.estado && l.estado !== 'nuevo')],
+    ['datos_completos', 'Etapa: datos completos', nPor((l) => l.estado === 'datos_completos')],
+    ['invitado_grupo', 'Etapa: en el grupo', nPor((l) => l.estado === 'invitado_grupo')],
+    ['activo', 'Etapa: jugador activo', nPor((l) => l.estado === 'activo')],
+    ['lista_espera', 'Etapa: en lista de espera', nPor((l) => l.estado === 'lista_espera')],
+    ['inactivo', 'Etapa: inactivo', nPor((l) => l.estado === 'inactivo')],
+    ['pago', '💰 Etapa: pagaron alguna vez', nPor((l) => pagaronSet.has(l.numero))],
+  ];
+
+  const opcDistrito = distritosCrm.map(([k, d]) => [k, `📍 ${d.label}`, d.n]);
 
   const fila = (l) => {
     const sr = sinResp(l);
@@ -1900,44 +1965,40 @@ function paginaCRM(db, key, query) {
       <form class="search" method="get" action="/admin/leads">
         ${SVG.lupa}
         <input type="hidden" name="key" value="${key}"><input type="hidden" name="vista" value="crm">
+        ${/* Buscar ya no borra los filtros puestos: antes la búsqueda mandaba
+             solo `q` y la zona/etapa elegidas se perdían en silencio. */ ''}
+        ${filtro ? `<input type="hidden" name="filtro" value="${esc(filtro)}">` : ''}
+        ${zona ? `<input type="hidden" name="zona" value="${esc(zona)}">` : ''}
+        ${estadoF ? `<input type="hidden" name="estado" value="${esc(estadoF)}">` : ''}
+        ${distritoF ? `<input type="hidden" name="distrito" value="${esc(distritoF)}">` : ''}
+        ${dia ? `<input type="hidden" name="dia" value="${esc(dia)}">` : ''}
         <input name="q" value="${esc(query.q || '')}" placeholder="Buscar nombre, número, distrito…">
         ${q ? '<button>Buscar</button>' : ''}
       </form>
-      <div class="chips">
-        <a class="fchip${!hayFiltro ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm">Todos</a>
-        ${chip('filtro', 'nuevos', '🌱 Nuevos')}
-        ${chip('filtro', 'recurrentes', '⭐ Recurrentes')}
-        ${chip('filtro', 'responder', '📥 Sin responder', 'amber')}
-        ${chip('filtro', 'handoff', '🔔 Clarck', 'red')}
-        ${chip('filtro', 'hoy', '⏰ Para hoy', 'amber')}
-        ${chip('zona', 'brena', 'Breña')}
-        ${chip('zona', 'comas', 'Comas')}
-        ${chip('zona', 'otra', 'Otras')}
-      </div>
-      <div class="chips" style="padding-top:0">
-        ${chip('estado', 'nuevo', 'Sin datos aún')}
-        ${chip('estado', 'datos_completos', 'Con datos')}
-        ${chip('estado', 'invitado_grupo', 'En grupo')}
-        ${chip('estado', 'lista_espera', 'En espera')}
-        ${chip('estado', 'pago', '💰 Pagaron')}
-        ${dia ? `<a class="fchip on" href="/admin/leads?key=${key}&vista=crm${qsCrm({ dia: '', tipo: '' })}">📅 ${Number(dia.slice(8))} ${mesCorto(dia)} ✕</a>
-        <a class="fchip${tipo === 'nuevos' ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ tipo: tipo === 'nuevos' ? '' : 'nuevos' })}">🟢 Nuevos</a>
-        <a class="fchip${tipo === 'recurrentes' ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ tipo: tipo === 'recurrentes' ? '' : 'recurrentes' })}">🔵 Recurrentes</a>` : ''}
-        ${distritoF ? `<a class="fchip on" href="/admin/leads?key=${key}&vista=crm${qsCrm({ distrito: '' })}">📍 ${esc(ddCrm[distritoF]?.label || distritoF)} ✕</a>` : ''}
-      </div>
-      ${distritosCrm.length ? `
-      <form class="search" method="get" action="/admin/leads" style="margin-top:4px">
+
+      ${/* UNA barra con todo. El botón Filtrar va SIEMPRE visible: el
+           onchange de cada select es mejora progresiva, y sin JS este botón
+           es la única forma de aplicar lo elegido. */ ''}
+      <form class="fbar" method="get" action="/admin/leads">
         <input type="hidden" name="key" value="${key}"><input type="hidden" name="vista" value="crm">
-        ${zona ? `<input type="hidden" name="zona" value="${zona}">` : ''}
-        ${filtro ? `<input type="hidden" name="filtro" value="${filtro}">` : ''}
-        ${estadoF ? `<input type="hidden" name="estado" value="${estadoF}">` : ''}
-        <select name="distrito" onchange="this.form.submit()" style="flex:1;min-width:0;min-height:var(--tap);border:none;background:transparent;outline:none;font:inherit;font-size:var(--t-input);color:var(--ink)">
-          <option value="">📍 Filtrar por distrito…</option>
-          ${distritosCrm.map(([k, d]) => `<option value="${esc(k)}"${k === distritoF ? ' selected' : ''}>${esc(d.label)} (${d.n})</option>`).join('')}
-        </select>
-        <input type="date" name="dia" value="${dia}" max="${hoy}" style="flex:0 0 auto">
-        <button>Filtrar</button>
-      </form>` : ''}
+        ${query.q ? `<input type="hidden" name="q" value="${esc(query.q)}">` : ''}
+        ${dia && tipo ? `<input type="hidden" name="tipo" value="${esc(tipo)}">` : ''}
+        ${selectorFiltro('filtro', filtro, 'Todos los contactos', opcAtencion)}
+        ${selectorFiltro('zona', zona, 'Todas las zonas', opcZona)}
+        ${selectorFiltro('estado', estadoF, 'Todas las etapas', opcEtapa)}
+        ${distritosCrm.length ? selectorFiltro('distrito', distritoF, 'Todos los distritos', opcDistrito) : ''}
+        <input type="date" name="dia" value="${dia}" max="${hoy}" aria-label="Filtrar por día">
+        <button class="btn-toque btn-guardar">Filtrar</button>
+      </form>
+
+      ${/* "Limpiar" aparece solo cuando hay algo que limpiar. El chip "Todos"
+           que estaba siempre encendido no distinguía "sin filtro" de "con
+           filtro puesto", que es justo lo que uno viene a mirar. */ ''}
+      ${hayFiltro || dia ? `<div class="chips">
+        <a class="fchip" href="/admin/leads?key=${key}&vista=crm">✕ Limpiar filtros</a>
+        ${dia ? `<a class="fchip${tipo === 'nuevos' ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ tipo: tipo === 'nuevos' ? '' : 'nuevos' })}">🟢 Nuevos ese día</a>
+        <a class="fchip${tipo === 'recurrentes' ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ tipo: tipo === 'recurrentes' ? '' : 'recurrentes' })}">🔵 Recurrentes ese día</a>` : ''}
+      </div>` : ''}
       ${lista}
       <div class="foot">Se actualiza solo cada 90 s · toca un lead para abrir su ficha</div>
     </div>

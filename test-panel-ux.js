@@ -463,6 +463,72 @@ const srv = app.listen(0, async () => {
     check('borrar un partido con gente se rechaza en el servidor', /err=1/.test(rEliminar.location) && db.getPartido(conGente) !== null);
   }
 
+  console.log('== 4l · Jugadores: tres desplegables, no catorce chips ==');
+  {
+    // 14 chips en 3 filas ocupaban media pantalla antes del primer contacto.
+    // Como cada familia es EXCLUYENTE (el código guarda un solo valor por
+    // filtro/zona/estado), la fila de chips prometía una combinatoria falsa.
+    const crm = (await GET('/admin/leads?key=ux&vista=crm')).html;
+    const selects = [...crm.matchAll(/<select name="(\w+)"/g)].map((m) => m[1]);
+    check(`la barra tiene los desplegables: ${selects.join(' · ')}`,
+      ['filtro', 'zona', 'estado'].every((s) => selects.includes(s)), selects.join(','));
+    check('ya no quedan chips de filtro sueltos', !/fchip[^"]*" href="[^"]*&filtro=nuevos/.test(crm));
+
+    // Sin JS el onchange no corre: el botón de envío es la única salida.
+    const barra = (crm.match(/<form class="fbar"[\s\S]*?<\/form>/) || [''])[0];
+    check('la barra es un form GET…', /method="get"/.test(barra));
+    check('…con botón de envío visible (funciona sin JS)', /<button[^>]*>Filtrar<\/button>/.test(barra));
+    check('…y el onchange es solo mejora progresiva', /onchange="this\.form\.submit\(\)"/.test(barra));
+    check('el conteo de contactos sigue a la vista', /contactos<\/div>/.test(crm));
+
+    // El texto del elegido tiene que leerse solo: cerrado es lo único visible.
+    check('los option de zona dicen de qué familia son', /<option value="brena"[^>]*>Zona: Breña/.test(crm));
+    check('los de etapa también', /Etapa: en el grupo/.test(crm));
+    check('y traen el conteo para no tener que abrirlos', /Sin responder \(\d+\)/.test(crm));
+
+    // Las zonas salen de zonasOperativas, no de una lista escrita a mano.
+    check('un distrito creado desde Ajustes aparece en el desplegable', /<option value="sanborja"[^>]*>Zona: San Borja/.test(crm), 'zona nueva ausente');
+    check('…y "otra" se lee como lo que es', /Zona: sin sede cerca/.test(crm));
+
+    // Llegar por URL tiene que dejar el desplegable marcado. Con los chips,
+    // entrar desde el embudo del Resumen con estado=activo filtraba la lista
+    // pero ningún chip quedaba encendido: N de 912 sin decir por qué.
+    for (const [campo, valor] of [['filtro', 'handoff'], ['zona', 'comas'], ['estado', 'activo'], ['estado', 'pago']]) {
+      const r = await GET(`/admin/leads?key=ux&vista=crm&${campo}=${valor}`);
+      check(`${campo}=${valor}: la página vive y el desplegable queda marcado`,
+        r.status === 200 && new RegExp(`<option value="${valor}" selected`).test(r.html), `HTTP ${r.status}`);
+    }
+
+    // Y filtrar de verdad sigue filtrando.
+    const soloComas = (await GET('/admin/leads?key=ux&vista=crm&zona=comas')).html;
+    check('zona=comas devuelve solo los de Comas', /Pablo Pagador/.test(soloComas) && !/María Prueba/.test(soloComas));
+
+    // "Limpiar" solo cuando hay algo que limpiar.
+    check('sin filtros no se ofrece limpiar', !/Limpiar filtros/.test(crm));
+    check('con filtro sí', /Limpiar filtros/.test(soloComas));
+    const limpio = (soloComas.match(/href="([^"]*)"[^>]*>✕ Limpiar/) || [, ''])[1].replace(/&amp;/g, '&');
+    check('…y limpiar deja la vista por defecto', limpio === '/admin/leads?key=ux&vista=crm', limpio);
+
+    // Buscar no puede borrar los filtros puestos.
+    const buscador = (soloComas.match(/<form class="search"[\s\S]*?<\/form>/) || [''])[0];
+    check('el buscador conserva la zona elegida', /name="zona" value="comas"/.test(buscador));
+  }
+
+  console.log('== 4m · Pagos: "limpiar" solo si hay algo que limpiar ==');
+  {
+    // El período arranca en '7d', así que hayFiltro daba true SIEMPRE: el botón
+    // estaba siempre encendido y al tocarlo no cambiaba nada.
+    const base = (await GET('/admin/leads?key=ux&vista=pagos')).html;
+    check('sin filtros no aparece "Limpiar filtros"', !/Limpiar filtros/.test(base));
+    check('…y la tarjeta no dice "(filtro)" sin filtro', /Cobrado \(confirmado\)/.test(base));
+    const conFiltro = (await GET('/admin/leads?key=ux&vista=pagos&periodo=todo')).html;
+    check('cambiando el período sí aparece', /Limpiar filtros/.test(conFiltro));
+    check('…y la tarjeta lo refleja', /Cobrado \(filtro\)/.test(conFiltro));
+    const barraPagos = (base.match(/<form class="fbar"[\s\S]*?<\/form>/) || [''])[0];
+    check('Pagos también tiene botón de envío (sin JS no aplicaba nada)', /<button[^>]*>Filtrar<\/button>/.test(barraPagos));
+    check('y sus medios dicen de qué familia son', /Medio: Yape/.test(base));
+  }
+
   console.log('== 5 · Sin key, nada existe ==');
   check('vista sin key → 404', (await GET('/admin/leads?vista=crm')).status === 404);
   check('export sin key → 404', (await GET('/admin/leads.csv')).status === 404);
