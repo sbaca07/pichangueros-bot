@@ -158,7 +158,15 @@ async function interpretarPago(historial, partidos, monto) {
   const openai = getClient();
   if (!openai || !Array.isArray(partidos) || !historial?.length) return null;
   const lista = partidos.length
-    ? partidos.map((p) => `- ID ${p.id}: ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''} · ${db.nombreDeZona(p.zona)}${p.sede ? ` (${p.sede})` : ''} · S/ ${p.precio ?? '?'} · ${p.restante} cupos libres`).join('\n')
+    // El precio se muestra con la MISMA regla que usa el emparejador
+    // (db.precioDePartido: el suyo o el de su zona). Antes acá salía "S/ ?"
+    // para todo partido sin precio propio —la mayoría— mientras la aritmética
+    // de al lado sí caía al precio de la zona: el modelo decidía a ciegas sobre
+    // el único dato que podía confirmar el monto.
+    ? partidos.map((p) => {
+      const precio = db.precioDePartido(p);
+      return `- ID ${p.id}: ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''} · ${db.nombreDeZona(p.zona)}${p.sede ? ` (${p.sede})` : ''} · ${precio != null ? `S/ ${precio} por jugador` : 'sin precio cargado'} · ${p.restante} cupos libres`;
+    }).join('\n')
     : '(no hay ningún partido con inscripción abierta)';
   const charla = historial.map((m) => `${m.rol === 'user' ? 'JUGADOR' : 'PICHANGUEROS'}: ${m.texto}`).join('\n');
 
@@ -266,22 +274,60 @@ function evaluarVoucher(numero, zona, lectura) {
   // precio custom, o ser de otra zona — jugador multi-distrito). Solo si no hay
   // reserva se usa el precio de la zona del contacto.
   const reservaP = db.partidoReservadoDe(numero, monto);
-  const negocioP = db.getNegocio();
-  const precioEsperado = reservaP
-    ? (reservaP.precio ?? negocioP.zonas[reservaP.zona]?.precio ?? null)
-    : (zona ? negocioP.zonas[zona]?.precio : null);
+  const precioEsperado = reservaP ? db.precioDePartido(reservaP) : (zona ? db.precioDeZona(zona) : null);
   let cupos = 1;
-  if (precioEsperado != null && precioEsperado > 0 && monto != null) {
-    const n = Math.round(monto / precioEsperado);
-    const esMultiplo = n >= 1 && n <= 10 && Math.abs(monto - n * precioEsperado) <= 0.5;
-    if (!esMultiplo) {
+  if (monto != null && precioEsperado != null) {
+    const n = db.cuposPorMonto(monto, precioEsperado);
+    if (n) {
+      cupos = n;
+    } else {
+      /**
+       * EL MONTO SE VALIDA CONTRA EL PARTIDO QUE VA A JUGAR, no contra el
+       * distrito donde vive.
+       *
+       * El prompt del bot dice "la zona de un jugador NO lo limita" (uno de
+       * Comas puede jugar en Breña), pero acá se comparaba contra el precio de
+       * su zona de CASA: el de Comas (S/10) que paga S/15 por un partido de
+       * Breña quedaba en "revisar" Y en handoff — o sea, se lo silenciaba por
+       * pagar bien. Antes de rechazar se mira si el monto son N cupos exactos
+       * de algún partido vigente al que sí podría entrar.
+       *
+       * SOLO si NO tiene reserva. Con una reserva activa el precio esperado no
+       * es una suposición nuestra: es lo que él pidió y lo que se le dijo que
+       * costaba. Ahí un monto distinto es justamente lo que hay que revisar.
+       */
+      const calzan = reservaP ? [] : db.partidosQueCalzan(monto, zona);
+      if (calzan.length) {
+        const elegido = calzan[0];
+        cupos = elegido.cupos;
+        console.log(`[pagos] ${numero}: S/${monto} no calza con su zona (${zona || 'sin zona'}) pero sí con el partido #${elegido.partido.id} de ${elegido.partido.zona} a S/${elegido.precio} × ${cupos}.`);
+      } else {
+        return {
+          estado: 'revisar', motivo: `Monto S/${monto} no calza con ningún precio vigente (esperado S/${precioEsperado})`, monto, titular, numeroOperacion, cupos: 1,
+          respuesta: 'Recibí tu comprobante, pero el monto no calza con el precio de tu zona — Clarck lo revisa en un momento 🙏',
+          handoff: true, motivoHandoff: `Monto Yape no calza (S/${monto} vs S/${precioEsperado})`,
+        };
+      }
+    }
+  } else if (monto != null) {
+    // SIN PRECIO NO SE CONFIRMA NADA. El guard era `precioEsperado > 0`, así
+    // que una zona con el precio vacío desactivaba la validación ENTERA: un
+    // Yape de S/1 salía "confirmado ✅" y ocupaba un cupo. Sin precio no se
+    // puede afirmar que el pago es correcto, así que va a revisar — y el aviso
+    // dice qué falta cargar, que es lo único que lo destraba.
+    const calzan = db.partidosQueCalzan(monto, zona);
+    if (calzan.length) {
+      cupos = calzan[0].cupos;
+    } else {
       return {
-        estado: 'revisar', motivo: `Monto S/${monto} no es múltiplo del precio de la zona (S/${precioEsperado})`, monto, titular, numeroOperacion, cupos: 1,
-        respuesta: 'Recibí tu comprobante, pero el monto no calza con el precio de tu zona — Clarck lo revisa en un momento 🙏',
-        handoff: true, motivoHandoff: `Monto Yape no calza (S/${monto} vs S/${precioEsperado})`,
+        estado: 'revisar',
+        motivo: `Sin precio cargado para ${zona ? db.nombreDeZona(zona) : 'su zona'}: no se puede validar el monto (S/${monto})`,
+        monto, titular, numeroOperacion, cupos: 1,
+        respuesta: 'Recibí tu comprobante 🙌 Clarck te confirma el cupo en un momento.',
+        handoff: true,
+        motivoHandoff: `Falta cargar el precio de ${zona ? db.nombreDeZona(zona) : 'la zona del contacto'} — el pago de S/${monto} no se pudo validar`,
       };
     }
-    cupos = n;
   }
 
   return {

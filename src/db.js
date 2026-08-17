@@ -363,14 +363,24 @@ function listPagos(numero) {
 }
 
 /**
- * Pagos por revisar que TODAVÍA son trabajo. Respeta el punto de arranque: si
- * no, el Resumen seguía anunciando "33 pagos por revisar" justo después de un
- * corte en limpio — que es exactamente lo contrario de lo que el corte promete.
- * La lista de la vista Pagos ya lo respetaba; el contador del Resumen no.
+ * LA COLA de pagos por revisar — una sola definición para las tres superficies
+ * (banner del Resumen, lista de Pagos, Sheet y avisos).
+ *
+ * Devuelve LA LISTA, no un número: mientras esto contaba y cada pantalla
+ * armaba su propia lista, el banner decía 12 y la lista mostraba 3. Quien
+ * necesite el número usa `.length`, y así el número y la lista no pueden
+ * separarse nunca más.
+ *
+ * Respeta el punto de arranque: lo anterior al corte es historial, no trabajo
+ * de hoy (sigue en la BD, en el CSV y en el Sheet).
  */
 function pagosPorRevisar() {
   const corte = getCorte() || '0000-00-00';
-  return db.prepare("SELECT COUNT(*) AS n FROM pagos WHERE estado = 'revisar' AND substr(creado_en, 1, 10) >= ?").get(corte).n;
+  return db.prepare(`
+    SELECT p.*, l.nombre, l.zona FROM pagos p LEFT JOIN leads l ON l.numero = p.numero
+    WHERE p.estado = 'revisar' AND substr(p.creado_en, 1, 10) >= ?
+    ORDER BY p.id DESC
+  `).all(corte);
 }
 
 // `pagadores()` y `numerosPagadores()` se fueron el 16/08: contaban "cuántos
@@ -537,6 +547,138 @@ const setMarca = (clave, valor) => db.prepare(
   'INSERT INTO config (clave, valor) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor'
 ).run(`marca_${clave}`, String(valor));
 
+// ==============================================================================
+//  AJUSTES OPERATIVOS — las decisiones de negocio que vivían en Render
+// ==============================================================================
+/**
+ * Hasta el 17/08 cinco decisiones del NEGOCIO vivían en variables de entorno:
+ * si el bot atiende a todos, a qué número van los avisos, qué números son de
+ * prueba, a qué correo llega cada cosa y cuántas visitas hacen a un "Casero".
+ * Todas se cambiaban entrando NOSOTROS a Render — o sea que el dueño del
+ * negocio no podía tocar su propio negocio.
+ *
+ * Desde acá viven en `config` y se editan en el panel. La env var sigue siendo
+ * el VALOR INICIAL: si en la BD no hay nada, manda el entorno. Por eso este
+ * deploy no cambia absolutamente nada por su cuenta — el primer guardado desde
+ * el panel es el que toma el control, y a partir de ahí la BD manda.
+ *
+ * Se leen POR MENSAJE (no una vez al arrancar, como hacía index.js): un
+ * interruptor que necesita un redeploy para surtir efecto no es un interruptor.
+ * Son lecturas de UNA fila por sentencia preparada, así que el costo es ruido
+ * al lado de una llamada al modelo.
+ */
+const stmtConfigUno = db.prepare('SELECT valor FROM config WHERE clave = ?');
+/** Una clave de config, o null si no está seteada (cadena vacía = no seteada). */
+function leerConfig(clave) {
+  const r = stmtConfigUno.get(clave);
+  const v = r && r.valor != null ? String(r.valor).trim() : '';
+  return v === '' ? null : v;
+}
+const stmtEscribirConfig = db.prepare(
+  'INSERT INTO config (clave, valor) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor'
+);
+/** Escribe un ajuste operativo. No pasa por la lista blanca de setConfig (que
+ *  alimenta un formulario abierto): acá cada clave tiene su setter con su
+ *  validación. */
+const escribirConfig = (clave, valor) => stmtEscribirConfig.run(clave, valor == null ? '' : String(valor));
+const soloDigitos = (t) => String(t || '').replace(/\D/g, '');
+
+/**
+ * ¿El bot está en MODO SEGURO? (silencio para todos menos los números de
+ * prueba). Es el interruptor más consecuente del producto: encendido, 934
+ * contactos reciben respuestas automáticas.
+ */
+function modoSeguro() {
+  const v = leerConfig('bot_encendido');
+  if (v === '1') return false;
+  if (v === '0') return true;
+  return (process.env.SAFE_MODE || 'true') !== 'false';
+}
+/** Todo lo que el panel necesita mostrar del interruptor, en un solo objeto. */
+function estadoBot() {
+  return {
+    encendido: !modoSeguro(),
+    // 'panel' = lo decidió Clarck desde el panel · 'entorno' = todavía manda SAFE_MODE.
+    fuente: leerConfig('bot_encendido') ? 'panel' : 'entorno',
+    encendidoEn: leerConfig('bot_encendido_en'),
+    apagadoEn: leerConfig('bot_apagado_en'),
+    por: leerConfig('bot_cambiado_por'),
+  };
+}
+/**
+ * Enciende o apaga el bot. Queda registrado QUIÉN y CUÁNDO: encender es
+ * irreversible en la práctica (los mensajes ya salieron), así que tiene que
+ * poder auditarse después.
+ */
+function setBotEncendido(encendido, quien = 'panel') {
+  escribirConfig('bot_encendido', encendido ? '1' : '0');
+  escribirConfig(encendido ? 'bot_encendido_en' : 'bot_apagado_en', ahoraLima().ts);
+  escribirConfig('bot_cambiado_por', quien);
+  console.log(`[bot] ${encendido ? 'ENCENDIDO' : 'apagado'} desde ${quien} (${ahoraLima().ts}).`);
+  return estadoBot();
+}
+
+/**
+ * A qué número van los avisos de Clarck (handoffs, pagos, listas de espera).
+ *
+ * `notify_definido` distingue "todavía no lo tocó nadie" (manda el entorno) de
+ * "lo dejó vacío a propósito" (no hay número, los avisos salen solo por
+ * correo). Sin esa marca, borrar el campo hacía reaparecer el número viejo de
+ * Render y los avisos se iban a un teléfono que Clarck creía haber sacado.
+ */
+const numeroAvisos = () => (leerConfig('notify_definido')
+  ? (leerConfig('notify_numero') || '')
+  : (leerConfig('notify_numero') || soloDigitos(process.env.NOTIFY_NUMBER) || ''));
+function setNumeroAvisos(numero) {
+  const n = soloDigitos(numero);
+  escribirConfig('notify_numero', n);
+  escribirConfig('notify_definido', '1');
+  // Cambiar el número invalida la prueba anterior: el "probado ✔" de otro
+  // teléfono no dice nada sobre éste.
+  escribirConfig('notify_probado_en', '');
+  return n;
+}
+/** Cuándo se probó por última vez que el número de avisos RECIBE de verdad. */
+const avisosProbadoEn = () => leerConfig('notify_probado_en');
+const marcarAvisosProbado = () => escribirConfig('notify_probado_en', ahoraLima().ts);
+
+/**
+ * Números que el bot SÍ atiende con el modo seguro encendido (el ensayo previo).
+ * `testers_definido` distingue "todavía no lo tocó nadie" (manda el entorno) de
+ * "lo dejó vacío a propósito" (no hay testers).
+ */
+function numerosDePrueba() {
+  const fuente = leerConfig('testers_definido') ? (leerConfig('testers') || '') : (process.env.ALLOWED_TESTERS || '');
+  return fuente.split(',').map(soloDigitos).filter(Boolean);
+}
+function setNumerosDePrueba(csv) {
+  const lista = String(csv || '').split(',').map(soloDigitos).filter(Boolean).slice(0, 10);
+  escribirConfig('testers', lista.join(','));
+  escribirConfig('testers_definido', '1');
+  return lista;
+}
+
+/**
+ * DOS correos, no uno.
+ *
+ * Compartían la variable `BACKUP_EMAIL_TO`, y por ahí sale el respaldo COMPLETO
+ * de la base: la conversación entera de 900+ personas. Un aviso de "pago por
+ * revisar" puede ir a cualquier casilla; el .db no. Por decisión del cliente el
+ * default de los dos sigue siendo la casilla de KIPI — lo que cambia es que
+ * ahora se ve, y se puede separar sin tocar Render.
+ */
+const correoAvisos = () => leerConfig('aviso_email') || process.env.AVISO_EMAIL_TO || process.env.BACKUP_EMAIL_TO || process.env.KIPI_EMAIL_USER || '';
+const correoRespaldo = () => leerConfig('backup_email') || process.env.BACKUP_EMAIL_TO || process.env.KIPI_EMAIL_USER || '';
+const esCorreo = (t) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(t || '').trim());
+/** @returns {{ok: boolean, valor: string|null}} valor vacío = "volver al default". */
+function setCorreo(cual, valor) {
+  const clave = cual === 'respaldo' ? 'backup_email' : 'aviso_email';
+  const v = String(valor || '').trim();
+  if (v && !esCorreo(v)) return { ok: false, valor: null };
+  escribirConfig(clave, v);
+  return { ok: true, valor: v || null };
+}
+
 /**
  * Contactos derivados a Clarck desde un momento dado — la materia prima del
  * resumen por correo. Se lee de la BD en vez de una cola en memoria: así un
@@ -550,6 +692,31 @@ function handoffsDesde(ts) {
     WHERE handoff = 1 AND actualizado_en > ? AND substr(actualizado_en, 1, 10) >= ?
     ORDER BY actualizado_en
   `).all(ts || '0000-00-00', corte);
+}
+
+/**
+ * LOS QUE ESPERAN A CLARCK AHORA — una sola definición, igual que la cola de
+ * pagos.
+ *
+ * "Derivado" y "esperando ahora" son dos cosas distintas: el CRM listaba los
+ * 105 handoffs de toda la historia y el Resumen mostraba ese mismo número como
+ * si fuera trabajo de hoy. Un derivado de julio que Clarck ya atendió a mano no
+ * es una tarea; uno que escribió hace dos horas sí.
+ *
+ * Activo = derivado + habló en las últimas `horas` + después del punto de
+ * arranque. Es la misma condición que ya usaba la lista del CRM, ahora en un
+ * solo lugar para que el contador no pueda decir otra cosa.
+ */
+function handoffsActivos({ horas = 72 } = {}) {
+  const corte = getCorte() || '0000-00-00';
+  const limite = new Date(Date.now() - 5 * 3600e3 - horas * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
+  return db.prepare(`
+    SELECT l.numero, l.nombre, l.handoff_motivo, l.actualizado_en, u.en AS ultimo_en
+    FROM leads l
+    JOIN (SELECT numero, MAX(creado_en) AS en FROM mensajes GROUP BY numero) u ON u.numero = l.numero
+    WHERE l.handoff = 1 AND u.en >= ? AND substr(u.en, 1, 10) >= ?
+    ORDER BY u.en DESC
+  `).all(limite, corte);
 }
 
 function listSedes(zona) {
@@ -573,6 +740,35 @@ function deleteSede(id) {
   db.prepare('DELETE FROM sedes WHERE id = ?').run(id);
 }
 
+/**
+ * EL PRECIO, EN UN SOLO LUGAR.
+ *
+ * Tres reglas que estaban copiadas en seis archivos: el precio de una zona es
+ * un número POSITIVO o no existe (null); el precio de un partido es el suyo
+ * propio o, si no tiene, el de su zona; y "no hay precio" nunca se imprime como
+ * "S/ 0" ni se usa para validar un monto.
+ * @param {string} zona
+ * @param {object} [cfg] mapa de config ya leído (para no releerlo por fila)
+ * @returns {number|null}
+ */
+function precioDeZona(zona, cfg = null) {
+  const v = Number((cfg || getConfigMap())[`precio_${zona}`]);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+/** Lo que se le cobra a un jugador por ESTE partido. null = todavía sin precio. */
+function precioDePartido(p, cfg = null) {
+  if (!p) return null;
+  const propio = Number(p.precio);
+  if (Number.isFinite(propio) && propio > 0) return propio;
+  return precioDeZona(p.zona, cfg);
+}
+/** ¿`monto` son N cupos exactos a `precio`? N (1 a 10) o null. */
+function cuposPorMonto(monto, precio) {
+  if (!(Number(precio) > 0) || monto == null) return null;
+  const n = Math.round(Number(monto) / Number(precio));
+  return n >= 1 && n <= 10 && Math.abs(Number(monto) - n * Number(precio)) <= 0.5 ? n : null;
+}
+
 /** Arma el mismo shape que antes exportaba config/negocio.js, ahora desde la BD.
  *  Las ZONAS son dinámicas: una por cada zona con sedes (ver zonasOperativas). */
 function getNegocio() {
@@ -585,7 +781,12 @@ function getNegocio() {
     yape: { numero: c.yape_numero || '', titular: c.yape_titular || '', tipo: 'personal' },
     zonas: Object.fromEntries(zonasOperativas().map((z) => [z, {
       nombre: nombreDeZona(z),
-      precio: Number(c[`precio_${z}`]) || 0,
+      // SIN PRECIO ES null, NO CERO. Con `|| 0` una zona a la que se le guardó
+      // el precio vacío hacía que el bot cotizara "S/ 0 por jugador" y que la
+      // validación del voucher (`precioEsperado > 0`) se saltara entera: un
+      // Yape de S/1 salía confirmado. Cero es un precio; "no hay precio" es
+      // otra cosa, y ahora se distinguen.
+      precio: precioDeZona(z, c),
       sedes: sedesDe(z),
       groupLink: c[`grouplink_${z}`] || null,
     }])),
@@ -1156,14 +1357,24 @@ function actualizarPartido(id, campos) {
 
   if (campos.zona && zonasOperativas().includes(campos.zona)) poner('zona', campos.zona);
   if (/^\d{4}-\d{2}-\d{2}$/.test(campos.fecha || '')) poner('fecha', campos.fecha);
+  // Guardar el editor con la hora VACÍA dejaba hora=NULL, y un partido sin hora
+  // se ofrece TODO EL DÍA (ofrecible() no tiene con qué compararse) y se sigue
+  // ofreciendo a las 11 de la noche. Un campo que quedó en blanco no es una
+  // orden de borrar la hora: se ignora y se avisa (`hora_vacia`).
+  let horaIgnorada = false;
   if (campos.hora !== undefined) {
-    // La hora entra como texto (reloj del panel) y sale como TRES columnas: el
-    // número que manda (inicio_min), cuánto dura, y el texto legible que se
-    // imprime en la lista del grupo y en los mensajes del bot.
-    const h = parseHora(campos.hora);
-    poner('hora', h ? textoHora(h.inicio, h.duracion) : (String(campos.hora || '').trim() || null));
-    poner('inicio_min', h ? h.inicio : null);
-    poner('duracion_min', h ? h.duracion : 60);
+    const texto = String(campos.hora || '').trim();
+    if (!texto) {
+      horaIgnorada = Boolean(p.hora || p.inicio_min != null);
+    } else {
+      // La hora entra como texto (reloj del panel) y sale como TRES columnas: el
+      // número que manda (inicio_min), cuánto dura, y el texto legible que se
+      // imprime en la lista del grupo y en los mensajes del bot.
+      const h = parseHora(texto);
+      poner('hora', h ? textoHora(h.inicio, h.duracion) : texto);
+      poner('inicio_min', h ? h.inicio : null);
+      poner('duracion_min', h ? h.duracion : 60);
+    }
   }
   if (campos.sede !== undefined) {
     const nombre = (campos.sede || '').trim() || null;
@@ -1192,7 +1403,7 @@ function actualizarPartido(id, campos) {
   }
 
   db.prepare(`UPDATE partidos SET ${sets.join(', ')} WHERE id = ?`).run(...valores, id);
-  return { ok: true };
+  return { ok: true, horaIgnorada };
 }
 
 /** Borra un partido SIN inscripciones (errores de carga, duplicados).
@@ -1281,11 +1492,11 @@ function setEstadoPartido(id, estado) {
 function cajaPartido(id) {
   const p = getPartido(id);
   if (!p) return null;
-  // Ojo con el ??: Number(undefined) es NaN, y NaN ?? 0 sigue siendo NaN — el
-  // respaldo nunca corría y la caja entera salía NaN si a la zona le faltaba
-  // el precio. Con 4 canchas sin costo cargado, no es hipotético.
-  const precioZona = Number(getConfigMap()[`precio_${p.zona}`]);
-  const precio = p.precio ?? (Number.isFinite(precioZona) ? precioZona : 0);
+  // El precio sale de precioDePartido (el suyo, o el de su zona) — la misma
+  // función que usan el bot, la lista del grupo y la validación del voucher.
+  // Acá cae a 0 a propósito: una caja tiene que ser un número aunque falte el
+  // precio (antes salía NaN entera y no se veía ni lo cobrado).
+  const precio = precioDePartido(p) ?? 0;
 
   const verificado = db.prepare(`
     SELECT COALESCE(SUM(monto), 0) AS s FROM pagos WHERE estado = 'confirmado' AND id IN (
@@ -1352,7 +1563,24 @@ function cajaPartido(id) {
  *
  * @returns {Object<string, {visitas:number, ultima:string|null, pagos:number, soles:number}>}
  */
-const RECURRENTE_DESDE = 6; // "más de 5" (definición de Clarck, 12-ago)
+/**
+ * Cuántas visitas hacen a un "Casero". Era una constante en este archivo —o
+ * sea, una regla del negocio de Clarck que solo podíamos cambiar nosotros.
+ *
+ * Con los datos reales el tope son 5 visitas y el umbral 6: el filtro "Caseros"
+ * muestra CERO y siempre va a mostrar cero hasta que alguien venga una sexta
+ * vez. Editable en Ajustes para que pueda bajarlo y ver a su gente.
+ */
+const RECURRENTE_DEFAULT = 6; // "más de 5" (definición de Clarck, 12-ago)
+function recurrenteDesde() {
+  const v = Number(leerConfig('recurrente_desde'));
+  return Number.isFinite(v) && v >= 2 && v <= 50 ? Math.round(v) : RECURRENTE_DEFAULT;
+}
+const setRecurrenteDesde = (n) => {
+  const v = Math.max(2, Math.min(50, Math.round(Number(n) || RECURRENTE_DEFAULT)));
+  escribirConfig('recurrente_desde', String(v));
+  return v;
+};
 function metricasPorNumero() {
   const visitas = db.prepare(`
     SELECT numero, COUNT(*) AS visitas, MAX(dia) AS ultima FROM (
@@ -1387,15 +1615,18 @@ const metricasDe = (numero) => metricasPorNumero()[numero] || { ...SIN_METRICAS 
  * RELACIÓN: qué tan cliente es alguien. Se DERIVA de las visitas, no se guarda
  * —por eso no se puede desactualizar y no hay ningún botón que apretar.
  */
+// `largo` y `desde` del tramo de arriba se calculan: el umbral del Casero lo
+// pone Clarck en Ajustes, así que escribirlo a mano acá volvería a mentir en
+// cuanto lo cambie.
 const RELACIONES = {
   nuevo: { label: 'Nuevo', largo: 'Nunca pagó', desde: 0 },
   probo: { label: 'Probó', largo: 'Vino una vez', desde: 1 },
-  vuelve: { label: 'Vuelve', largo: 'Volvió (2 a 5 visitas)', desde: 2 },
-  casero: { label: 'Casero', largo: `Casero (${RECURRENTE_DESDE}+ visitas)`, desde: RECURRENTE_DESDE },
+  vuelve: { label: 'Vuelve', get largo() { return `Volvió (2 a ${recurrenteDesde() - 1} visitas)`; }, desde: 2 },
+  casero: { label: 'Casero', get largo() { return `Casero (${recurrenteDesde()}+ visitas)`; }, get desde() { return recurrenteDesde(); } },
 };
 function relacionDe(visitas = 0) {
   const v = Number(visitas) || 0;
-  if (v >= RECURRENTE_DESDE) return 'casero';
+  if (v >= recurrenteDesde()) return 'casero';
   if (v >= 2) return 'vuelve';
   if (v >= 1) return 'probo';
   return 'nuevo';
@@ -1541,9 +1772,15 @@ function inscribir(partidoId, numero, { nombre = null, estado = null, pagoId = n
   const ocupados = db.prepare(`SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ? AND estado IN ${OCUPAN}`).get(partidoId).n;
   const lleno = ocupados >= p.cupo;
   const final = estado || (lleno ? 'espera' : 'reservado');
+  // Con la cancha llena, TODO lo que ocupa lugar cae a espera — no solo
+  // 'pagado'. El guard miraba únicamente ese estado, así que un
+  // `estado: 'reservado'` explícito (el camino del panel y de los invitados)
+  // se saltaba el cupo y metía 15 jugadores en 14. La misma regla que ya
+  // cuidaban setEstadoInscripcion y pagarInscripcion.
+  const estadoFinal = lleno && ['reservado', 'pagado'].includes(final) ? 'espera' : final;
   const r = db.prepare(
     "INSERT INTO inscripciones (partido_id, numero, nombre, estado, pago_id, creado_en) VALUES (?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
-  ).run(partidoId, numero || null, nombre || null, final === 'pagado' && lleno ? 'espera' : final, pagoId ?? null);
+  ).run(partidoId, numero || null, nombre || null, estadoFinal, pagoId ?? null);
   const insc = db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(Number(r.lastInsertRowid));
   return { inscripcion: insc, resultado: insc.estado, motivo: lleno ? 'lleno' : null };
 }
@@ -1625,16 +1862,37 @@ function candidatosDePago(zona, monto = null) {
   let candidatos = (zona ? partidosAbiertos(zona, { vigentes: true, incluirEnCurso: true }) : [])
     .filter((p) => p.fecha <= limite);
   if (monto != null && candidatos.length > 1) {
-    const neg = getNegocio();
-    const calzan = candidatos.filter((p) => {
-      const precio = p.precio ?? neg.zonas[p.zona]?.precio;
-      if (!precio) return false;
-      const n = Math.round(monto / precio);
-      return n >= 1 && n <= 10 && Math.abs(monto - n * precio) <= 0.5;
-    });
+    const cfg = getConfigMap();
+    const calzan = candidatos.filter((p) => cuposPorMonto(monto, precioDePartido(p, cfg)));
     if (calzan.length) candidatos = calzan;
   }
   return candidatos;
+}
+
+/**
+ * A QUÉ PARTIDO PUEDE CORRESPONDER ESTE MONTO — en cualquier zona.
+ *
+ * El validador de vouchers comparaba el monto contra el precio de la zona de
+ * CASA del contacto, pero el prompt del bot dice lo contrario: "la zona de un
+ * jugador NO lo limita". Alguien de Comas (S/10) que paga S/15 por un partido
+ * de Breña quedaba en "revisar" y encima se lo silenciaba con un handoff.
+ *
+ * Acá se mira lo que de verdad importa: si el monto son N cupos exactos de
+ * ALGÚN partido al que todavía se puede entrar. Se prefiere el de su zona
+ * (sigue siendo lo más probable) y, entre los demás, el más próximo.
+ *
+ * @returns {Array<{partido: object, cupos: number, precio: number}>}
+ */
+function partidosQueCalzan(monto, zonaPreferida = null) {
+  if (monto == null) return [];
+  const limite = new Date(Date.now() - 5 * 3600e3 + 3 * 86400e3).toISOString().slice(0, 10);
+  const cfg = getConfigMap();
+  return partidosAbiertos(null, { vigentes: true, incluirEnCurso: true })
+    .filter((p) => p.fecha <= limite)
+    .map((p) => ({ partido: p, precio: precioDePartido(p, cfg), cupos: cuposPorMonto(monto, precioDePartido(p, cfg)) }))
+    .filter((x) => x.cupos)
+    .sort((a, b) => (a.partido.zona === zonaPreferida ? 0 : 1) - (b.partido.zona === zonaPreferida ? 0 : 1)
+      || (a.partido.fecha < b.partido.fecha ? -1 : 1));
 }
 
 /**
@@ -1709,13 +1967,8 @@ function partidoReservadoDe(numero, monto = null) {
     .filter((p) => admiteInscripcion(p, ahora));
   if (!filas.length) return null;
   if (monto != null) {
-    const neg = getNegocio();
-    const calza = filas.find((p) => {
-      const precio = p.precio ?? neg.zonas[p.zona]?.precio;
-      if (!precio) return false;
-      const n = Math.round(monto / precio);
-      return n >= 1 && n <= 10 && Math.abs(monto - n * precio) <= 0.5;
-    });
+    const cfg = getConfigMap();
+    const calza = filas.find((p) => cuposPorMonto(monto, precioDePartido(p, cfg)));
     if (calza) return calza;
   }
   return filas[0];
@@ -1764,14 +2017,25 @@ function pagosSinPartido(limite = 30) {
   `).all(corte, limite);
 }
 
-/** Último pago confirmado RECIENTE de un contacto que quedó sin partido. */
-function pagoSueltoDe(numero, horas = 48) {
+/**
+ * El último pago suelto de un contacto — el que se engancha solo cuando por fin
+ * reserva ("ya te yapeé" primero, "anótame el domingo" después).
+ *
+ * Mismo recorte que `pagosSinPartido`: el punto de arranque, no una ventana de
+ * horas. Tenía 48 h fijas mientras la cola ya no las tenía, así que un pago de
+ * tres días seguía apareciendo en el panel como pendiente pero ya no se
+ * enganchaba solo — la mitad del mecanismo apagada sin que nada lo dijera.
+ * El parámetro `horas` sigue existiendo para quien quiera una ventana corta.
+ */
+function pagoSueltoDe(numero, horas = null) {
+  const corte = getCorte() || '0000-00-00';
   return db.prepare(`
     SELECT * FROM pagos WHERE numero = ? AND estado = 'confirmado'
       AND id NOT IN (SELECT pago_id FROM inscripciones WHERE pago_id IS NOT NULL)
-      AND creado_en >= datetime('now', '-5 hours', ?)
+      AND substr(creado_en, 1, 10) >= ?
+      AND (? IS NULL OR creado_en >= datetime('now', '-5 hours', ?))
     ORDER BY id DESC LIMIT 1
-  `).get(numero, `-${horas} hours`) || null;
+  `).get(numero, corte, horas == null ? null : 1, horas == null ? '-0 hours' : `-${horas} hours`) || null;
 }
 
 /** Marca una inscripción como pagada con su pago (cierra un pago suelto). */
@@ -1798,8 +2062,8 @@ function textoLista(partidoId) {
   const p = getPartido(partidoId);
   if (!p) return '';
   const neg = getNegocio();
-  const zonaNombre = neg.zonas[p.zona]?.nombre || p.zona;
-  const precio = p.precio ?? neg.zonas[p.zona]?.precio;
+  const zonaNombre = nombreDeZona(p.zona);
+  const precio = precioDePartido(p);
   const inscritos = inscripcionesDe(partidoId).filter((i) => ['pagado', 'reservado'].includes(i.estado));
   const espera = inscripcionesDe(partidoId).filter((i) => i.estado === 'espera');
   const nombreDe = (i) => i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : 'Por confirmar');
@@ -1808,7 +2072,9 @@ function textoLista(partidoId) {
   // "MAÑANA" envejece mal. El relativo es solo para mensajes efímeros del chat.
   lineas.push(`⚽ PICHANGA ${zonaNombre.toUpperCase()} — ${fechaBonita(p.fecha, { relativa: false }).toUpperCase()}${p.hora ? ` · ${p.hora}` : ''}`);
   if (p.sede) lineas.push(`📍 ${p.sede}`);
-  lineas.push(`💰 S/ ${precio} por jugador · Yape al ${neg.yape.numero}`);
+  // Sin precio cargado se dice "por confirmar": pegar "S/ 0 por jugador" en el
+  // grupo es peor que no decir nada.
+  lineas.push(`💰 ${precio != null ? `S/ ${precio}` : 'Precio por confirmar'} por jugador · Yape al ${neg.yape.numero}`);
   lineas.push('');
   for (let i = 0; i < p.cupo; i++) {
     const insc = inscritos[i];
@@ -2235,6 +2501,12 @@ module.exports = {
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
+  // El precio, en un solo lugar (zona → partido → cuántos cupos cubre un monto).
+  precioDeZona, precioDePartido, cuposPorMonto, partidosQueCalzan,
+  // Ajustes operativos: lo que antes vivía en Render y ahora edita Clarck.
+  modoSeguro, estadoBot, setBotEncendido, numeroAvisos, setNumeroAvisos,
+  avisosProbadoEn, marcarAvisosProbado, numerosDePrueba, setNumerosDePrueba,
+  correoAvisos, correoRespaldo, setCorreo, recurrenteDesde, setRecurrenteDesde,
   crearPartido, abrirPartido, getPartido, actualizarPartido, cajaPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
   // La fase se calcula, no se guarda: estas son las preguntas que antes
   // contestaba (mal) la columna `estado`.
@@ -2246,10 +2518,14 @@ module.exports = {
   agregarExcepcion, quitarExcepcion, excepcionesDe,
   generarPartidosDeTurnos, turnosSugeridos, sembrarTurnosPorInferencia, diasSinCargar,
   conflictosDePartidos, diaSemanaDe, sumarDias, DIAS_NOMBRE, diaPlural, HORIZONTE_DIAS,
-  metricasPorNumero, metricasDe, RECURRENTE_DESDE, RELACIONES, relacionDe, FRESCURAS, frescuraDe, diasDesde, umbralesFrescura,
+  metricasPorNumero, metricasDe, RELACIONES, relacionDe, FRESCURAS, frescuraDe, diasDesde, umbralesFrescura,
+  // Sigue siendo `db.RECURRENTE_DESDE` en las 6 pantallas que ya lo usan, pero
+  // ahora se LEE de Config en cada acceso: es una regla de Clarck, no una
+  // constante nuestra.
+  get RECURRENTE_DESDE() { return recurrenteDesde(); },
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago, candidatosDePago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita, candidatosConvocatoria,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
   hoyLima: hoyLimaDb, fechaLima: fechaLimaDb, ahoraLima, ordenHora, horaInput, normalizarHora, parseHora, textoHora,
-  getMarca, setMarca, handoffsDesde,
+  getMarca, setMarca, handoffsDesde, handoffsActivos,
 };

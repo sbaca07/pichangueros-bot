@@ -30,16 +30,27 @@ const { buildLeadsWorkbook } = require('./excel');
 const esc = (v) =>
   String(v ?? '—').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-// Colores de zona. Todos llevan texto BLANCO encima (badges, puntos, barras),
-// así que todos tienen que pasar 4.5:1 contra blanco. El lima del logo (#A3C614)
-// daba 1.97:1 — "Breña" en blanco sobre lima era ilegible a contraluz; acá va la
-// versión oscura del mismo verde, que sigue leyéndose como la marca.
+/**
+ * COLORES de zona. SOLO colores.
+ *
+ * Este mapa también tenía los NOMBRES escritos a mano, y eran los que pintaba
+ * el panel — mientras el bot y el Sheet usan db.nombreDeZona(), que los lee de
+ * Config. Renombrar "Breña" desde Ajustes cambiaba lo que decía el bot y no lo
+ * que decía el panel, y un distrito nuevo salía con su slug crudo ("sanborja").
+ * El nombre pasa SIEMPRE por nombreDeZona; acá queda lo único que no vive en la
+ * BD: el color.
+ *
+ * Todos llevan texto BLANCO encima (badges, puntos, barras), así que todos
+ * tienen que pasar 4.5:1 contra blanco. El lima del logo (#A3C614) daba 1.97:1
+ * — "Breña" en blanco sobre lima era ilegible a contraluz; acá va la versión
+ * oscura del mismo verde, que sigue leyéndose como la marca.
+ */
 const ZONAS = {
-  brena: { nombre: 'Breña', color: '#5F7A0A' },      // 4.91:1
-  comas: { nombre: 'Comas', color: '#16385F' },      // 11.90:1
-  rimac: { nombre: 'Rímac', color: '#0A6570' },      // 6.76:1
-  chorrillos: { nombre: 'Chorrillos', color: '#7A3A99' }, // 7.26:1
-  otra: { nombre: 'Otra zona', color: '#4F5B6B' },   // 6.91:1
+  brena: { color: '#5F7A0A' },      // 4.91:1
+  comas: { color: '#16385F' },      // 11.90:1
+  rimac: { color: '#0A6570' },      // 6.76:1
+  chorrillos: { color: '#7A3A99' }, // 7.26:1
+  otra: { color: '#4F5B6B' },       // 6.91:1
 };
 // Color para zonas creadas después de este mapa (nuevos distritos).
 const colorZona = (z) => ZONAS[z]?.color || '#4A6B2E'; // 6.12:1
@@ -94,7 +105,10 @@ const normTexto = (t) => (t || '').trim().toLowerCase().normalize('NFD').replace
 // Antes había una copia con su propio .slice() en cada archivo, y la de la hora
 // se quedaba solo con las horas ENTERAS — por eso un turno de 8:30 se dejaba de
 // ofrecer a las 8:00.
-const { ahoraLima, fechaLima } = require('./db');
+// modoSeguro/numerosDePrueba salen de la MISMA fuente que usa el bot (BD, con
+// la env var como valor inicial): si el panel leyera el entorno y el bot la BD,
+// apagar el bot desde Ajustes dejaría al panel diciendo que sigue encendido.
+const { ahoraLima, fechaLima, modoSeguro: modoSeguroOn, numerosDePrueba: testersPanel } = require('./db');
 const hoyLima = () => ahoraLima().fecha;
 // Timestamp Lima de hace N horas (mismo formato 'YYYY-MM-DD HH:MM:SS' de la BD).
 const limaHace = (horas) => new Date(Date.now() - 5 * 3600e3 - horas * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
@@ -102,8 +116,6 @@ const limaHace = (horas) => new Date(Date.now() - 5 * 3600e3 - horas * 3600e3).t
 // Y en MODO SEGURO el bot calla a propósito con todos menos los testers: esos
 // silenciados NO "necesitan respuesta" — están siendo capturados por diseño.
 // Mostrarlos como deuda pintaba 124 pendientes falsos en el CRM.
-const modoSeguroOn = () => (process.env.SAFE_MODE || 'true') !== 'false';
-const testersPanel = () => (process.env.ALLOWED_TESTERS || '').split(',').map((n) => n.replace(/\D/g, '')).filter(Boolean);
 const sinResponder = (roles, l) => {
   const u = roles[l.numero];
   if (!(u && u.rol === 'user' && !l.handoff && u.en >= limaHace(48))) return false;
@@ -361,6 +373,118 @@ function registrarPanel(app, db, conexion = null) {
     volverAConfig(req, res, `Punto de arranque: ${fechaCompacta(f)}. Lo anterior queda como historial, no se borró nada.`, 'corte');
   });
 
+  // ==========================================================================
+  //  AUTOGESTIÓN — los interruptores que vivían en Render
+  // ==========================================================================
+  /** Quién tocó el interruptor. No hay login: lo más honesto que tenemos es
+   *  "desde el panel" + la IP desde la que se apretó. */
+  const quienEs = (req) => `panel (${(req.headers['x-forwarded-for'] || req.ip || '?').toString().split(',')[0].trim()})`;
+
+  /**
+   * ENCENDER / APAGAR EL BOT.
+   *
+   * La asimetría está en el diseño, no en el texto: apagar es un botón y listo
+   * (es la salida de emergencia, tiene que costar cero); encender pide escribir
+   * la palabra ENCENDER y tildar el ensayo previo. Escribir cuesta intención;
+   * un checkbox o un confirm() se despachan con el pulgar sin leer.
+   *
+   * Se valida en el SERVIDOR, no en el navegador: sin JS un confirm() no corre,
+   * y este es el POST que le habla a 900 personas.
+   */
+  app.post('/admin/config/bot', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const contactos = db.stats().leads;
+    if (req.body.accion === 'apagar') {
+      db.setBotEncendido(false, quienEs(req));
+      return volverAConfig(req, res, 'Bot APAGADO. Sigue registrando todo lo que llegue, pero no le responde a nadie (salvo a los números de prueba).', 'bot');
+    }
+    const escrito = String(req.body.confirmacion || '').trim().toUpperCase();
+    if (escrito !== 'ENCENDER') {
+      return volverAConfig(req, res,
+        `Para encender el bot escribe la palabra ENCENDER en el campo. No es un trámite: a partir de ese momento les responde solo a los ${contactos} contactos registrados.`,
+        'bot', true);
+    }
+    // El ensayo previo no es burocracia: es lo único que separa "probé y anda"
+    // de "que salga y vemos". Los tres tildes van al servidor.
+    const faltan = [
+      req.body.ensayo_prueba ? null : 'probar el bot con tu propio número',
+      req.body.ensayo_bienvenida ? null : 'leer el mensaje de bienvenida',
+      req.body.ensayo_mecanica ? null : 'leer la mecánica que explica el bot',
+    ].filter(Boolean);
+    if (faltan.length) {
+      return volverAConfig(req, res, `Antes de encenderlo falta: ${faltan.join(' · ')}. Tíldalos cuando lo hayas hecho.`, 'bot', true);
+    }
+    db.setBotEncendido(true, quienEs(req));
+    volverAConfig(req, res, `Bot ENCENDIDO. Desde ahora responde a cualquiera de los ${contactos} contactos que escriba. Si algo sale mal, lo apagas de un toque desde el Resumen.`, 'bot');
+  });
+
+  // Apagar desde el Resumen: un toque, sin fricción y sin salir de la pantalla
+  // donde uno se dio cuenta de que algo anda mal.
+  app.post('/admin/bot/apagar', (req, res) => {
+    if (!autorizado(req, res)) return;
+    db.setBotEncendido(false, quienEs(req));
+    volver(res, { key: req.body.key, aviso: 'Bot APAGADO. Deja de responderle a todos; lo que llegue se sigue registrando.' });
+  });
+
+  /** A qué número van los avisos + qué números son de prueba. */
+  app.post('/admin/config/avisos', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const cambios = [];
+    if (req.body.notify_numero !== undefined) {
+      const antes = db.numeroAvisos();
+      const ahora = db.setNumeroAvisos(req.body.notify_numero);
+      if (ahora !== antes) cambios.push(ahora ? `los avisos van al +${ahora} (probalo con el botón de abajo)` : 'sin número de avisos: solo llegan por correo');
+    }
+    if (req.body.testers !== undefined) {
+      const lista = db.setNumerosDePrueba(req.body.testers);
+      cambios.push(lista.length ? `${lista.length} número${lista.length === 1 ? '' : 's'} de prueba` : 'sin números de prueba');
+    }
+    volverAConfig(req, res, cambios.length ? `Guardado: ${cambios.join(' · ')}.` : 'No cambiaste nada.', 'avisos');
+  });
+
+  /**
+   * PROBAR el número de avisos — mandarle un mensaje de verdad.
+   *
+   * Un número mal tipeado no falla: simplemente nunca llega nada, y eso no se
+   * nota hasta que se pierde un handoff con plata adentro. Acá sale un mensaje
+   * real y se guarda si funcionó; mientras no haya una prueba exitosa, Ajustes
+   * y el Resumen lo dicen.
+   */
+  app.post('/admin/config/avisos/probar', async (req, res) => {
+    if (!autorizado(req, res)) return;
+    const numero = db.numeroAvisos();
+    if (!numero) return volverAConfig(req, res, 'Primero guarda el número al que quieres que lleguen los avisos.', 'avisos', true);
+    if (!conexion || !conexion.enviar) return volverAConfig(req, res, 'El canal de WhatsApp no está disponible ahora mismo.', 'avisos', true);
+    const r = await conexion.enviar(numero,
+      '🔔 Prueba de Pichangueros: si estás leyendo esto, los avisos del bot (derivados, pagos por revisar, listas de espera) te van a llegar acá.');
+    if (r && r.ok) {
+      db.marcarAvisosProbado();
+      return volverAConfig(req, res, `Mensaje enviado al +${numero}. Revísalo en tu WhatsApp: si no llegó, el número está mal.`, 'avisos');
+    }
+    volverAConfig(req, res, `No se pudo enviar al +${numero}${r && r.error ? `: ${r.error}` : ''}. Revisa el número y que el canal esté en línea.`, 'avisos', true);
+  });
+
+  /** Los DOS correos: avisos y respaldo de la BD. */
+  app.post('/admin/config/correos', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const avisos = db.setCorreo('avisos', req.body.aviso_email);
+    const respaldo = db.setCorreo('respaldo', req.body.backup_email);
+    if (!avisos.ok || !respaldo.ok) {
+      return volverAConfig(req, res, 'Ese correo no parece válido — revísalo (déjalo vacío para volver a la casilla de KIPI).', 'correos', true);
+    }
+    volverAConfig(req, res,
+      `Avisos → ${avisos.valor || 'casilla de KIPI'} · Respaldo de la base → ${respaldo.valor || 'casilla de KIPI'}.`, 'correos');
+  });
+
+  /** Cuántas visitas hacen a un "Casero" — regla de Clarck, no del código. */
+  app.post('/admin/config/casero', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const v = db.setRecurrenteDesde(req.body.recurrente_desde);
+    const cuantos = Object.values(db.metricasPorNumero()).filter((m) => m.visitas >= v).length;
+    volverAConfig(req, res,
+      `Casero = ${v}+ visitas. Con eso hoy tienes ${cuantos} casero${cuantos === 1 ? '' : 's'}.`, 'casero');
+  });
+
   // Precio, link de grupo y nombre para mostrar de UNA zona (tarjeta por distrito).
   app.post('/admin/config/zona', (req, res) => {
     if (!autorizado(req, res)) return;
@@ -368,6 +492,19 @@ function registrarPanel(app, db, conexion = null) {
     if (!zona) return volverAConfig(req, res, 'Ese distrito ya no existe.', null, true);
     const c = db.getConfigMap();
     const antes = { precio: c[`precio_${zona}`] || '', link: c[`grouplink_${zona}`] || '', nombre: db.nombreDeZona(zona) };
+    /**
+     * SIN PRECIO NO SE GUARDA LA ZONA.
+     *
+     * Guardar la tarjeta con el precio vacío dejaba la zona cotizando "S/ 0" en
+     * el guion del bot y —peor— apagaba la validación del monto en los
+     * vouchers: sin precio, cualquier Yape salía confirmado. Es un campo del
+     * que cuelga la plata, así que se rechaza acá y se dice por qué.
+     */
+    if (!(Number((req.body.precio || '').trim()) > 0)) {
+      return volverAConfig(req, res,
+        `Ponle un precio por jugador a ${antes.nombre} (mayor que 0): sin precio el bot cotiza mal y no puede verificar los Yapes de esta zona.`,
+        `zona-${zona}`, true);
+    }
     const ahora = {
       precio: (req.body.precio || '').trim(),
       link: (req.body.grouplink || '').trim(),
@@ -403,6 +540,11 @@ function registrarPanel(app, db, conexion = null) {
     if (db.zonasOperativas().includes(zona)) {
       return volverAConfig(req, res, `${db.nombreDeZona(zona)} ya existe — está más arriba en esta misma página.`, `zona-${zona}`, true);
     }
+    // Mismo motivo que al editar una zona: un distrito sin precio nace mudo
+    // para cotizar y ciego para validar pagos.
+    if (!(Number((req.body.precio || '').trim()) > 0)) {
+      return volverAConfig(req, res, `Ponle el precio por jugador de ${nombre} (mayor que 0) para poder crearlo.`, 'nuevo-distrito', true);
+    }
     db.addSede({
       zona,
       nombre: (req.body.sede || '').trim().slice(0, 120) || 'Sede por definir',
@@ -410,7 +552,7 @@ function registrarPanel(app, db, conexion = null) {
     });
     db.setConfig({
       [`zonanombre_${zona}`]: nombre,
-      [`precio_${zona}`]: (req.body.precio || '').trim() || '15',
+      [`precio_${zona}`]: (req.body.precio || '').trim(),
     });
     volverAConfig(req, res, `${nombre} creado. Ya aparece en el bot, en Partidos y en los filtros. Falta cargarle el link del grupo.`, `zona-${zona}`);
   });
@@ -476,7 +618,13 @@ function registrarPanel(app, db, conexion = null) {
       cupo: req.body.cupo,
       precio: req.body.precio,
     });
-    const aviso = r.ok ? 'Partido actualizado. Los inscritos siguen adentro.' : r.motivo;
+    // Guardar con la hora en blanco dejaba hora=NULL, y un partido sin hora se
+    // ofrece TODO EL DÍA (y a las 11 de la noche sigue ofreciéndose). Un campo
+    // vacío no es una orden de borrar: db lo ignora y acá se dice que quedó la
+    // de antes, para que no parezca que se guardó algo que no se guardó.
+    const aviso = r.ok
+      ? `Partido actualizado. Los inscritos siguen adentro.${r.horaIgnorada ? ' Ojo: dejaste la hora en blanco, así que quedó la que ya tenía (sin hora el bot lo ofrecería todo el día).' : ''}`
+      : r.motivo;
     volverAPartidos(req, res, id, aviso, r.ok ? null : 'editor', !r.ok);
   });
 
@@ -588,7 +736,7 @@ function registrarPanel(app, db, conexion = null) {
       // El que sube de la espera NO se entera solo: el bot no puede iniciarle
       // conversación (131047 fuera de la ventana de 24 h). Se le avisa al
       // número de control para que Clarck le escriba y le pida el Yape.
-      const control = (process.env.NOTIFY_NUMBER || '').replace(/\D/g, '');
+      const control = db.numeroAvisos();
       let subio = '';
       if (promovido) {
         const lead = promovido.numero ? db.getLead(promovido.numero) : null;
@@ -1491,8 +1639,16 @@ function paginaResumen(db, key, query = {}) {
   const hoyN = porDia[hoy] || 0;
 
   const colaResp = todos.filter(sinResp).length;
+  // "Para Clarck" contaba los 105 handoff de TODA la historia y llevaba a una
+  // lista que respeta corte + 72 h: el tile decía 105 y la lista mostraba 4.
+  // Los dos números salen ahora de la misma función (db.handoffsActivos) y el
+  // tile lleva al filtro que muestra exactamente ese conjunto.
+  const esperandoAhora = db.handoffsActivos().length;
   const enHandoff = todos.filter((l) => l.handoff).length;
-  const pagosRevisar = db.pagosPorRevisar();
+  // Idem con los pagos: el banner contaba una cosa y la lista mostraba otra
+  // (contaba todo el histórico posterior al corte y linkeaba a una vista que
+  // abre en 7 días). Ahora es LA MISMA lista, y el link lleva a verla entera.
+  const pagosRevisar = db.pagosPorRevisar().length;
 
   // Por zona (las clasificadas + las que faltan).
   // Las zonas salen de la config en vivo, no de una lista escrita a mano.
@@ -1554,7 +1710,10 @@ function paginaResumen(db, key, query = {}) {
     // una barra de 8px, prácticamente no se ve. Va la versión --lime-fill (3.16:1),
     // que es el mismo verde con el peso justo para leerse.
     const color = listo ? 'var(--lime-fill)' : 'var(--st-off-solid)';
-    return `<a class="zrow" href="/admin/leads?key=${key}&vista=crm&distrito=${encodeURIComponent(d.k)}"><span class="zdot" style="background:${color}"></span>
+    // El número que ordena la fila son los PAGADORES, así que el link abre a
+    // los pagadores de ese distrito — no a todos los interesados, que son otro
+    // número (el que va al lado, en chico).
+    return `<a class="zrow" href="/admin/leads?key=${key}&vista=crm&distrito=${encodeURIComponent(d.k)}&rel=pagaron"><span class="zdot" style="background:${color}"></span>
       <span class="zname">${esc(d.nombre)}${listo ? ' 🔥' : ''}</span>
       <span class="ztrack"><i style="width:${Math.max(3, Math.round((d.pagadores / maxD) * 100))}%;background:${color}"></i></span>
       <span class="zval">${d.pagadores} <small style="color:var(--ink-3);font-weight:400">pagaron · ${d.n} interesados</small></span></a>`;
@@ -1613,23 +1772,41 @@ function paginaResumen(db, key, query = {}) {
       <span class="ztrack"><i style="width:${Math.max(3, base(n))}%;background:${color}"></i></span>
       <span class="zval">${n} <small style="color:var(--ink-2);font-weight:400">${base(n)}%</small></span></a>`;
 
-  // El banner refleja el modo real del bot (misma lectura de env que index.js).
-  const modoSeguro = (process.env.SAFE_MODE || 'true') !== 'false';
+  /**
+   * EL INTERRUPTOR, DESDE EL RESUMEN.
+   *
+   * Apagar tiene que ser un toque y estar donde uno se entera de que algo va
+   * mal — que es esta pantalla, no el fondo de Ajustes. Encender no: eso vive
+   * en Ajustes, detrás del ensayo y de escribir la palabra.
+   */
+  const bot = db.estadoBot();
+  const modoSeguro = !bot.encendido;
   const capturados = silenciados48h(roles, todos);
+  const desdeCuando = bot.encendidoEn
+    ? ` Encendido desde el ${fechaCompacta(bot.encendidoEn, true, false)} ${esc(String(bot.encendidoEn).slice(11, 16))}${bot.por ? ` (${esc(bot.por)})` : ''}.`
+    : '';
   const bannerSeguro = modoSeguro
-    ? `<a class="banner px" href="/admin/leads?key=${key}&vista=crm" style="text-decoration:none">
+    ? `<a class="banner px" href="/admin/leads?key=${key}&vista=config#bot" style="text-decoration:none">
     <div class="bic">🔒</div>
-    <div class="btxt"><b>Modo seguro activo.</b> El bot captura en silencio (por diseño):
-      <b>${capturados} conversacion${capturados === 1 ? '' : 'es'}</b> registradas en las últimas 48 h, listas para cuando se encienda.</div></a>`
-    : `<div class="banner ok px"><div class="bic">🤖</div>
-    <div class="btxt"><b>Bot activo.</b> Responde a todos los que escriban al número.</div></div>`;
+    <div class="btxt"><b>El bot está apagado.</b> Registra todo lo que llega pero no le responde a nadie:
+      <b>${capturados} conversacion${capturados === 1 ? '' : 'es'}</b> en las últimas 48 h esperando.
+      Toca para encenderlo cuando estés listo.</div></a>`
+    : `<div class="banner ok px" style="align-items:center">
+    <div class="bic">🤖</div>
+    <div class="btxt"><b>Bot encendido.</b> Le responde a cualquiera de los ${todos.length} contactos que escriba.${desdeCuando}</div>
+    <form method="post" action="/admin/bot/apagar" style="flex:0 0 auto;margin-left:auto">
+      <input type="hidden" name="key" value="${esc(decodeURIComponent(key))}">
+      <button class="btn-toque" style="min-height:var(--tap);font-size:var(--t-s);background:var(--surface);color:var(--st-alerta-ink);border:1.5px solid var(--st-alerta-ink);white-space:nowrap">⏸ Apagar</button>
+    </form></div>`;
 
   // Acción primero: la pichanga más próxima como marcador, antes que cualquier
   // métrica. Si no hay partido abierto, invita a abrir uno.
   // Los pagos por revisar son plata parada: iban al final de la página y ahora
   // van arriba, con el link a la lista ya filtrada en vez de "entra a la ficha".
+  // `periodo=todo` NO es un adorno: sin él la vista Pagos abre en los últimos 7
+  // días y el banner decía "12 pagos por revisar" para después mostrar 3.
   const alertaPagos = pagosRevisar
-    ? `<a class="banner px" href="/admin/leads?key=${key}&vista=pagos&estado=rev" style="margin:0 0 14px;text-decoration:none">
+    ? `<a class="banner px" href="/admin/leads?key=${key}&vista=pagos&estado=rev&periodo=todo" style="margin:0 0 14px;text-decoration:none">
         <div class="bic">💸</div>
         <div class="btxt"><b>${pagosRevisar} pago${pagosRevisar === 1 ? '' : 's'} por revisar.</b>
           Monto que no calza, comprobante repetido o ilegible — tócalo para verlos.</div></a>`
@@ -1713,7 +1890,10 @@ function paginaResumen(db, key, query = {}) {
   if (huecos.length) {
     const h = huecos[0];
     pendientes.push({
-      ico: '📅', que: `${huecos.length} día${huecos.length === 1 ? '' : 's'} con turno de siempre y nada cargado`,
+      // "en los próximos N días" y no a secas: la vista Partidos abre en LA
+      // SEMANA, así que un hueco a 10 días se cuenta acá y se ve al pasar de
+      // semana. Sin el plazo escrito, el número parecía no cuadrar con la grilla.
+      ico: '📅', que: `${huecos.length} día${huecos.length === 1 ? '' : 's'} con turno de siempre y nada cargado (próximos ${db.HORIZONTE_DIAS} días)`,
       para: `Los últimos ${h.veces} ${db.diaPlural(h.dia_nombre)} jugaste ${h.hora} en ${esc(db.nombreDeZona(h.zona))} y el ${fechaCompacta(h.fecha, false, false)} no hay nada. Si lo vendes por WhatsApp, no habrá dónde anotarlo.`,
       href: `/admin/leads?key=${key}&vista=partidos`, cta: 'Cargarlo',
     });
@@ -1723,6 +1903,22 @@ function paginaResumen(db, key, query = {}) {
       ico: '📲', que: 'Falta el número de Yape',
       para: 'Es el número que el bot le pasa a cada jugador para cobrarle.',
       href: aConfig('general'), cta: 'Ponerlo',
+    });
+  }
+  // Un número de avisos sin probar es indistinguible de uno bien puesto: no
+  // falla, simplemente nunca llega nada. Y por ahí salen los handoffs y los
+  // pagos por revisar.
+  if (!db.numeroAvisos()) {
+    pendientes.push({
+      ico: '🔔', que: 'No hay número para los avisos',
+      para: 'Los derivados, los pagos por revisar y las listas de espera solo te llegarían por correo.',
+      href: aConfig('avisos'), cta: 'Ponerlo',
+    });
+  } else if (!db.avisosProbadoEn()) {
+    pendientes.push({
+      ico: '🔔', que: 'El número de avisos nunca se probó',
+      para: 'Un número mal tipeado no da error: los avisos simplemente no llegan. Manda una prueba de un toque.',
+      href: aConfig('avisos'), cta: 'Probar',
     });
   }
   const bloquePendientes = pendientes.length ? `
@@ -1741,7 +1937,7 @@ function paginaResumen(db, key, query = {}) {
   const prox = abiertos[0] || null;
   const heroPartido = prox
     ? `<a class="marcador" style="display:block;margin-bottom:14px" href="/admin/leads?key=${key}&vista=partidos&partido=${prox.id}">
-        <div class="mtop"><span class="mlabel">⚽ Próxima pichanga · ${ZONAS[prox.zona]?.nombre || esc(prox.zona)}</span>
+        <div class="mtop"><span class="mlabel">⚽ Próxima pichanga · ${esc(db.nombreDeZona(prox.zona))}</span>
           <span class="mdelta">${prox.restante > 0 ? `${prox.restante} cupos libres` : '⏳ LLENO — hay espera'}</span></div>
         <div class="mnum">${prox.ocupados}<span style="font-size:32px;color:var(--on-navy-3)">/${prox.cupo}</span></div>
         <div class="mfoot">${esc(db.fechaBonita(prox.fecha))}${prox.hora ? ` · ${esc(prox.hora)}` : ''}${prox.sede ? ` · ${esc(prox.sede)}` : ''} — toca para ver la lista y copiarla al grupo</div>
@@ -1767,7 +1963,7 @@ function paginaResumen(db, key, query = {}) {
         <a class="stat green" href="/admin/leads?key=${key}&vista=crm">${delta ? `<span class="chip ${delta > 0 ? 'up' : 'wait'}">${delta > 0 ? '▲' : '▼'} ${Math.abs(delta)}%</span>` : ''}<div class="sn">${semana}</div><div class="sl">Esta semana</div></a>
         <a class="stat navy" href="/admin/leads?key=${key}&vista=crm&dia=${hoy}&tipo=nuevos" title="Ver a los que escribieron por primera vez hoy"><div class="sn">${hoyN}</div><div class="sl">Nuevos hoy ›</div></a>
         <a class="stat amber" href="/admin/leads?key=${key}&vista=crm&filtro=responder">${colaResp ? '<span class="chip wait">pendiente</span>' : ''}<div class="sn">${colaResp}</div><div class="sl">${modoSeguro ? 'Testers sin responder' : 'Sin responder (48 h)'}</div></a>
-        <a class="stat ${enHandoff ? 'red' : ''}" href="/admin/leads?key=${key}&vista=crm&filtro=handoff"><div class="sn">${enHandoff}</div><div class="sl">Para Clarck</div></a>
+        <a class="stat ${esperandoAhora ? 'red' : ''}" href="/admin/leads?key=${key}&vista=crm&filtro=esperando" title="Derivados que escribieron en las últimas 72 h · ${enHandoff} derivados en total"><div class="sn">${esperandoAhora}</div><div class="sl">Para Clarck ahora</div></a>
       </div>
 
       <div class="shdr">Por zona <small>· toca para ver quiénes son</small></div>
@@ -1775,7 +1971,7 @@ function paginaResumen(db, key, query = {}) {
         ${ordenZonas.map((z) => zrow(
           z === 'otra' ? 'Sin sede cerca' : esc(db.nombreDeZona(z)),
           zc[z],
-          ZONAS[z]?.color || '#64748b',
+          colorZona(z),
           `&zona=${encodeURIComponent(z)}`
         )).join('')}
         ${sinClasificar ? zrow('Por clasificar', sinClasificar, 'var(--ink-3)', null) : ''}
@@ -1807,13 +2003,16 @@ function paginaResumen(db, key, query = {}) {
         ${/* Una rampa de marca: de navy (todos los que escriben) a lima (los
               caseros). Cada escalón está ADENTRO del anterior — se puede leer
               como una escalera porque los cuatro se miden con lo mismo. */ ''}
+        ${/* Cada escalón lleva a SU MISMO conjunto: los acumulados (1+, 2+, N+),
+              no al tramo suelto. Antes "Vinieron alguna vez: 120" abría la
+              lista de los que vinieron UNA sola vez y mostraba 80. */ ''}
         ${frow('Escribieron al número', todos.length, 'var(--navy-fill)', '', '')}
-        ${frow('Vinieron alguna vez', vinieron, 'var(--navy-2)', '1+ visita', '&rel=probo')}
-        ${frow('Volvieron', volvieron, 'var(--ramp-mid)', '2+ visitas', '&rel=vuelve')}
+        ${frow('Vinieron alguna vez', vinieron, 'var(--navy-2)', '1+ visita', '&rel=vinieron')}
+        ${frow('Volvieron', volvieron, 'var(--ramp-mid)', '2+ visitas', '&rel=volvieron')}
         ${frow('Caseros', caseros, 'var(--lime-fill)', `${db.RECURRENTE_DESDE}+ visitas`, '&rel=casero')}
       </div>
       <div class="foot" style="padding:8px 2px 0">Una <b>visita</b> = un día con Yape confirmado o con partido jugado. Un Yape de S/30 por dos cupos es una visita con un amigo, no dos.
-        Ojo: los escalones 2 a 4 llevan al CRM filtrado por ESE tramo (solo los de 1 visita, solo los de 2 a 5…), no al acumulado.</div>
+        Cada escalón abre exactamente la gente que cuenta.</div>
 
       ${clientes.length ? `
       <div class="shdr">Salud de la base <small>· de los ${clientes.length} que ya vinieron</small></div>
@@ -1876,10 +2075,23 @@ function paginaPagos(db, key, query = {}) {
   const fPeriodo = ['hoy', '7d', '30d', 'todo'].includes(query.periodo) ? query.periodo : '7d';
   const fDia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
 
+  /**
+   * "Por revisar" es UNA cola, y se define en un solo lugar (db.pagosPorRevisar).
+   *
+   * Antes el tile contaba los 'revisar' del período ignorando el punto de
+   * arranque y la sección de abajo sí lo respetaba: dos números distintos, uno
+   * encima del otro, en la misma pantalla. Ahora los dos miran esta misma
+   * lista, así que no pueden separarse. Lo anterior al corte queda como
+   * historial (sigue en el CSV, en el Sheet y en la ficha de cada contacto).
+   */
+  const enCola = new Set(db.pagosPorRevisar().map((p) => p.id));
+  const esCola = (p) => p.estado === 'revisar' && enCola.has(p.id);
+  const ocultosPorCorte = todosPagos.filter((p) => p.estado === 'revisar' && !enCola.has(p.id)).length;
+
   // "Alcance": medio + período/día (sin el filtro de estado). Las tarjetas de
   // arriba se calculan sobre el alcance — estilo Power BI: tocas un filtro y
   // TODO (tarjetas y listas) se recalcula sobre ese corte.
-  let alcance = todosPagos;
+  let alcance = todosPagos.filter((p) => p.estado !== 'revisar' || esCola(p));
   if (fMedio) alcance = alcance.filter((p) => (p.medio || 'yape') === fMedio);
   if (fDia) {
     // Un día puntual se revisa contra la app de Yape: orden cronológico (como Yape).
@@ -1906,13 +2118,11 @@ function paginaPagos(db, key, query = {}) {
   };
 
   const conf = pagos.filter((p) => p.estado === 'confirmado');
-  // "Por revisar" es una COLA DE TRABAJO: solo lo posterior al punto de
-  // arranque. Los de julio siguen en la data (y en el filtro de estado), pero
-  // no son tareas de hoy.
-  const rev = pagos.filter((p) => p.estado === 'revisar' && (fEstado === 'rev' || db.despuesDelCorte(p.creado_en)));
-  // Tarjetas: siempre sobre el ALCANCE (reaccionan a medio/período/día).
+  const rev = pagos.filter(esCola);
+  // Tarjetas: siempre sobre el ALCANCE (reaccionan a medio/período/día) y con
+  // la MISMA definición que la lista de abajo.
   const confAlcance = alcance.filter((p) => p.estado === 'confirmado');
-  const revAlcance = alcance.filter((p) => p.estado === 'revisar');
+  const revAlcance = alcance.filter(esCola);
   const totalAlcance = confAlcance.reduce((a, p) => a + (p.monto || 0), 0);
   const cuposAlcance = confAlcance.reduce((a, p) => a + (p.cupos || 1), 0);
 
@@ -1999,7 +2209,9 @@ function paginaPagos(db, key, query = {}) {
       <div class="shdr">Confirmados <small>· ${conf.length} pago${conf.length === 1 ? '' : 's'}</small></div>
       ${conf.length ? `<div class="llist">${conf.map(fila).join('')}</div>` : `<div class="vacio">${hayFiltro ? 'Sin pagos confirmados con este filtro.' : 'Todavía no hay pagos confirmados.<br>Cuando un jugador mande su captura de Yape, aparece acá.'}</div>`}
 
-      <div class="foot">La IA lee cada comprobante (monto, remitente, nº de operación y app/banco).<br>Se actualiza solo cada 90 s.</div>
+      <div class="foot">La IA lee cada comprobante (monto, remitente, nº de operación y app/banco).<br>
+        ${ocultosPorCorte ? `${ocultosPorCorte} comprobante${ocultosPorCorte === 1 ? '' : 's'} por revisar anterior${ocultosPorCorte === 1 ? '' : 'es'} al punto de arranque quedaron como historial (siguen en el CSV y en la ficha de cada contacto).<br>` : ''}
+        Se actualiza solo cada 90 s.</div>
     </div>
   `, { refresh: true, activo: 'pagos', key, aviso: query });
 }
@@ -2035,14 +2247,26 @@ function paginaCRM(db, key, query) {
   // El filtro de ETAPA (8 opciones, la mitad en cero por definición) pasó a ser
   // el de RELACIÓN. Parámetro nuevo (`rel`) y no reciclado: `estado=activo` de
   // un link viejo querría decir otra cosa, y es mejor ignorarlo que mentir.
-  const RELACION_FILTROS = ['nunca', 'probo', 'vuelve', 'casero', 'al_dia', 'enfriando', 'perdido', 'en_grupo', 'sin_grupo'];
+  // `vinieron` y `volvieron` son ACUMULADOS (1+ y 2+ visitas), no tramos: son
+  // los conjuntos que cuenta el embudo del Resumen. Sin ellos, "Vinieron alguna
+  // vez: 120" abría una lista de 80 (solo los de UNA visita) — el número y su
+  // lista contando cosas distintas, que es justo lo que se vino a arreglar.
+  // `pagaron` es el conjunto que ordena "¿Dónde abrir?" (dejó plata alguna vez).
+  const RELACION_FILTROS = ['nunca', 'probo', 'vuelve', 'casero', 'vinieron', 'volvieron', 'pagaron',
+    'al_dia', 'enfriando', 'perdido', 'en_grupo', 'sin_grupo'];
   const relF = RELACION_FILTROS.includes(query.rel) ? query.rel : '';
   const dia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
   const distritoF = normTexto(query.distrito || '');
+  // "Derivado" (toda la historia) y "esperando ahora" (habló en 72 h, después
+  // del corte) son dos conjuntos distintos y cada uno tiene su filtro: el
+  // Resumen cuenta los que esperan AHORA y tiene que poder abrir exactamente
+  // esos, ni más ni menos. La definición vive en db.handoffsActivos.
+  const numerosEsperando = new Set(db.handoffsActivos().map((l) => l.numero));
   let leads = todos;
   if (q) leads = leads.filter((l) => [l.nombre, l.numero, l.distrito, l.etiquetas].join(' ').toLowerCase().includes(q));
   if (zona) leads = leads.filter((l) => l.zona === zona);
   if (filtro === 'handoff') leads = leads.filter((l) => l.handoff);
+  if (filtro === 'esperando') leads = leads.filter((l) => numerosEsperando.has(l.numero));
   if (filtro === 'responder') leads = leads.filter(sinResp);
   // Casero = 6+ visitas (el "más de 5 partidos" de Clarck, ahora medido con la
   // métrica que sí tiene historia). Nuevo = llegó esta semana, la misma ventana
@@ -2076,6 +2300,10 @@ function paginaCRM(db, key, query) {
     probo: (l) => db.relacionDe(mDe(l).visitas) === 'probo',
     vuelve: (l) => db.relacionDe(mDe(l).visitas) === 'vuelve',
     casero: (l) => db.relacionDe(mDe(l).visitas) === 'casero',
+    // Los tres acumulados que cuentan el Resumen y el bloque "¿Dónde abrir?".
+    vinieron: (l) => mDe(l).visitas >= 1,
+    volvieron: (l) => mDe(l).visitas >= 2,
+    pagaron: (l) => mDe(l).pagos > 0,
     al_dia: (l) => mDe(l).visitas >= 1 && db.frescuraDe(db.diasDesde(mDe(l).ultima), um) === 'al_dia',
     enfriando: (l) => mDe(l).visitas >= 1 && db.frescuraDe(db.diasDesde(mDe(l).ultima), um) === 'enfriando',
     perdido: (l) => mDe(l).visitas >= 1 && db.frescuraDe(db.diasDesde(mDe(l).ultima), um) === 'perdido',
@@ -2101,10 +2329,9 @@ function paginaCRM(db, key, query) {
   // Los derivados de julio que Clarck ya atendió a mano no son cola de hoy:
   // siguen filtrables con el chip "Clarck" y el bot sigue callado con ellos,
   // pero no infla "Necesitan respuesta" con historia muerta.
-  const handoffActivo = (l) => {
-    const u = roles[l.numero];
-    return Boolean(l.handoff && u && u.en >= limaHace(72) && db.despuesDelCorte(u.en));
-  };
+  // Misma definición que el tile del Resumen y que el Sheet: una sola función
+  // en db.js, tres superficies que la llaman.
+  const handoffActivo = (l) => numerosEsperando.has(l.numero);
   const urgentes = leads.filter((l) => handoffActivo(l) || sinResp(l));
   const resto = leads.filter((l) => !(handoffActivo(l) || sinResp(l)));
 
@@ -2140,7 +2367,8 @@ function paginaCRM(db, key, query) {
     ['nuevos', '🌱 Solo nuevos (esta semana)', nPor((l) => (l.creado_en || '').slice(0, 10) >= fechaLima(-6))],
     ['recurrentes', '⭐ Solo caseros', nPor((l) => db.relacionDe(mDe(l).visitas) === 'casero')],
     ['responder', '📥 Sin responder', nPor(sinResp)],
-    ['handoff', '🔔 Derivados a Clarck', nPor((l) => l.handoff)],
+    ['esperando', '🔔 Esperando a Clarck ahora', numerosEsperando.size],
+    ['handoff', '🔔 Derivados a Clarck (todos)', nPor((l) => l.handoff)],
   ];
 
   // 2 · ZONA — dinámica. Las zonas se crean desde Ajustes: escribirlas a mano
@@ -2159,8 +2387,12 @@ function paginaCRM(db, key, query) {
   const opcRelacion = [
     ['nunca', 'Relación: nunca pagó', nPor(PRED_REL.nunca)],
     ['probo', 'Relación: probó (1 visita)', nPor(PRED_REL.probo)],
-    ['vuelve', 'Relación: vuelve (2 a 5)', nPor(PRED_REL.vuelve)],
+    ['vuelve', `Relación: vuelve (2 a ${db.RECURRENTE_DESDE - 1})`, nPor(PRED_REL.vuelve)],
     ['casero', `Relación: casero (${db.RECURRENTE_DESDE}+)`, nPor(PRED_REL.casero)],
+    // Los acumulados del embudo del Resumen: cada fila de allá abre su conjunto.
+    ['vinieron', 'Vinieron alguna vez (1+)', nPor(PRED_REL.vinieron)],
+    ['volvieron', 'Volvieron (2+)', nPor(PRED_REL.volvieron)],
+    ['pagaron', '💸 Ya pagó alguna vez', nPor(PRED_REL.pagaron)],
     ['al_dia', `✓ Al día (vinieron hace ≤${um.frio} d)`, nPor(PRED_REL.al_dia)],
     ['enfriando', `❄ Se enfrió (${um.frio + 1} a ${um.perdido} d sin venir)`, nPor(PRED_REL.enfriando)],
     ['perdido', `💤 Perdidos (+${um.perdido} d sin venir)`, nPor(PRED_REL.perdido)],
@@ -2292,7 +2524,7 @@ function paginaFicha(db, key, numero, query = {}) {
   const roles = db.ultimosRoles();
   const keyRaw = decodeURIComponent(key);
   const sinResp = sinResponder(roles, lead);
-  const z = ZONAS[lead.zona];
+  const z = lead.zona ? { color: colorZona(lead.zona), nombre: db.nombreDeZona(lead.zona) } : null;
 
   const hayBot = msgs.some((m) => m.rol !== 'user');
   const burbujas = msgs.map((m) => `
@@ -2375,7 +2607,7 @@ function paginaFicha(db, key, numero, query = {}) {
         <h2>${esc(lead.nombre || 'Sin nombre')}</h2>
         <div class="fnum">+${esc(numero)}</div>
         <div class="fpills">
-          ${z ? `<span class="pz" style="background:${z.color}">${z.nombre}</span>` : ''}
+          ${z ? `<span class="pz" style="background:${z.color}">${esc(z.nombre)}</span>` : ''}
           ${lead.handoff ? `<span class="pz" style="background:var(--st-alerta-solid)">🔔 ${esc(lead.handoff_motivo || 'derivado')}</span>` : ''}
           ${sinResp ? '<span class="pz" style="background:var(--st-debe-solid)">📥 Sin responder</span>' : ''}
         </div>
@@ -2577,6 +2809,168 @@ function paginaConfig(db, key, conexion = null, query = {}) {
     </div>`;
   };
 
+  /**
+   * EL INTERRUPTOR DEL BOT — el control más consecuente del producto.
+   *
+   * Apagar y encender NO son simétricos y la pantalla lo dice:
+   *   · apagar → un botón, sin preguntas (es la salida de emergencia).
+   *   · encender → escribir la palabra ENCENDER + tildar el ensayo previo, con
+   *     la consecuencia contada en el número REAL de contactos ("934"), no en
+   *     un "todos los usuarios" que no se siente.
+   * Escribir una palabra cuesta intención; un checkbox o un confirm() se
+   * despachan con el pulgar sin leer. Y todo se valida en el servidor porque
+   * sin JS un confirm no existe.
+   */
+  const estadoDelBot = db.estadoBot();
+  const totalContactos = db.stats().leads;
+  const cuandoBot = estadoDelBot.encendido ? estadoDelBot.encendidoEn : estadoDelBot.apagadoEn;
+  const bloqueBot = `
+    <div class="ancla" id="bot">
+      <div class="shdr">${estadoDelBot.encendido ? '🤖 El bot está ENCENDIDO' : '🔒 El bot está APAGADO'} <small>· quién recibe respuestas automáticas</small></div>
+      <div class="group" style="border-left:6px solid ${estadoDelBot.encendido ? 'var(--lime)' : 'var(--st-debe-solid)'}">
+        <p style="padding:14px 14px 0;font-size:13.5px;color:var(--ink-2);line-height:1.5">
+          ${estadoDelBot.encendido
+            ? `El bot le responde a <b>cualquiera</b> de los ${totalContactos} contactos que escriba al número.`
+            : `Ahora mismo el bot <b>registra todo</b> lo que llega (nombre, distrito, comprobantes) pero <b>no le responde a nadie</b>, salvo a los números de prueba de abajo. Es el estado seguro.`}
+          ${cuandoBot ? `<br><small style="color:var(--ink-3)">${estadoDelBot.encendido ? 'Encendido' : 'Apagado'} el ${esc(fechaCompacta(cuandoBot, true, false))} a las ${esc(String(cuandoBot).slice(11, 16))}${estadoDelBot.por ? ` desde ${esc(estadoDelBot.por)}` : ''}.</small>` : ''}
+          ${estadoDelBot.fuente === 'entorno' ? '<br><small style="color:var(--ink-3)">Todavía manda la configuración del servidor; en cuanto toques este interruptor pasa a mandar lo que decidas acá.</small>' : ''}
+        </p>
+        ${estadoDelBot.encendido ? `
+        <form method="post" action="/admin/config/bot" style="padding:14px">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="accion" value="apagar">
+          <button class="btn-toque" style="width:100%;min-height:var(--tap-lg);font-size:var(--t-l);background:var(--st-alerta-bg);color:var(--st-alerta-ink);border:1.5px solid var(--st-alerta-ink)">⏸ Apagar el bot</button>
+          <div style="font-size:var(--t-s);color:var(--ink-2);margin-top:9px;text-align:center">
+            Deja de responder al instante. No se pierde nada: todo lo que llegue se sigue registrando.
+          </div>
+        </form>` : `
+        <form method="post" action="/admin/config/bot" style="padding:0 14px 14px">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="accion" value="encender">
+          <div style="background:var(--surface-2);border:1px solid var(--line-strong);border-radius:var(--r2);padding:12px 13px;margin:6px 0 13px">
+            <div style="font-weight:700;font-size:var(--t-m);margin-bottom:8px">Antes de encenderlo</div>
+            <label style="display:flex;gap:10px;align-items:flex-start;padding:7px 0;font-size:var(--t-m);line-height:1.4">
+              <input type="checkbox" name="ensayo_prueba" value="1" style="width:20px;height:20px;flex:0 0 auto;margin-top:1px">
+              <span>Le escribí al bot desde <b>mi propio número</b> y me contestó como esperaba
+                <small style="display:block;color:var(--ink-2)">Tu número tiene que estar en "Números de prueba", abajo.</small></span>
+            </label>
+            <label style="display:flex;gap:10px;align-items:flex-start;padding:7px 0;font-size:var(--t-m);line-height:1.4">
+              <input type="checkbox" name="ensayo_bienvenida" value="1" style="width:20px;height:20px;flex:0 0 auto;margin-top:1px">
+              <span>Leí el <b>mensaje de bienvenida</b> que reciben los nuevos
+                <small style="display:block;color:var(--ink-2)">Está más abajo, en "El negocio".</small></span>
+            </label>
+            <label style="display:flex;gap:10px;align-items:flex-start;padding:7px 0;font-size:var(--t-m);line-height:1.4">
+              <input type="checkbox" name="ensayo_mecanica" value="1" style="width:20px;height:20px;flex:0 0 auto;margin-top:1px">
+              <span>Leí <b>la mecánica</b> que el bot explica cuando preguntan cómo funciona</span>
+            </label>
+          </div>
+          <div style="background:var(--st-debe-bg);border-radius:var(--r2);padding:12px 13px;font-size:var(--t-m);line-height:1.5;color:var(--st-debe-ink);margin-bottom:13px">
+            Al encenderlo, el bot empieza a responderles solo a los <b>${totalContactos} contactos registrados</b>.
+            Los mensajes que salgan no se pueden deshacer.
+          </div>
+          ${campo('bot-confirmar', 'Escribe ENCENDER para confirmar',
+            '<input id="bot-confirmar" name="confirmacion" placeholder="ENCENDER" autocomplete="off" autocapitalize="characters" spellcheck="false">',
+            'A propósito se escribe con el teclado: es la única acción del panel que le habla a todo el mundo.', true)}
+          <button class="btn-toque btn-guardar" style="width:100%;min-height:var(--tap-lg);font-size:var(--t-l);margin-top:4px">🤖 Encender el bot para todos</button>
+        </form>`}
+      </div>
+    </div>`;
+
+  /** A qué número van los avisos + el botón que prueba que de verdad llegan. */
+  const numeroAvisos = db.numeroAvisos();
+  const probadoEn = db.avisosProbadoEn();
+  const testers = db.numerosDePrueba();
+  const bloqueAvisos = `
+    <div class="ancla" id="avisos">
+      <div class="shdr">🔔 Avisos y números de prueba <small>· a quién le escribe el bot cuando algo necesita a Clarck</small></div>
+      <div class="group">
+        <form method="post" action="/admin/config/avisos">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <div class="campos">
+            ${campo('av-numero', 'Número que recibe los avisos',
+              `<input id="av-numero" name="notify_numero" value="${esc(numeroAvisos)}" inputmode="tel" placeholder="51999888777">`,
+              `Con código de país y sin espacios. Por acá salen los derivados, los pagos por revisar y las listas de espera. ${
+                numeroAvisos
+                  ? (probadoEn
+                    ? `<b style="color:var(--lime-ink)">Probado el ${esc(fechaCompacta(probadoEn, true, false))}: los avisos llegan.</b>`
+                    : '<span class="falta">Todavía sin probar: si el número está mal, los avisos no llegan y no da ningún error.</span>')
+                  : '<span class="falta">Sin número, los avisos solo salen por correo.</span>'
+              }`, true)}
+            ${campo('av-testers', 'Números de prueba',
+              `<input id="av-testers" name="testers" value="${esc(testers.join(','))}" inputmode="tel" placeholder="51999888777,51988777666">`,
+              'Separados por coma. Con el bot apagado, estos son los ÚNICOS a los que sí les responde: es el ensayo antes de encenderlo.', true)}
+          </div>
+          <div class="pie-form">
+            <button class="btn-toque btn-guardar">Guardar</button>
+          </div>
+        </form>
+        ${numeroAvisos ? `
+        <form method="post" action="/admin/config/avisos/probar" style="padding:0 14px 14px">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <button class="btn-toque" style="width:100%;min-height:var(--tap);background:var(--surface-2);color:var(--ink);border:1.5px solid var(--line-strong)">📲 Mandarme un aviso de prueba ahora</button>
+          <div style="font-size:var(--t-s);color:var(--ink-2);margin-top:9px;text-align:center">
+            Manda un WhatsApp de verdad al +${esc(numeroAvisos)}. Si no lo recibes, el número está mal.
+          </div>
+        </form>` : ''}
+      </div>
+    </div>`;
+
+  /**
+   * LOS DOS CORREOS, SEPARADOS.
+   *
+   * Compartían una sola variable, y por ese correo sale el respaldo COMPLETO de
+   * la base: la conversación de 900+ personas. Un aviso puede ir a cualquier
+   * casilla; el .db no. El default de los dos sigue siendo la casilla de KIPI
+   * (decisión del cliente); lo que cambia es que ahora está a la vista.
+   */
+  const bloqueCorreos = `
+    <div class="ancla" id="correos">
+      <div class="shdr">📧 Correos <small>· los avisos y el respaldo de la base van por separado</small></div>
+      <div class="group">
+        <form method="post" action="/admin/config/correos">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <div class="campos">
+            ${campo('mail-avisos', 'Correo para los AVISOS',
+              `<input id="mail-avisos" name="aviso_email" type="email" value="${esc(c.aviso_email || '')}" placeholder="${esc(backup.paraAvisos() || 'sin configurar')}" inputmode="email">`,
+              `Derivados, pagos por revisar, cerebro caído, salud de la cuenta. Vacío = la casilla de KIPI (<b>${esc(backup.paraAvisos() || 'sin configurar')}</b>).`, true)}
+            ${campo('mail-backup', 'Correo para el RESPALDO de la base',
+              `<input id="mail-backup" name="backup_email" type="email" value="${esc(c.backup_email || '')}" placeholder="${esc(backup.paraRespaldo() || 'sin configurar')}" inputmode="email">`,
+              `Acá llega el archivo con <b>toda</b> la base: los ${totalContactos} contactos y sus conversaciones completas. Trátalo como lo que es. Vacío = la casilla de KIPI (<b>${esc(backup.paraRespaldo() || 'sin configurar')}</b>).`, true)}
+          </div>
+          <div class="pie-form">
+            <button class="btn-toque btn-guardar">Guardar los correos</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+
+  /** Cuántas visitas hacen a un Casero: regla del negocio, no del código. */
+  const umbralCasero = db.recurrenteDesde();
+  const metCasero = Object.values(db.metricasPorNumero());
+  const topeVisitas = metCasero.reduce((m, x) => Math.max(m, x.visitas || 0), 0);
+  const caserosHoy = metCasero.filter((m) => m.visitas >= umbralCasero).length;
+  const bloqueCasero = `
+    <div class="ancla" id="casero">
+      <div class="shdr">⭐ Cuándo alguien es "Casero" <small>· cuántas visitas hacen a un habitual</small></div>
+      <div class="group">
+        <form method="post" action="/admin/config/casero">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <p style="padding:13px 14px 0;font-size:13.5px;color:var(--ink-2);line-height:1.45">
+            Una <b>visita</b> es un día que vino (Yape confirmado o partido jugado).
+            ${topeVisitas < umbralCasero
+              ? `<b>Hoy nadie llega:</b> el que más vino tiene ${topeVisitas} visita${topeVisitas === 1 ? '' : 's'} y el corte está en ${umbralCasero}, así que el filtro "Caseros" te muestra <b>cero</b>. Bájalo para ver a tu gente.`
+              : `Con el corte en ${umbralCasero} tienes <b>${caserosHoy} casero${caserosHoy === 1 ? '' : 's'}</b> (el que más vino tiene ${topeVisitas} visitas).`}
+          </p>
+          <div class="campos">
+            ${campo('cfg-casero', 'Es casero desde (visitas)',
+              `<input id="cfg-casero" name="recurrente_desde" type="number" min="2" max="50" inputmode="numeric" value="${umbralCasero}">`,
+              'Cambia el filtro "Caseros", el embudo del Resumen y la hoja de Google. No se borra ni se avisa nada.')}
+          </div>
+          <div class="pie-form">
+            <button class="btn-toque btn-guardar">Guardar</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+
   const corteActual = db.getCorte();
   const bloqueCorte = `
     <div class="ancla" id="corte">
@@ -2720,6 +3114,10 @@ function paginaConfig(db, key, conexion = null, query = {}) {
     <div class="px">
       <div class="ltitle"><div><div class="eyebrow">Ajustes</div><h2>Configuración</h2></div></div>
 
+      ${/* El interruptor primero: es lo más consecuente de esta pantalla y lo
+             que Clarck viene a buscar el día que quiere encender o apagar. */ ''}
+      ${bloqueBot}
+      ${bloqueAvisos}
       ${bloqueCanal}
 
       <div class="ancla" id="general">
@@ -2775,7 +3173,9 @@ function paginaConfig(db, key, conexion = null, query = {}) {
         </div>
       </div>
 
+      ${bloqueCorreos}
       ${bloqueCorte}
+      ${bloqueCasero}
       ${bloqueFrescura}
       ${bloqueGracia}
       ${zonasOp.map((z) => bloqueZona(z)).join('')}
@@ -2841,7 +3241,7 @@ function paginaPartidos(db, key, query = {}) {
   const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 })}`;
 
   const fila = (p) => {
-    const z = ZONAS[p.zona];
+    const zonaNombre = db.nombreDeZona(p.zona);
     const lleno = p.ocupados >= p.cupo;
     // "Lleno" se decía SOLO pintando el "12/14" de ámbar en vez de verde: con
     // daltonismo rojo-verde los dos son el mismo marrón, y a contraluz tampoco
@@ -2852,7 +3252,7 @@ function paginaPartidos(db, key, query = {}) {
     return `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}">
       <span class="pfecha"><b>${esc(p.hora ? p.hora.split('-')[0] : '—')}</b><small>${esc(p.hora ? (/am/i.test(p.hora) ? 'am' : 'pm') : 'sin hora')}</small></span>
       <span class="lbody">
-        <span class="lname">${z ? z.nombre : esc(p.zona)}${p.turno_id ? ' <small style="font-weight:600;color:var(--ink-3)">· turno fijo</small>' : ''}</span>
+        <span class="lname">${esc(zonaNombre)}${p.turno_id ? ' <small style="font-weight:600;color:var(--ink-3)">· turno fijo</small>' : ''}</span>
         <span class="lsub">${esc(p.sede || 'Sede por definir')} · S/ ${esc(p.precio ?? neg.zonas[p.zona]?.precio ?? '?')}</span>
         <span class="pchips">
           ${chipCupos}
@@ -2896,7 +3296,7 @@ function paginaPartidos(db, key, query = {}) {
         ${porLiquidar.map((p) => `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}#liquidacion">
           <span class="pfecha"><b>${esc(p.fecha.slice(8, 10))}</b><small>${esc(mesCorto(p.fecha))}</small></span>
           <span class="lbody">
-            <span class="lname">${ZONAS[p.zona] ? ZONAS[p.zona].nombre : esc(p.zona)}${p.hora ? ` · ${esc(p.hora)}` : ''}</span>
+            <span class="lname">${esc(db.nombreDeZona(p.zona))}${p.hora ? ` · ${esc(p.hora)}` : ''}</span>
             <span class="lsub">${p.ocupados} jugador${p.ocupados === 1 ? '' : 'es'} · cobrado ${soles(p.caja ? p.caja.cobrado : 0)}${p.caja && p.caja.porCobrar > 0 ? ` · falta ${soles(p.caja.porCobrar)}` : ''}</span>
             <span class="pchips"><span class="est ${p.caja && p.caja.porCobrar > 0 ? 'est-debe' : 'est-ok'}">${p.caja && p.caja.porCobrar > 0 ? 'falta cobrar' : 'todo cobrado'}</span></span>
           </span>
@@ -3124,7 +3524,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   if (!p) return baseHtml('Partido · Pichangueros', `<div class="px"><p style="padding:20px">Partido no encontrado. <a href="/admin/leads?key=${key}&vista=partidos">Volver</a></p></div>`, { activo: 'partidos', key });
 
   const neg = db.getNegocio();
-  const z = ZONAS[p.zona];
+  const z = { color: colorZona(p.zona), nombre: db.nombreDeZona(p.zona) };
   const inscripciones = db.inscripcionesDe(partidoId);
   const activas = inscripciones.filter((i) => i.estado !== 'baja');
   const ocupados = inscripciones.filter((i) => ['pagado', 'reservado'].includes(i.estado)).length;

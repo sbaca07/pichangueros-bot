@@ -25,11 +25,23 @@ const path = require('path');
 const zlib = require('zlib');
 const nodemailer = require('nodemailer');
 
+const ajustes = require('./db');
+
 const EMAIL_USER = process.env.KIPI_EMAIL_USER || '';
 const EMAIL_PASS = process.env.KIPI_EMAIL_APP_PASSWORD || '';
-// A dónde llega el respaldo. Por defecto a la misma casilla que lo envía:
-// queda guardado en Gmail sin depender de otra cuenta.
-const EMAIL_TO = process.env.BACKUP_EMAIL_TO || EMAIL_USER;
+
+/**
+ * DOS DESTINOS, NO UNO (17/08).
+ *
+ * Los dos salían por `BACKUP_EMAIL_TO`, y por ese correo va el respaldo
+ * COMPLETO de la base: la conversación entera de 900+ personas. Un aviso de
+ * "pago por revisar" puede ir a la casilla que Clarck mire todo el día; el .db
+ * no. Ahora son dos ajustes distintos, editables desde el panel, y el default
+ * de ambos sigue siendo la casilla de KIPI (decisión del cliente) — lo que
+ * cambia es que ahora está a la vista en vez de escondido en Render.
+ */
+const paraAvisos = () => ajustes.correoAvisos() || EMAIL_USER;
+const paraRespaldo = () => ajustes.correoRespaldo() || EMAIL_USER;
 
 const activo = () => Boolean(EMAIL_USER && EMAIL_PASS);
 
@@ -70,6 +82,9 @@ async function enviarBackup(db, { motivo = 'programado' } = {}) {
     return { ok: false, motivo: 'no configurado (faltan KIPI_EMAIL_USER / KIPI_EMAIL_APP_PASSWORD)' };
   }
 
+  // El .db va al correo de RESPALDO (lleva las conversaciones de todos), que
+  // puede ser distinto del de avisos.
+  const destino = paraRespaldo();
   let snap = null;
   try {
     snap = armarSnapshot(db);
@@ -92,7 +107,7 @@ async function enviarBackup(db, { motivo = 'programado' } = {}) {
 
     await transporte.sendMail({
       from: `Pichangueros Bot <${EMAIL_USER}>`,
-      to: EMAIL_TO,
+      to: destino,
       subject: `Backup Pichangueros ${hoyLima()}`,
       text: `Respaldo automático de la base de datos del bot.\n\n${detalle}\n\n`
         + 'Para restaurar: descomprimir el .gz y dejar el .db en el disco de Render '
@@ -100,8 +115,8 @@ async function enviarBackup(db, { motivo = 'programado' } = {}) {
       attachments: [{ filename: snap.nombre, path: snap.archivo }],
     });
 
-    console.log(`[backup] Enviado a ${EMAIL_TO} (${(snap.bytes / 1024).toFixed(0)} KB, ${motivo}).`);
-    return { ok: true, bytes: snap.bytes, para: EMAIL_TO };
+    console.log(`[backup] Enviado a ${destino} (${(snap.bytes / 1024).toFixed(0)} KB, ${motivo}).`);
+    return { ok: true, bytes: snap.bytes, para: destino };
   } catch (e) {
     console.error('[backup] FALLÓ el respaldo:', e.message);
     return { ok: false, motivo: e.message };
@@ -120,7 +135,7 @@ function programarBackup(db, horas = Number(process.env.BACKUP_HORAS || 24)) {
   // cada reinicio rápido de un deploy.
   setTimeout(() => enviarBackup(db, { motivo: 'arranque' }), 120_000);
   setInterval(() => enviarBackup(db, { motivo: 'programado' }), horas * 3600e3);
-  console.log(`[backup] Respaldo por correo activo → ${EMAIL_TO} (cada ${horas} h).`);
+  console.log(`[backup] Respaldo por correo activo → ${paraRespaldo()} (cada ${horas} h).`);
 }
 
 // Horas de Lima en que sale el resumen de derivados. Tres al día: a la mañana
@@ -305,6 +320,8 @@ async function avisar(asunto, cuerpo = '') {
     console.error(`[aviso] SIN CANAL DE CORREO — el aviso queda solo en el log: ${asunto}`);
     return { ok: false, motivo: 'no configurado' };
   }
+  // Los avisos van a SU casilla, no a la del respaldo.
+  const destino = paraAvisos();
   try {
     const transporte = nodemailer.createTransport({
       service: 'gmail',
@@ -312,11 +329,11 @@ async function avisar(asunto, cuerpo = '') {
     });
     await transporte.sendMail({
       from: `Pichangueros Bot <${EMAIL_USER}>`,
-      to: EMAIL_TO,
+      to: destino,
       subject: `[Pichangueros] ${asunto}`,
       text: `${cuerpo || asunto}\n\nEnviado por el bot de Pichangueros (${hoyLima()}).\n`,
     });
-    console.log(`[aviso] Enviado por correo a ${EMAIL_TO}: ${asunto}`);
+    console.log(`[aviso] Enviado por correo a ${destino}: ${asunto}`);
     return { ok: true };
   } catch (e) {
     console.error('[aviso] No se pudo mandar el correo:', e.message);
@@ -327,4 +344,6 @@ async function avisar(asunto, cuerpo = '') {
 module.exports = {
   enviarBackup, programarBackup, activo, armarSnapshot, avisar,
   programarResumen, enviarResumenHandoffs, enviarParteSemanal,
+  // A dónde va cada cosa (el panel lo muestra; son dos casillas distintas).
+  paraAvisos, paraRespaldo,
 };

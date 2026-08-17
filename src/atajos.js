@@ -43,9 +43,12 @@ function textoParrilla({ completa = false } = {}) {
   const mostrar = completa ? fechas : fechas.slice(0, 2);
   const resto = abiertos.length - mostrar.reduce((n, f) => n + porDia.get(f).length, 0);
 
-  const bloque = (fecha) => `⚽ *${db.fechaBonita(fecha)}*\n` + porDia.get(fecha).map((p) =>
-    `· ${p.hora ? `${p.hora} — ` : ''}${nombreZona(neg, p.zona)}${p.sede ? ` (${p.sede})` : ''} · S/ ${p.precio ?? neg.zonas[p.zona]?.precio ?? '?'} · ${p.restante > 0 ? `${p.restante} cupos` : 'LLENO ⏳'}`
-  ).join('\n');
+  const bloque = (fecha) => `⚽ *${db.fechaBonita(fecha)}*\n` + porDia.get(fecha).map((p) => {
+    // Mismo precio que ve el bot, la lista del grupo y el validador de pagos.
+    // Sin precio cargado NO se escribe "S/ 0": se dice que está por confirmar.
+    const precio = db.precioDePartido(p);
+    return `· ${p.hora ? `${p.hora} — ` : ''}${nombreZona(neg, p.zona)}${p.sede ? ` (${p.sede})` : ''} · ${precio != null ? `S/ ${precio}` : 'precio por confirmar'} · ${p.restante > 0 ? `${p.restante} cupos` : 'LLENO ⏳'}`;
+  }).join('\n');
 
   return `${completa ? 'Todas las pichangas de la semana:' : 'Las pichangas más próximas:'}\n\n${mostrar.map(bloque).join('\n\n')}`
     + (resto > 0 ? `\n\n📅 Hay ${resto} pichangas más en la semana — escribe *semana* para verlas todas.` : '')
@@ -60,7 +63,8 @@ function textoPrecios() {
   }
   for (const p of db.partidosAbiertos(null, { vigentes: true })) {
     const n = nombreZona(neg, p.zona);
-    if (!porZona.has(n) && p.precio) porZona.set(n, p.precio);
+    const precio = db.precioDePartido(p);
+    if (!porZona.has(n) && precio != null) porZona.set(n, precio);
   }
   if (!porZona.size) return null;
   const lineas = [...porZona].map(([n, precio]) => `⚽ ${n}: S/ ${precio} por jugador`);

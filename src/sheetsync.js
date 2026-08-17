@@ -13,8 +13,60 @@
  * ("cualquiera con el enlace") → copiar la URL a SHEET_WEBHOOK_URL y usar el
  * mismo secreto en ambos lados.
  */
+const backup = require('./backup');
+
 const WEBHOOK_URL = process.env.SHEET_WEBHOOK_URL || '';
 const SECRET = process.env.SHEET_SECRET || '';
+
+/**
+ * La versión de `google-apps-script.gs` que este código espera del otro lado.
+ *
+ * El Apps Script se PEGA a mano en el editor de Google y hay que publicar una
+ * implementación nueva para que la URL sirva el código nuevo. Si uno pega y no
+ * publica, sigue corriendo el anterior — en silencio, con respuestas 200 y todo.
+ * El script ya devolvía su `version` en cada sync y nadie la miraba. Ahora se
+ * compara: subir esta constante al mismo tiempo que la del .gs.
+ */
+const VERSION_ESPERADA = 'v4-anchos';
+
+/**
+ * El espejo podía estar muerto SEMANAS sin que nadie se enterara: un fallo solo
+ * hacía console.error, y los logs de Render no los mira nadie. Mismo patrón que
+ * el cerebro (brain.js): al 3.er fallo seguido sale un correo, y como mucho uno
+ * por hora para que una caída larga no se vuelva spam.
+ */
+let fallosSeguidos = 0;
+let ultimoAviso = 0;
+function registrarFallo(motivo) {
+  fallosSeguidos++;
+  if (fallosSeguidos >= 3 && Date.now() - ultimoAviso > 3600e3) {
+    ultimoAviso = Date.now();
+    Promise.resolve(backup.avisar(
+      'El espejo a Google Sheets está caído',
+      `${fallosSeguidos} sincronizaciones seguidas fallaron. La hoja que mira Clarck está DESACTUALIZADA `
+      + '(el panel y el bot siguen bien: esto es solo el espejo).\n\n'
+      + `Último error: ${motivo}\n\n`
+      + 'Revisar SHEET_WEBHOOK_URL / SHEET_SECRET en Render, y que el Apps Script siga publicado como app web.'
+    )).catch(() => {});
+  }
+}
+/** Se avisa UNA vez por versión desalineada: es un estado, no un evento. */
+let versionAvisada = null;
+function revisarVersion(txt) {
+  let version = null;
+  try { version = JSON.parse(txt).version || null; } catch (_) { /* respuesta no-JSON: ya se loguea */ }
+  if (!version || version === VERSION_ESPERADA) return version;
+  if (versionAvisada === version) return version;
+  versionAvisada = version;
+  console.error(`[sheet] VERSIÓN DESALINEADA: la hoja corre "${version}" y este bot espera "${VERSION_ESPERADA}".`);
+  Promise.resolve(backup.avisar(
+    'La hoja de Google corre una versión vieja del script',
+    `El Web App responde "${version}" y el bot espera "${VERSION_ESPERADA}".\n\n`
+    + 'Pegar el código en el editor NO alcanza: hay que Implementar → Gestionar implementaciones → editar → '
+    + 'Versión "Nueva" → Implementar. Hasta entonces la hoja se sigue escribiendo con el código anterior.'
+  )).catch(() => {});
+  return version;
+}
 
 // Las zonas ya no son tres fijas: Clarck abrió Chorrillos y Rímac desde el
 // panel, y el mapa viejo (brena/comas/otra) las habría escrito en minúscula y
@@ -131,7 +183,13 @@ function armarHojas(db) {
   const porZona = {};
   for (const l of leads) if (l.zona) porZona[l.zona] = (porZona[l.zona] || 0) + 1;
   const confirmados = pagos.filter((p) => p.estado === 'confirmado');
-  const porRevisar = pagos.filter((p) => p.estado === 'revisar');
+  // "Por revisar" y "esperando a Clarck" salen de las MISMAS funciones que usa
+  // el panel (db.pagosPorRevisar / db.handoffsActivos). Antes cada hoja contaba
+  // por su cuenta —todos los 'revisar' de la historia, todos los handoff de
+  // siempre— y la hoja decía un número distinto del que veía Clarck en el
+  // panel, con los dos "bien" según su propia cuenta.
+  const porRevisar = db.pagosPorRevisar();
+  const esperando = db.handoffsActivos();
   const recaudado = confirmados.reduce((s, p) => s + (Number(p.monto) || 0), 0);
 
   const hojaResumen = {
@@ -143,8 +201,12 @@ function armarHojas(db) {
       ['⚠️ Esta hoja se reescribe sola cada 6 horas', 'Para cambiar algo entrá al panel — lo que escribas acá se pierde'],
       ['', ''],
       ['Contactos totales', leads.length],
-      ['Con datos completos', leads.filter((l) => l.nombre && l.edad && l.zona).length],
-      ['Esperando a Clarck (handoff)', leads.filter((l) => l.handoff).length],
+      // Mismo criterio que la columna "Datos" de la hoja Leads y que el panel:
+      // nombre + edad + distrito. Antes acá se pedía la ZONA en vez del
+      // distrito y daba un total distinto al de la columna de al lado.
+      ['Con datos completos', leads.filter((l) => nivelDatos(l) === 'Completo').length],
+      ['Esperando a Clarck ahora (72 h)', esperando.length],
+      ['Derivados en total (histórico)', leads.filter((l) => l.handoff).length],
       ['', ''],
       // El embudo comercial, con la misma métrica que el panel: cada uno es
       // subconjunto del anterior (una visita = un día que vino).
@@ -157,10 +219,13 @@ function armarHojas(db) {
       ['', ''],
       ['Pagos confirmados', confirmados.length],
       ['Recaudado (S/)', recaudado],
-      ['Pagos por revisar', porRevisar.length],
+      ['Pagos por revisar (cola de hoy)', porRevisar.length],
       ['', ''],
       ['Partidos creados', partidos.length],
-      ['Partidos abiertos', partidos.filter((p) => p.estado === 'abierto').length],
+      // `estado` es la columna CONGELADA del enum viejo: contarla acá dejaba
+      // "Partidos abiertos" pegado en un número que ya no escribe nadie. La
+      // fase se calcula (db.fasePartido) y es la misma que ve el bot.
+      ['Con inscripción abierta', partidos.filter((p) => p.fase === 'proximo').length],
       ['Cupos vendidos (pagados)', partidos.reduce((s, p) => s + (p.pagados || 0), 0)],
       ['', ''],
       ['Última sincronización', new Date().toLocaleString('es-PE', { timeZone: 'America/Lima' })],
@@ -188,10 +253,16 @@ async function syncToSheet(db) {
     // filtro por pestaña, anchos. Va al log para poder verificar el estado real
     // sin que nadie tenga que abrir la hoja y mirar.
     console.log(`[sheet] Respuesta del script: ${txt.slice(0, 900)}`);
-    return { ok: true, n: hojas.find((h) => h.nombre === 'Leads')?.filas.length || 0, hojas: hojas.length };
+    fallosSeguidos = 0;
+    const version = revisarVersion(txt);
+    return {
+      ok: true, n: hojas.find((h) => h.nombre === 'Leads')?.filas.length || 0, hojas: hojas.length,
+      version, versionOk: !version || version === VERSION_ESPERADA,
+    };
   } catch (e) {
     console.error('[sheet] Error sincronizando:', e.message);
-    return { ok: false, motivo: e.message };
+    registrarFallo(e.message);
+    return { ok: false, motivo: e.message, fallosSeguidos };
   }
 }
 
@@ -206,4 +277,7 @@ function programarSync(db, horas = 6) {
   console.log(`[sheet] Espejo a Google Sheet activo (cada ${horas} h).`);
 }
 
-module.exports = { syncToSheet, programarSync, activo, armarHojas };
+module.exports = {
+  syncToSheet, programarSync, activo, armarHojas,
+  VERSION_ESPERADA, estado: () => ({ fallosSeguidos, versionVista: versionAvisada }),
+};

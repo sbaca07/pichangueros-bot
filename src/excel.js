@@ -13,10 +13,17 @@ const NAVY = 'FF142847';
 const ROJO_SUAVE = 'FFFDE7E5';
 const GRIS_CLARO = 'FFF4F6F5';
 
+/**
+ * SOLO COLORES (17/08). Acá también estaban los NOMBRES escritos a mano —y solo
+ * tres: Rímac, Chorrillos y cualquier distrito creado desde Ajustes se
+ * exportaban con su slug crudo ("chorrillos"), y renombrar una zona en el panel
+ * no cambiaba nada de este archivo. El nombre sale de db.nombreDeZona, igual
+ * que en el bot, el panel y el Sheet.
+ */
 const ZONAS = {
-  brena: { nombre: 'Breña', color: 'FF34C759' },
-  comas: { nombre: 'Comas', color: 'FF007AFF' },
-  otra: { nombre: 'Otra zona', color: 'FF64748B' },
+  brena: { color: 'FF34C759' },
+  comas: { color: 'FF007AFF' },
+  otra: { color: 'FF64748B' },
 };
 
 // "Etapa" y "Próxima acción" salieron el 16/08: la primera quedó congelada (ya
@@ -100,7 +107,7 @@ async function buildLeadsWorkbook(db) {
       l.nombre || '',
       l.edad || '',
       l.distrito || '',
-      z ? z.nombre : (l.zona || ''),
+      l.zona ? db.nombreDeZona(l.zona) : '',
       db.RELACIONES[db.relacionDe(m.visitas)].label,
       m.visitas,
       m.ultima || '',

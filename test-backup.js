@@ -15,6 +15,10 @@ const { DatabaseSync } = require('node:sqlite');
 process.env.KIPI_EMAIL_USER = 'kipienterprise@gmail.com';
 process.env.KIPI_EMAIL_APP_PASSWORD = 'clave-falsa';
 process.env.BACKUP_EMAIL_TO = 'destino@ejemplo.com';
+// backup.js lee los DOS destinos (avisos / respaldo) de la BD, con estas env
+// vars como valor inicial: hay que apuntarlo a una BD temporal para no leer la
+// de desarrollo (ni escribirla) desde una prueba.
+process.env.WWEBJS_AUTH_PATH = fs.mkdtempSync(path.join(os.tmpdir(), 'test-backup-db-'));
 
 // --- Doble de nodemailer (antes de requerir backup.js) -------------------------
 const enviados = [];

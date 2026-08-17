@@ -97,7 +97,14 @@ function describirZonas(negocio) {
       const link = z.groupLink
         ? `Link del grupo: ${z.groupLink}`
         : 'Link del grupo: AÚN NO CONFIGURADO — no inventes uno y NO prometas mandarlo "en un momento" (nadie lo manda). Dile que Clarck en persona lo suma al grupo y le escribe por acá.';
-      return `${z.nombre} — S/ ${z.precio} por jugador\n${sedes}\n${link}`;
+      // SIN PRECIO NO SE COTIZA. Con el precio vacío en Config, `Number(...)||0`
+      // hacía que este renglón dijera "S/ 0 por jugador" y el bot lo repetía
+      // tal cual — regalaba la pichanga por escrito. Ahora dice lo que pasa de
+      // verdad: todavía no hay precio, que lo confirme Clarck.
+      const cuanto = z.precio != null
+        ? `S/ ${z.precio} por jugador`
+        : 'PRECIO POR CONFIRMAR — no inventes un monto ni digas "S/ 0": dile que Clarck le confirma el precio de esta zona en un momento';
+      return `${z.nombre} — ${cuanto}\n${sedes}\n${link}`;
     })
     .join('\n\n');
 }
@@ -108,11 +115,11 @@ function describirPartidos(negocio) {
     return 'No hay partidos con inscripción abierta cargados ahora mismo. Si alguien quiere inscribirse, dile que le confirmas el cupo en un momento (Clarck ve la notificación) y deja inscribir_partido en null.';
   }
   return abiertos.map((p) => {
-    const precio = p.precio ?? negocio.zonas[p.zona]?.precio;
-    const nombreZona = negocio.zonas[p.zona]?.nombre
-      || ({ rimac: 'Rímac', chorrillos: 'Chorrillos' })[p.zona]
-      || p.zona.charAt(0).toUpperCase() + p.zona.slice(1);
-    return `- ID ${p.id}: ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''} en ${nombreZona}${p.sede ? ` (${p.sede})` : ''} · S/ ${precio ?? '?'} · ${p.restante > 0 ? `${p.restante} cupos libres` : 'LLENO — solo lista de espera'}`;
+    // El precio del partido, con la misma regla que usan la lista del grupo, la
+    // caja y el validador de pagos: el suyo, o el de su zona, o ninguno.
+    const precio = db.precioDePartido(p);
+    const nombreZona = db.nombreDeZona(p.zona);
+    return `- ID ${p.id}: ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''} en ${nombreZona}${p.sede ? ` (${p.sede})` : ''} · ${precio != null ? `S/ ${precio}` : 'precio por confirmar (NO digas un monto)'} · ${p.restante > 0 ? `${p.restante} cupos libres` : 'LLENO — solo lista de espera'}`;
   }).join('\n')
   + '\n\nAl mencionar un partido usa la fecha tal cual está arriba ("MAÑANA miércoles 12 de agosto") — NUNCA el formato 2026-08-12. Los IDs son solo para inscribir_partido: NUNCA los menciones en el reply.';
 }

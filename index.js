@@ -9,18 +9,24 @@
  *   3. Captura de leads (src/db.js): todo contacto queda en SQLite con nombre,
  *      edad, distrito y zona — incluso si el bot no le responde (MODO SEGURO).
  *   4. Handoff: quejas y casos especiales → el bot se calla para ese contacto
- *      y avisa por WhatsApp al número de control (NOTIFY_NUMBER).
+ *      y avisa por WhatsApp al número de control (Ajustes → Avisos).
  *   5. Pagos por Yape (src/pagos.js): si el mensaje trae una imagen, se intenta
  *      leer como voucher (monto/titular/n° de operación) antes de pasar al
  *      cerebro conversacional. Anti-reenvío + valida el monto contra el precio
  *      de la zona del contacto; lo que no calza queda "por revisar" en el CRM.
  *
- * MODO SEGURO (SAFE_MODE=true): el bot solo RESPONDE a los números de
- * ALLOWED_TESTERS. Al resto los registra Y el cerebro les EXTRAE los datos
- * (nombre/edad/zona) para enriquecer el CRM, pero sin enviarles nada ni avisar
- * a Clarck. Cuando Clarck apruebe el guion → SAFE_MODE=false y atiende a todos.
+ * MODO SEGURO: el bot solo RESPONDE a los números de prueba. Al resto los
+ * registra Y el cerebro les EXTRAE los datos (nombre/edad/zona) para enriquecer
+ * el CRM, pero sin enviarles nada. Se enciende y se apaga desde el panel
+ * (Ajustes → "Encender el bot"); SAFE_MODE en el entorno es solo el valor
+ * inicial, hasta que alguien toque el interruptor.
  *
- * Comandos del número de control (NOTIFY_NUMBER), por DM al bot:
+ * REGLA DEL SILENCIO: lo que es para el JUGADOR se calla; lo que es para
+ * CLARCK sale siempre. Un handoff, un pago por revisar o alguien pidiendo cupo
+ * son cosas que él tiene que saber aunque el bot esté mudo — si no, el modo
+ * seguro deja de ser "no hablamos todavía" y pasa a ser "no nos enteramos".
+ *
+ * Comandos del número de control, por DM al bot:
  *   kipi estado               → resumen: conexión, leads, handoffs
  *   kipi reactivar <numero>   → saca a un contacto del handoff (el bot vuelve a atenderlo)
  */
@@ -63,19 +69,25 @@ const numeroOficial = () =>
   (process.env[TRANSPORTE === 'ycloud' ? 'YCLOUD_NUMERO' : 'META_NUMERO'] || '').replace(/\D/g, '') || null;
 const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || '.wwebjs_auth';
 const SESSION_DIR = path.join(AUTH_PATH, 'baileys');
-const SAFE_MODE = (process.env.SAFE_MODE || 'true') !== 'false';
+/**
+ * LOS TRES INTERRUPTORES SE LEEN POR MENSAJE, NO AL ARRANCAR (17/08).
+ *
+ * Eran constantes de módulo alimentadas por env vars: cambiar cualquiera de las
+ * tres exigía entrar NOSOTROS a Render y redesplegar, o sea que el dueño del
+ * negocio no podía encender ni apagar su propio bot. Ahora viven en la BD
+ * (db.modoSeguro / db.numerosDePrueba / db.numeroAvisos) y la env var es solo
+ * el valor inicial: mientras nadie toque el panel, se comportan EXACTAMENTE
+ * como antes — este deploy no cambia nada por su cuenta.
+ */
+const enModoSeguro = () => db.modoSeguro();
+const esTester = (numero) => db.numerosDePrueba().includes(numero);
+const numeroControl = () => db.numeroAvisos();
 const TEST_TRIGGER = (process.env.TEST_TRIGGER || 'ping kipi').toLowerCase();
 // Pausa antes de responder. Nació como "naturalidad anti-spam" de Baileys, pero
 // por el canal oficial de Meta no hay heurística de baneo que esquivar: lo único
 // que hacía era regalarle 1.5–3.5 s a CADA respuesta (13/08, latencias medidas
 // con Clarck: 7 a 12 s). Queda en 0; sigue configurable por si se vuelve a Baileys.
 const RESPUESTA_DELAY_MS = Number(process.env.RESPUESTA_DELAY_MS || 0);
-// Números (solo dígitos, con código de país, ej. 51999888777) que el cerebro
-// SÍ atiende aunque esté en MODO SEGURO. Separados por coma.
-const ALLOWED_TESTERS = (process.env.ALLOWED_TESTERS || '')
-  .split(',').map((n) => n.replace(/\D/g, '')).filter(Boolean);
-// Número de control: recibe avisos de leads/handoffs y puede usar comandos kipi.
-const NOTIFY_NUMBER = (process.env.NOTIFY_NUMBER || '').replace(/\D/g, '');
 // Fallback de vinculación SIN QR: si está seteado (solo dígitos, con código de
 // país) y la sesión aún no está registrada, se pide un código de 8 dígitos para
 // vincular desde WhatsApp > Dispositivos vinculados > "Vincular con número".
@@ -177,11 +189,12 @@ async function enviarTexto(sock, jid, texto) {
  * de salud de la cuenta: WhatsApp es best-effort, el correo es el que llega.
  */
 async function notificarControl(sock, texto, asunto = null) {
-  // Primero el correo: no depende de NOTIFY_NUMBER ni de la ventana de 24 h.
+  // Primero el correo: no depende del número de avisos ni de la ventana de 24 h.
   if (asunto) Promise.resolve(backup.avisar(asunto, texto)).catch(() => {});
-  if (!NOTIFY_NUMBER) return;
+  const control = numeroControl();
+  if (!control) return;
   try {
-    await enviarTexto(sock, `${NOTIFY_NUMBER}@s.whatsapp.net`, texto);
+    await enviarTexto(sock, `${control}@s.whatsapp.net`, texto);
   } catch (e) { console.error('[notify] No se pudo avisar al número de control:', e.message); }
 }
 
@@ -192,7 +205,7 @@ async function comandoControl(sock, from, body) {
     const s = db.stats();
     const zonas = s.porZona.map((z) => `${z.zona}: ${z.n}`).join(', ') || 'sin clasificar aún';
     await enviarTexto(sock, from,
-      `📊 Pichangueros Bot\nConexión: ${connectionState} · Modo seguro: ${SAFE_MODE ? 'ON' : 'OFF'} · Cerebro: ${brain.cerebroActivo() ? 'ON' : 'OFF (falta OPENAI_API_KEY)'}\nLeads: ${s.leads} (${s.completos} con datos) · Por zona: ${zonas}\nEn handoff: ${s.enHandoff}`);
+      `📊 Pichangueros Bot\nConexión: ${connectionState} · Modo seguro: ${enModoSeguro() ? 'ON' : 'OFF'} · Cerebro: ${brain.cerebroActivo() ? 'ON' : 'OFF (falta OPENAI_API_KEY)'}\nLeads: ${s.leads} (${s.completos} con datos) · Por zona: ${zonas}\nEn handoff: ${s.enHandoff}`);
     return true;
   }
   const reactivar = texto.match(/^kipi reactivar (\+?[\d\s-]+)$/);
@@ -207,6 +220,7 @@ async function comandoControl(sock, from, body) {
 
 const avisosHandoff = new Map();   // numero → cuándo se re-avisó a control por última vez
 const disculpasBrain = new Map();  // numero → cuándo se le mandó la disculpa por falla de IA
+const avisosCupo = new Map();      // numero → cuándo se avisó "pidió cupo con el bot apagado"
 
 // Cola por contacto: los mensajes de un mismo número se atienden EN ORDEN.
 // Sin esto, dos mensajes rápidos del mismo jugador se procesan en paralelo y
@@ -267,7 +281,7 @@ function recibirMensaje(sock, msg) {
   const numero = numeroDe(msg);
   const texto = extraerTexto(msg);
   const instantaneo = !numero || !texto || !esSoloTexto(msg)
-    || numero === NOTIFY_NUMBER || texto.toLowerCase() === TEST_TRIGGER;
+    || numero === numeroControl() || texto.toLowerCase() === TEST_TRIGGER;
 
   if (instantaneo) {
     soltarRafaga(numero); // lo que estaba pendiente va primero: la cola conserva el orden
@@ -304,7 +318,7 @@ function registrarRespuestaManual(msg) {
   const texto = extraerTexto(msg);
   if (!texto || texto.startsWith('[')) return;   // solo texto real, no adjuntos
   const numero = numeroDe(msg);
-  if (!numero || numero === NOTIFY_NUMBER) return;
+  if (!numero || numero === numeroControl()) return;
   if (!db.getLead(numero)) return;
   db.saveMessage(numero, 'assistant', texto);
   atendidoAMano.set(numero, Date.now());
@@ -337,7 +351,7 @@ async function manejarMensaje(sock, msg) {
   // sin error pero nunca le llegaba al contacto.
   const pnJid = msg.key.senderPn || msg.key.participantPn || null;
   const destino = from;
-  if (ALLOWED_TESTERS.includes(numero)) {
+  if (esTester(numero)) {
     console.log(`[dbg tester] numero=${numero} remoteJid=${from} senderPn=${pnJid || '-'} → destino=${destino}`);
   }
 
@@ -351,7 +365,7 @@ async function manejarMensaje(sock, msg) {
   }
 
   // Comandos del número de control
-  if (numero === NOTIFY_NUMBER && (await comandoControl(sock, from, body))) return;
+  if (numero === numeroControl() && (await comandoControl(sock, from, body))) return;
 
   // Todo contacto queda registrado, responda el bot o no (captura de leads).
   const lead = db.getOrCreateLead(numero);
@@ -359,12 +373,12 @@ async function manejarMensaje(sock, msg) {
 
   // MODO SEGURO (silencio): el cerebro SIGUE leyendo para extraer datos
   // (nombre/edad/distrito/zona) y enriquecer el CRM, pero el bot no envía
-  // nada al contacto ni avisa a Clarck. Los ALLOWED_TESTERS sí reciben todo.
+  // nada al contacto ni avisa a Clarck. Los números de prueba sí reciben todo.
   // También calla si Clarck acaba de responderle a mano a este contacto: dos
   // respuestas simultáneas confunden al jugador y hacen quedar mal al sistema.
   const enManual = clarckAtendiendo(numero);
   if (enManual) console.log(`[manual] ${numero}: Clarck lo está atendiendo — el bot registra pero no responde.`);
-  const modoSilencio = (SAFE_MODE && !ALLOWED_TESTERS.includes(numero)) || enManual;
+  const modoSilencio = (enModoSeguro() && !esTester(numero)) || enManual;
 
   // Contacto derivado a Clarck: el bot no se mete — pero si el contacto sigue
   // escribiendo, se le re-avisa al número de control (máx. 1 vez por hora por
@@ -372,7 +386,12 @@ async function manejarMensaje(sock, msg) {
   if (lead.handoff) {
     console.log(`[handoff] DM de ${numero} (lo atiende Clarck): "${body}"`);
     const ultimo = avisosHandoff.get(numero) || 0;
-    if (!modoSilencio && Date.now() - ultimo > 60 * 60 * 1000) {
+    // El re-aviso sale TAMBIÉN en modo silencio: es para Clarck, no para el
+    // jugador. Estaba dentro del `!modoSilencio`, así que con el bot apagado —
+    // que es justo cuando Clarck atiende todo a mano— nadie se enteraba de que
+    // un derivado seguía escribiendo. Sí se respeta el "atendiendo a mano": ahí
+    // Clarck está leyendo el chat en ese momento, avisarle sería duplicado.
+    if (!enManual && Date.now() - ultimo > 60 * 60 * 1000) {
       avisosHandoff.set(numero, Date.now());
       await notificarControl(sock, `✋ ${lead.nombre || 'Contacto'} (wa.me/${numero}) está derivado a Clarck y sigue escribiendo: "${body.slice(0, 120)}"\nPara que el bot lo retome: kipi reactivar ${numero}`);
     }
@@ -397,13 +416,18 @@ async function manejarMensaje(sock, msg) {
         // plata ya entró. Justo el caso de Anthony el 15/08 — con SAFE_MODE
         // encendido nadie se enteró de que el pago se fue al partido de otro día.
         if (resultado.alerta) await notificarControl(sock, `${resultado.alerta}\nwa.me/${numero}`, 'Pago sin partido asignado');
+        // Un pago POR REVISAR también sale siempre: hay plata adentro y el cupo
+        // queda en el limbo hasta que Clarck mire. Vivía dentro del
+        // `!modoSilencio` — el mismo agujero que el aviso de arriba, que ya se
+        // había arreglado para el pago sin asignar y no para éste.
+        if (resultado.handoff) {
+          await notificarControl(sock, `💸 Revisar pago de wa.me/${numero}: ${resultado.motivoHandoff}`, 'Pago por revisar');
+        }
         if (!modoSilencio) {
           try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
           if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
           await enviarTexto(sock, destino, resultado.respuesta);
           db.saveMessage(numero, 'assistant', resultado.respuesta);
-          // Crítico: hay plata de por medio y el cupo queda en el limbo hasta que Clarck mire.
-          if (resultado.handoff) await notificarControl(sock, `💸 Revisar pago de wa.me/${numero}: ${resultado.motivoHandoff}`, 'Pago por revisar');
         } else {
           console.log(`[SAFE_MODE] ${numero}: voucher procesado sin responder.`);
         }
@@ -492,11 +516,38 @@ async function manejarMensaje(sock, msg) {
     );
   }
 
+  /**
+   * EL PEDIDO DE CUPO NO SE PIERDE, NI SIQUIERA EN SILENCIO.
+   *
+   * Reservar sigue sin correr con el bot mudo, y por una buena razón: el
+   * jugador no recibe la respuesta, así que sería un cupo que ocupa lugar en la
+   * lista y que nadie sabe que existe. Pero antes el pedido moría ahí, sin
+   * dejar rastro: con el modo seguro encendido NADIE podía reservar y ningún
+   * pago llegaba con reserva previa (por eso los Yapes caían sueltos y había
+   * que adivinar a qué partido iban).
+   *
+   * Se aplica la regla de la casa: si el aviso es para Clarck, sale siempre. Él
+   * lo anota desde el panel en dos toques y le contesta al jugador — que es
+   * exactamente lo que el modo seguro dice que va a pasar.
+   */
+  if (decision.inscribir_partido && modoSilencio && !enManual) {
+    const p = db.getPartido(decision.inscribir_partido);
+    const ultimo = avisosCupo.get(numero) || 0;
+    if (p && Date.now() - ultimo > 60 * 60 * 1000) {
+      avisosCupo.set(numero, Date.now());
+      const libres = Math.max(0, p.cupo - db.inscripcionesDe(p.id).filter((i) => ['reservado', 'pagado'].includes(i.estado)).length);
+      await notificarControl(
+        sock,
+        `🙋 ${actualizado.nombre || `+${numero}`} pidió cupo para el ${db.fechaBonita(p.fecha)}${p.hora ? ` ${p.hora}` : ''} en ${db.nombreDeZona(p.zona)} (${libres} libre${libres === 1 ? '' : 's'}).\n`
+        + `El bot está APAGADO, así que NO lo anotó ni le contestó: anótalo tú desde el panel y escríbele.\nwa.me/${numero}`,
+        'Alguien pidió cupo con el bot apagado',
+      );
+    }
+  }
+
   // El jugador pidió cupo en un partido abierto: se reserva de verdad (el
   // cerebro solo decide, la BD manda). Si entre que la IA leyó los cupos y
   // ahora el partido se llenó, la reserva cae a lista de espera y se le avisa.
-  // ⚠️ Nunca en modo silencio: un contacto silenciado no recibe la respuesta,
-  // y una reserva que el jugador no sabe que existe es un cupo fantasma.
   if (decision.inscribir_partido && !modoSilencio) {
     const { inscripcion, resultado } = db.inscribir(decision.inscribir_partido, numero, { nombre: actualizado.nombre });
     if (!inscripcion) {
@@ -533,7 +584,7 @@ async function manejarMensaje(sock, msg) {
       // Una reserva tampoco pide acción de Clarck (la lista del panel se
       // actualiza sola). Solo si cae en ESPERA se le avisa, porque ahí sí
       // puede querer mover algo o abrir otro turno.
-      if (!modoSilencio && resultado === 'espera') await notificarControl(
+      if (resultado === 'espera') await notificarControl(
         sock,
         `⏳ ${actualizado.nombre || `+${numero}`} quedó en LISTA DE ESPERA del partido del ${p ? db.fechaBonita(p.fecha) : '?'}${p?.hora ? ` ${p.hora}` : ''} (${p?.zona}) — está lleno · wa.me/${numero}`
       );
@@ -771,7 +822,12 @@ app.get('/', (_req, res) => {
     // Las 3 capas del modelo Dualhook: firma HMAC (no disponible), ruta con
     // token secreto y validación de WABA/phone_number_id del payload.
     webhookSeguridad: oficial && typeof oficial.seguridadWebhook === 'function' ? oficial.seguridadWebhook() : undefined,
-    safeMode: SAFE_MODE,
+    safeMode: enModoSeguro(),
+    // De dónde salió el modo: 'panel' = lo decidió Clarck · 'entorno' = todavía
+    // manda SAFE_MODE de Render. Sin esto no hay forma de saber, mirando el
+    // servicio, si el interruptor ya está en manos del cliente.
+    safeModeFuente: db.estadoBot().fuente,
+    testers: db.numerosDePrueba().length,
     brain: brain.cerebroActivo(),
     // 0 = sano. >0 = la IA está fallando (créditos/cuota/caída) y el bot solo
     // pide disculpas — visible acá para no repetir la ceguera del mes mudo.
