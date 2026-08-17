@@ -25,7 +25,9 @@ const SECRET = process.env.SHEET_SECRET || '';
 // es), Última vez (cuándo vino) y Datos (cuánto sabemos de él). Los dos ejes
 // que la etapa mezclaba, ahora separados en columnas distintas.
 const ESTADOS_PAGO = { confirmado: 'Confirmado', revisar: 'Por revisar' };
-const ESTADOS_PARTIDO = { abierto: 'Abierto', cerrado: 'Cerrado', jugado: 'Jugado', cancelado: 'Cancelado' };
+// El estado del partido dejó de ser una columna que alguien mantiene: se
+// calcula (db.fasePartido). La hoja copia la etiqueta ya calculada, así que no
+// puede quedar desfasada respecto de lo que ve el bot.
 const MEDIOS = {
   yape: 'Yape', plin: 'Plin', bcp: 'BCP', interbank: 'Interbank',
   bbva: 'BBVA', scotiabank: 'Scotiabank', otro: 'Otro',
@@ -113,11 +115,12 @@ function armarHojas(db) {
 
   const hojaPartidos = {
     nombre: 'Partidos',
-    header: ['Fecha', 'Mes', 'Hora', 'Zona', 'Sede', 'Estado', 'Cupo', 'Ocupados', 'Pagados', 'En espera', 'Precio'],
+    header: ['Fecha', 'Mes', 'Hora', 'Zona', 'Sede', 'Estado', 'Cupo', 'Ocupados', 'Pagados', 'En espera', 'Precio', 'Turno fijo'],
     filas: partidos.map((p) => [
       p.fecha || '', mes(p.fecha), p.hora || '', p.zona ? db.nombreDeZona(p.zona) : '', p.sede || '',
-      ESTADOS_PARTIDO[p.estado] || p.estado || '', p.cupo || 0,
+      (db.FASES[p.fase] || {}).corto || '', p.cupo || 0,
       p.ocupados || 0, p.pagados || 0, p.en_espera || 0, soles(p.precio),
+      p.turno_id ? 'Sí' : '',
     ]),
     fechas: [0],
     moneda: [10],

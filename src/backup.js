@@ -170,17 +170,111 @@ async function enviarResumenHandoffs(db, { motivo = 'programado' } = {}) {
 }
 
 /**
- * Deja el resumen corriendo. Chequea cada 10 min si ya pasó una de las horas
- * del día y todavía no salió: así sobrevive a reinicios y a deploys sin
- * mandar dos veces ni saltearse una franja.
+ * EL PARTE SEMANAL — domingo 19 h de Lima, por correo.
+ *
+ * Clarck no abre el panel: la semana tiene que ser legible en el CUERPO del
+ * mail, no detrás de un link. Y señala lo que FALTA, no solo lo que hay — el
+ * 15/08 prometió por WhatsApp un domingo 6pm que nunca se cargó, cobró S/20 por
+ * dos cupos y no había dónde ponerlos. Un parte que solo listara los partidos
+ * cargados habría mostrado esa semana como perfecta.
+ *
+ * ESCALA POR ANOMALÍA, NO POR CALENDARIO: si la semana salió como siempre
+ * —todo cargado, nada por liquidar— no se manda nada. Un correo dominical que
+ * nunca dice nada nuevo se deja de leer en tres semanas, y entonces tampoco se
+ * lee el que sí importa.
+ */
+async function enviarParteSemanal(db, { motivo = 'programado', forzar = false } = {}) {
+  const hoy = db.hoyLima();
+  const dias = Array.from({ length: 7 }, (_, i) => db.sumarDias(hoy, i + 1));
+  const desde = dias[0], hasta = dias[6];
+
+  const partidos = db.listPartidos().filter((p) => p.fecha >= desde && p.fecha <= hasta && p.fase !== 'cancelado');
+  const huecos = db.diasSinCargar({ dias: 8 }).filter((h) => h.fecha >= desde && h.fecha <= hasta);
+  const porLiquidar = db.partidosPorLiquidar();
+  const conflictos = db.conflictosDePartidos();
+  // Un turno encendido que no puso ni una fecha en la semana está roto (día de
+  // semana mal, vigencia vencida, excepción que quedó pegada).
+  const turnosMudos = db.listTurnos({ soloActivos: true })
+    .filter((t) => !partidos.some((p) => p.turno_id === t.id));
+
+  const anomalias = huecos.length + porLiquidar.length + conflictos.length + turnosMudos.length + (partidos.length ? 0 : 1);
+  if (!anomalias && !forzar) {
+    console.log('[parte] La semana salió como siempre: no se manda correo (se escala por anomalía, no por calendario).');
+    return { ok: true, enviado: false, anomalias: 0 };
+  }
+
+  const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 0 })}`;
+  const bloqueDia = (f) => {
+    const delDia = partidos.filter((p) => p.fecha === f);
+    const huecosDia = huecos.filter((h) => h.fecha === f);
+    if (!delDia.length && !huecosDia.length) return null;
+    const lineas = [
+      ...delDia.map((p) => `   · ${p.hora || 'sin hora'} — ${db.nombreDeZona(p.zona)}${p.sede ? ` (${p.sede})` : ''} · ${p.ocupados}/${p.cupo} cupos${p.en_espera ? ` · ${p.en_espera} en espera` : ''}`),
+      ...huecosDia.map((h) => `   ⚠ ${h.hora} en ${db.nombreDeZona(h.zona)}: NADA CARGADO (los últimos ${h.veces} ${db.diaPlural(h.dia_nombre)} jugaste a esa hora)`),
+    ];
+    return `${db.fechaBonita(f, { relativa: false }).toUpperCase()}\n${lineas.join('\n')}`;
+  };
+
+  // Los bloques se arman aparte y se pegan con una línea en blanco: un correo
+  // que se lee en el celular necesita el aire, y filtrar los vacíos junto con
+  // los separadores dejaba todo pegado en un solo párrafo.
+  const bloques = [
+    `Semana del ${db.fechaBonita(desde, { relativa: false })} al ${db.fechaBonita(hasta, { relativa: false })}.`,
+    dias.map(bloqueDia).filter(Boolean).join('\n\n') || 'No hay NINGÚN partido cargado para toda la semana.',
+    huecos.length && `LO QUE FALTA (${huecos.length}):\n${huecos.map((h) => `   · ${db.fechaBonita(h.fecha, { relativa: false })} ${h.hora} en ${db.nombreDeZona(h.zona)}${h.sede ? ` (${h.sede})` : ''}`).join('\n')}`,
+    turnosMudos.length && `TURNOS ENCENDIDOS QUE NO CARGARON NADA (${turnosMudos.length}):\n${turnosMudos.map((t) => `   · ${db.diaPlural(t.dia_nombre)} ${t.hora} en ${db.nombreDeZona(t.zona)} — revisá el día de la semana y la vigencia`).join('\n')}`,
+    porLiquidar.length && `PARTIDOS JUGADOS SIN LIQUIDAR (${porLiquidar.length}):\n${porLiquidar.map((p) => `   · ${db.fechaBonita(p.fecha, { relativa: false })} ${p.hora || ''} ${db.nombreDeZona(p.zona)} — cobrado ${soles(p.caja ? p.caja.cobrado : 0)}${p.caja && p.caja.porCobrar > 0 ? `, falta cobrar ${soles(p.caja.porCobrar)}` : ''}`).join('\n')}`,
+    conflictos.length && `PARTIDOS DUPLICADOS CON GENTE EN LOS DOS (${conflictos.length}):\n   ${conflictos.join('\n   ')}`,
+    'El panel tiene la semana completa y los botones para cargar lo que falta.',
+  ];
+  const cuerpo = bloques.filter(Boolean).join('\n\n');
+
+  const r = await module.exports.avisar(
+    huecos.length
+      ? `Parte semanal: faltan ${huecos.length} pichanga${huecos.length === 1 ? '' : 's'} por cargar`
+      : `Parte semanal: ${partidos.length} pichanga${partidos.length === 1 ? '' : 's'} cargadas`,
+    cuerpo,
+  );
+  console.log(`[parte] Parte semanal enviado (${motivo}) — ${anomalias} cosas que revisar.`);
+  return { ok: r.ok, enviado: true, anomalias, cuerpo };
+}
+
+// Domingo (0) a las 19 h de Lima: la hora en que Clarck cierra la semana y
+// puede hacer algo con lo que falta antes del lunes.
+const PARTE_DIA = Number(process.env.PARTE_DIA ?? 0);
+const PARTE_HORA = Number(process.env.PARTE_HORA ?? 19);
+
+/**
+ * EL TICK. Uno solo, cada 10 min, para todo lo que pasa "cuando corresponde":
+ * genera los partidos de los turnos, manda el resumen de derivados en su franja
+ * y saca el parte semanal el domingo.
+ *
+ * Chequear cada 10 min en vez de agendar un timer exacto es lo que lo hace
+ * sobrevivir a reinicios y deploys: la marca en la BD dice si esa franja ya
+ * salió, así que no se manda dos veces ni se saltea una.
+ *
+ * La generación de turnos NO depende del correo: si faltan las credenciales de
+ * Gmail el resumen no sale, pero los partidos se tienen que cargar igual.
  */
 function programarResumen(db) {
-  if (!activo()) return;
   const revisar = async () => {
+    // 1. Materializar los turnos activos. Idempotente: si ya están, no hace
+    //    nada. Va acá y no en partidosAbiertos() —el camino caliente del bot—
+    //    porque una lectura tiene que seguir siendo una lectura.
+    try { db.generarPartidosDeTurnos(); } catch (e) { console.error('[turnos] Generación fallida:', e.message); }
+    if (!activo()) return;
     try {
       const ahora = new Date(Date.now() - 5 * 3600e3);
       const hoy = ahora.toISOString().slice(0, 10);
       const hora = ahora.getUTCHours();
+
+      // 2. Parte semanal (domingo 19 h). Misma mecánica de marca: una por fecha.
+      if (ahora.getUTCDay() === PARTE_DIA && hora >= PARTE_HORA && db.getMarca('parte_semanal') !== hoy) {
+        db.setMarca('parte_semanal', hoy);
+        await enviarParteSemanal(db);
+      }
+
+      // 3. Resumen de derivados, tres veces al día.
       const franja = HORAS_RESUMEN.filter((h) => h <= hora).pop();
       if (franja === undefined) return;
       const marca = `${hoy}-${franja}`;
@@ -191,7 +285,7 @@ function programarResumen(db) {
   };
   setTimeout(revisar, 90_000);           // no compite con el arranque
   setInterval(revisar, 10 * 60_000);
-  console.log(`[resumen] Resumen de derivados activo → ${EMAIL_TO} (${HORAS_RESUMEN.join('h, ')}h de Lima).`);
+  console.log(`[tick] Turnos + resumen (${HORAS_RESUMEN.join('h, ')}h) + parte semanal (domingos ${PARTE_HORA}h) cada 10 min.`);
 }
 
 /**
@@ -232,5 +326,5 @@ async function avisar(asunto, cuerpo = '') {
 
 module.exports = {
   enviarBackup, programarBackup, activo, armarSnapshot, avisar,
-  programarResumen, enviarResumenHandoffs,
+  programarResumen, enviarResumenHandoffs, enviarParteSemanal,
 };

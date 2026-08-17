@@ -90,8 +90,12 @@ const iniciales = (nombre, numero) => {
 const MS_DIA = 86400e3;
 // Normaliza texto libre para agrupar/filtrar: minúsculas y sin tildes.
 const normTexto = (t) => (t || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-const fechaLima = (offsetDias = 0) => new Date(Date.now() - 5 * 3600e3 + offsetDias * MS_DIA).toISOString().slice(0, 10);
-const hoyLima = () => fechaLima(0);
+// El reloj de Lima vive en db.js (ahoraLima): acá solo se le pone nombre local.
+// Antes había una copia con su propio .slice() en cada archivo, y la de la hora
+// se quedaba solo con las horas ENTERAS — por eso un turno de 8:30 se dejaba de
+// ofrecer a las 8:00.
+const { ahoraLima, fechaLima } = require('./db');
+const hoyLima = () => ahoraLima().fecha;
 // Timestamp Lima de hace N horas (mismo formato 'YYYY-MM-DD HH:MM:SS' de la BD).
 const limaHace = (horas) => new Date(Date.now() - 5 * 3600e3 - horas * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
 // "Sin responder" REAL: el último mensaje es del contacto Y es reciente (48 h).
@@ -415,6 +419,21 @@ function registrarPanel(app, db, conexion = null) {
   const volverAPartidos = (req, res, partidoId = null, aviso = '', ancla = null, err = false) =>
     volver(res, { key: req.body.key, vista: 'partidos', partido: partidoId, aviso, ancla, err });
 
+  /**
+   * Por qué no entró nadie, en castellano y con la salida al lado.
+   *
+   * `inscribir` ya no devuelve un estado del enum sino el motivo real; cada uno
+   * tiene una acción distinta y ninguna era visible antes ("no se pudo anotar"
+   * a secas es indistinguible de "está roto").
+   */
+  const MOTIVO_NO_ENTRA = (motivo, quien) => ({
+    no_existe: 'Ese partido ya no existe.',
+    cancelado: `El partido está CANCELADO: si se va a jugar, tócale "🔓 Reabrir" y vuelve a anotar a ${quien}.`,
+    liquidado: `Este partido ya está LIQUIDADO (la plata está contada). Para agregar a ${quien} hay que reabrirlo.`,
+    cerrado: `La inscripción está cerrada: tócale "🔓 Reabrir" y vuelve a anotar a ${quien}.`,
+    muy_viejo: `Este partido terminó hace más de ${db.graciaHoras()} h. Si igual hay que anotar a ${quien}, tócale "🔓 Reabrir".`,
+  }[motivo] || `No se pudo anotar a ${quien}.`);
+
   app.post('/admin/partido', (req, res) => {
     if (!autorizado(req, res)) return;
     const zona = db.zonasOperativas().includes(req.body.zona) ? req.body.zona : 'brena';
@@ -422,18 +441,24 @@ function registrarPanel(app, db, conexion = null) {
     // Sin fecha volvía a la lista sin partido y sin decir por qué: el usuario
     // no técnico concluye "esto está roto" y se vuelve a WhatsApp.
     if (!fecha) return volverAPartidos(req, res, null, 'Elige el día del partido para poder abrirlo.', null, true);
-    const id = db.crearPartido({
+    const r = db.abrirPartido({
       zona, fecha,
       hora: (req.body.hora || '').trim().slice(0, 40),
       sede: (req.body.sede || '').trim().slice(0, 120),
       cupo: Math.max(2, Math.min(60, Number(req.body.cupo) || 14)),
       precio: req.body.precio ? Number(req.body.precio) : null,
     });
-    const p = id ? db.getPartido(id) : null;
-    // crearPartido rechaza zonas que no son operativas. Acá no debería pasar
+    // abrirPartido rechaza zonas que no son operativas. Acá no debería pasar
     // (la zona ya se sanea arriba), pero si pasa vale más decirlo que romper.
-    if (!p) return volverAPartidos(req, res, null, 'No se pudo abrir el partido: revisa el distrito.', null, true);
-    volverAPartidos(req, res, id,
+    if (!r.id) return volverAPartidos(req, res, null, 'No se pudo abrir el partido: revisa el distrito.', null, true);
+    const p = db.getPartido(r.id);
+    // Cargar dos veces el mismo domingo 6pm partía la lista en dos: el bot
+    // ofrecía cupos de una y cobraba en la otra. Ahora te lleva a la que existe.
+    if (!r.creado) {
+      return volverAPartidos(req, res, r.id,
+        `Ese partido YA existe: ${db.fechaBonita(p.fecha)}${p.hora ? ` · ${p.hora}` : ''} en ${p.sede || 'la misma cancha'}. Esta es su lista.`);
+    }
+    volverAPartidos(req, res, r.id,
       `Partido abierto: ${db.fechaBonita(p.fecha)}${p.hora ? ` · ${p.hora}` : ''}. El bot ya lo ofrece a quien pida jugar.`);
   });
 
@@ -455,20 +480,60 @@ function registrarPanel(app, db, conexion = null) {
     volverAPartidos(req, res, id, aviso, r.ok ? null : 'editor', !r.ok);
   });
 
+  /**
+   * Las CUATRO decisiones humanas sobre un partido. Ya no son "estados": son
+   * fechas. Lo demás (si empezó, si terminó, si todavía entra un Yape) lo
+   * calcula el sistema y nadie tiene que mantenerlo.
+   */
   app.post('/admin/partido/estado', (req, res) => {
     if (!autorizado(req, res)) return;
     const id = Number(req.body.id);
     const estado = req.body.estado;
-    if (!ESTADOS_PARTIDO[estado]) return volverAPartidos(req, res, id, 'Ese estado no existe.', null, true);
-    db.setEstadoPartido(id, estado);
-    // Cada estado tiene una consecuencia distinta y ninguna era visible.
-    const avisos = {
-      cerrado: 'Inscripción cerrada: el bot deja de ofrecer este partido.',
-      abierto: 'Inscripción reabierta: el bot vuelve a ofrecerlo.',
-      jugado: 'Partido marcado como jugado. Ya cuenta para los recurrentes.',
-      cancelado: 'Partido cancelado. Nadie recibe aviso automático: escríbeles tú.',
+    const acciones = {
+      cerrado: () => (db.cerrarInscripcion(id), 'Inscripción cerrada: el bot deja de ofrecer este partido. Los pagos que lleguen tarde los asignas tú.'),
+      abierto: () => (db.reabrirPartido(id), `Partido reabierto${db.yaPaso(db.getPartido(id)) ? `: tienes ${db.graciaHoras()} h más para completar la lista y cobrar` : ': el bot vuelve a ofrecerlo'}.`),
+      cancelado: () => (db.cancelarPartido(id), 'Partido cancelado. Nadie recibe aviso automático: escríbeles tú.'),
     };
-    volverAPartidos(req, res, id, avisos[estado]);
+    if (!acciones[estado]) return volverAPartidos(req, res, id, 'Esa acción no existe.', null, true);
+    volverAPartidos(req, res, id, acciones[estado]());
+  });
+
+  /**
+   * LIQUIDAR — lo que antes se llamaba "cerrar" y no compraba nada.
+   *
+   * "Marcar jugado" no servía para nada (los recurrentes se cuentan por FECHA,
+   * no por estado) y por eso nadie lo tocaba: quedaron 16 partidos jugados
+   * figurando como abiertos. Liquidar sí dice algo: la plata de este partido ya
+   * está contada. Es una afirmación, y solo la puede hacer un humano — nada la
+   * dispara sola.
+   */
+  app.post('/admin/partido/liquidar', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const id = Number(req.body.id);
+    const k = db.cajaPartido(id);
+    const r = db.liquidarPartido(id);
+    if (!r.ok) {
+      return volverAPartidos(req, res, id, r.motivo === 'ya_liquidado' ? 'Este partido ya estaba liquidado.' : 'Ese partido ya no existe.', null, true);
+    }
+    const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 })}`;
+    const queda = k && k.costoCancha != null ? ` · quedan ${soles(k.cobrado - k.costoCancha)} después de la cancha` : '';
+    volverAPartidos(req, res, null,
+      `Partido liquidado: ${soles(k ? k.cobrado : 0)} cobrados${k && k.porCobrar > 0 ? ` y ${soles(k.porCobrar)} sin cobrar` : ''}${queda}.`);
+  });
+
+  /**
+   * Archivar en lote los partidos terminados y VACÍOS.
+   *
+   * Son cargas erradas y duplicados: cero inscritos, cero plata. Pedirle a
+   * Clarck que entre uno por uno a cerrarlos es el ritual que hizo que nadie
+   * cerrara ninguno. Los que movieron dinero nunca pasan por acá.
+   */
+  app.post('/admin/partidos/archivar-vacios', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const n = db.archivarPartidosVacios();
+    volverAPartidos(req, res, null, n
+      ? `${n} partido${n === 1 ? '' : 's'} vacío${n === 1 ? '' : 's'} archivado${n === 1 ? '' : 's'}. No tenían a nadie inscrito ni plata adentro.`
+      : 'No quedaba ningún partido vacío por archivar.');
   });
 
   // Eliminar un partido vacío (duplicado o cargado por error). Con gente
@@ -476,10 +541,17 @@ function registrarPanel(app, db, conexion = null) {
   app.post('/admin/partido/eliminar', (req, res) => {
     if (!autorizado(req, res)) return;
     const id = Number(req.body.id);
+    const p = db.getPartido(id);
     if (!db.eliminarPartido(id)) {
       return volverAPartidos(req, res, id, 'Este partido tiene gente inscrita: no se borra. Usa "✖ Cancelar".', null, true);
     }
-    volverAPartidos(req, res, null, 'Partido eliminado (estaba vacío).');
+    // Si lo había puesto un turno fijo, borrarlo sin más lo hace reaparecer en
+    // el próximo tick: para el que mira la grilla, un fantasma. Se anota la
+    // excepción de esa fecha — el turno sigue vivo para las demás semanas.
+    if (p && p.turno_id) db.agregarExcepcion(p.turno_id, p.fecha, 'borrado desde la grilla');
+    volverAPartidos(req, res, null, p && p.turno_id
+      ? 'Partido eliminado (estaba vacío). Esa fecha queda excluida del turno fijo; las demás semanas siguen igual.'
+      : 'Partido eliminado (estaba vacío).');
   });
 
   // Inscripción manual desde el panel (jugador con número, o invitado a nombre).
@@ -492,19 +564,14 @@ function registrarPanel(app, db, conexion = null) {
     if (!numero && !nombre) return fin('Escribe el número de WhatsApp o el nombre del invitado.', true);
     const p = db.getPartido(partidoId);
     if (!p) return fin('Ese partido ya no existe.', true);
-    // El caso real: cierra la inscripción, llega un amigo a la cancha y el
-    // botón no hacía absolutamente nada, sin explicación.
-    if (p.estado !== 'abierto') {
-      return fin(`El partido está ${(ESTADOS_PARTIDO[p.estado] || p.estado).toLowerCase()}: tócale "🔓 Reabrir" y vuelve a anotarlo.`, true);
-    }
     const { resultado, motivo } = db.inscribir(partidoId, numero, { nombre });
     const quien = nombre || `+${numero}`;
     if (resultado === 'espera') return fin(`${quien} entró a la LISTA DE ESPERA: el partido ya está lleno.`);
     if (resultado === 'ya_inscrito') return fin(`${quien} ya estaba en la lista.`, true);
     if (!resultado) {
-      return fin(motivo === 'no_existe'
-        ? 'Ese partido ya no existe.'
-        : `No se pudo anotar a ${quien}: el partido está ${(ESTADOS_PARTIDO[motivo] || motivo || '?').toLowerCase()}.`, true);
+      // El caso real: llega un amigo a la cancha y el botón no hacía
+      // absolutamente nada, sin explicación. Cada motivo tiene su salida.
+      return fin(MOTIVO_NO_ENTRA(motivo, quien), true);
     }
     fin(`${quien} anotado. Falta que pague.`);
   });
@@ -582,15 +649,84 @@ function registrarPanel(app, db, conexion = null) {
     const activa = pago.numero ? db.inscripcionActiva(partidoId, pago.numero) : null;
     if (activa) db.pagarInscripcion(activa.id, pago.id);
     else {
-      // Sobre un partido cerrado, inscribir() devuelve null y el pago se
-      // quedaba suelto sin que nadie lo dijera.
-      if (partido.estado !== 'abierto') {
-        return fin(`El partido está ${(ESTADOS_PARTIDO[partido.estado] || partido.estado).toLowerCase()}: reábrelo para poder asignarle este pago.`, true);
-      }
+      // Sobre un partido que ya no admite gente, inscribir() devuelve null y el
+      // pago se quedaba suelto sin que nadie lo dijera. Ojo: el partido de
+      // anoche SÍ admite (la gracia de 24 h existe justo para este Yape).
+      const cerrado = db.motivoCierre(partido);
+      if (cerrado) return fin(MOTIVO_NO_ENTRA(cerrado, pago.nombre || `+${pago.numero}`), true);
       db.inscribir(partidoId, pago.numero, { estado: 'pagado', pagoId: pago.id });
     }
     for (let i = 1; i < (pago.cupos || 1); i++) db.inscribir(partidoId, null, { nombre: `Invitado de +${pago.numero}`, estado: 'pagado', pagoId: pago.id });
     fin(`Pago de ${pago.nombre || `+${pago.numero}`} (S/ ${pago.monto}) asignado a este partido.`);
+  });
+
+  // --- Turnos fijos: la plantilla semanal --------------------------------------
+  const volverATurnos = (req, res, aviso, err = false) =>
+    volver(res, { key: req.body.key, vista: 'partidos', aviso, ancla: 'turnos', err });
+
+  app.post('/admin/turno', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const id = db.crearTurno({
+      zona: req.body.zona,
+      sede_id: req.body.sede_id || null,
+      dia_semana: req.body.dia_semana,
+      hora: (req.body.hora || '').trim().slice(0, 40),
+      cupo: req.body.cupo,
+      precio: req.body.precio,
+      // NACE APAGADO aunque se pida encendido en el mismo formulario: encender
+      // un turno es comprometerse a pagar canchas reales, y esa decisión se
+      // toma mirando la grilla, no llenando un campo.
+      activo: 0,
+    });
+    if (!id) return volverATurnos(req, res, 'Faltan datos del turno: distrito, día de la semana y hora.', true);
+    const t = db.getTurno(id);
+    volverATurnos(req, res, `Turno guardado: ${db.diaPlural(t.dia_nombre)} ${t.hora} en ${db.nombreDeZona(t.zona)}. Está APAGADO — enciéndelo cuando quieras que se carguen solos.`);
+  });
+
+  app.post('/admin/turno/activo', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const id = Number(req.body.id);
+    const encender = req.body.activo === '1';
+    db.setTurnoActivo(id, encender);
+    const t = db.getTurno(id);
+    if (!t) return volverATurnos(req, res, 'Ese turno ya no existe.', true);
+    if (!encender) return volverATurnos(req, res, `Turno pausado: ${db.diaPlural(t.dia_nombre)} ${t.hora}. Los partidos ya cargados siguen ahí.`);
+    // Al encenderlo se materializa al toque: si no, Clarck lo enciende, no ve
+    // nada nuevo en la grilla y asume que no funcionó.
+    const { creados } = db.generarPartidosDeTurnos();
+    volverATurnos(req, res, `Turno encendido: ${db.diaPlural(t.dia_nombre)} ${t.hora} en ${db.nombreDeZona(t.zona)}${creados ? ` · ${creados} partido${creados === 1 ? '' : 's'} cargado${creados === 1 ? '' : 's'} en los próximos ${db.HORIZONTE_DIAS} días` : ''}.`);
+  });
+
+  app.post('/admin/turno/eliminar', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const t = db.getTurno(Number(req.body.id));
+    if (!t) return volverATurnos(req, res, 'Ese turno ya no existe.', true);
+    db.eliminarTurno(t.id);
+    volverATurnos(req, res, `Turno borrado: ${db.diaPlural(t.dia_nombre)} ${t.hora}. Los partidos que ya estaban cargados no se tocaron.`);
+  });
+
+  /**
+   * "Esta semana no se juega": se cancela LA INSTANCIA, no el turno.
+   *
+   * Y si había gente adentro NO se le avisa a nadie automáticamente: se le
+   * muestra la lista con sus wa.me para que escriba él. Un mensaje masivo desde
+   * el bot para decir "no hay pichanga" es exactamente lo que no queremos que
+   * salga solo.
+   */
+  app.post('/admin/partido/cancelar-fecha', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const id = Number(req.body.id);
+    const p = db.getPartido(id);
+    if (!p) return volverAPartidos(req, res, null, 'Ese partido ya no existe.', null, true);
+    db.cancelarPartido(id);
+    // Sin la excepción, el generador volvería a materializar esa fecha en el
+    // próximo tick y el domingo cancelado reaparecería solo.
+    if (p.turno_id) db.agregarExcepcion(p.turno_id, p.fecha, 'cancelado desde la grilla');
+    const dentro = db.inscripcionesDe(id).filter((i) => i.estado !== 'baja');
+    volverAPartidos(req, res, dentro.length ? id : null,
+      dentro.length
+        ? `${db.fechaBonita(p.fecha, { relativa: false })} cancelado. Hay ${dentro.length} inscrito${dentro.length === 1 ? '' : 's'}: nadie recibe aviso automático, escríbeles desde la lista de abajo.`
+        : `${db.fechaBonita(p.fecha, { relativa: false })} cancelado. El turno fijo sigue activo para las demás semanas.`);
   });
 
   // --- Conexión (WhatsApp): desconectar / cambiar de número --------------------
@@ -1536,17 +1672,50 @@ function paginaResumen(db, key, query = {}) {
       href: aConfig(`zona-${sinCosto[0].zona}`), cta: 'Completar',
     });
   }
-  // Partidos que ya se jugaron y siguen en 'abierto'. Nada los cierra solo (a
-  // propósito: cerrarlos dejaría huérfano el Yape que entra tarde), así que la
-  // única forma de que no se apilen es recordárselo acá.
-  const horaAhora = Number(new Date(Date.now() - 5 * 3600e3).toISOString().slice(11, 13));
-  const sinCerrar = db.listPartidos().filter((p) => p.estado === 'abierto'
-    && (p.fecha < hoyLima() || (p.fecha === hoyLima() && db.ordenHora(p.hora) <= horaAhora)));
-  if (sinCerrar.length) {
+  /**
+   * Acá vivía "N partidos ya jugados sin cerrar", que le pedía a Clarck que
+   * rompiera la única red que atrapaba los Yapes tardíos. Ya no: los partidos
+   * que terminaron se apagan solos (fin + gracia) y lo único que queda pendiente
+   * es CONTAR la plata de los que la movieron.
+   */
+  const porLiquidar = db.partidosPorLiquidar();
+  if (porLiquidar.length) {
+    const plata = porLiquidar.reduce((s, p) => s + (p.caja ? p.caja.cobrado + p.caja.porCobrar : 0), 0);
     pendientes.push({
-      ico: '🔒', que: `${sinCerrar.length} partido${sinCerrar.length === 1 ? '' : 's'} ya jugado${sinCerrar.length === 1 ? '' : 's'} sin cerrar`,
-      para: 'Al cerrarlos cuadra la caja y dejan de figurar como si aún se pudiera entrar.',
-      href: `/admin/leads?key=${key}&vista=partidos`, cta: 'Cerrarlos',
+      ico: '🧾', que: `${porLiquidar.length} partido${porLiquidar.length === 1 ? '' : 's'} por liquidar`,
+      para: `S/ ${plata.toLocaleString('es-PE', { maximumFractionDigits: 0 })} entre cobrado y por cobrar. Liquidar es decir "esta plata ya está contada".`,
+      href: `/admin/leads?key=${key}&vista=partidos#liquidar`, cta: 'Contarla',
+    });
+  }
+  const vacios = db.partidosArchivables();
+  const soloVacios = db.partidosVacios().length;
+  if (vacios.length) {
+    pendientes.push({
+      ico: '🧹', que: `${vacios.length} partido${vacios.length === 1 ? '' : 's'} terminado${vacios.length === 1 ? '' : 's'} para archivar`,
+      para: vacios.length > soloVacios
+        ? `${soloVacios} sin nadie inscrito y ${vacios.length - soloVacios} anteriores al punto de arranque. Se van todos de un toque.`
+        : 'Terminaron sin nadie inscrito: son cargas erradas y duplicados. Se van todos de un toque.',
+      href: `/admin/leads?key=${key}&vista=partidos#liquidar`, cta: 'Archivar',
+    });
+  }
+  // Duplicados con gente en las DOS listas: nadie los fusiona por su cuenta.
+  const conflictos = db.conflictosDePartidos();
+  if (conflictos.length) {
+    pendientes.push({
+      ico: '⚠️', que: `${conflictos.length} partido${conflictos.length === 1 ? '' : 's'} duplicado${conflictos.length === 1 ? '' : 's'} con gente en los dos`,
+      para: `${conflictos[0]}. Nadie los junta solo: decide cuál es la lista buena y da de baja la otra.`,
+      href: `/admin/leads?key=${key}&vista=partidos`, cta: 'Ver',
+    });
+  }
+  // Días que históricamente se juegan y no tienen nada cargado: es el caso del
+  // 15/08 (domingo prometido por WhatsApp, S/20 cobrados, partido inexistente).
+  const huecos = db.diasSinCargar();
+  if (huecos.length) {
+    const h = huecos[0];
+    pendientes.push({
+      ico: '📅', que: `${huecos.length} día${huecos.length === 1 ? '' : 's'} con turno de siempre y nada cargado`,
+      para: `Los últimos ${h.veces} ${db.diaPlural(h.dia_nombre)} jugaste ${h.hora} en ${esc(db.nombreDeZona(h.zona))} y el ${fechaCompacta(h.fecha, false, false)} no hay nada. Si lo vendes por WhatsApp, no habrá dónde anotarlo.`,
+      href: `/admin/leads?key=${key}&vista=partidos`, cta: 'Cargarlo',
     });
   }
   if (!(cfg.yape_numero || '').trim()) {
@@ -1559,13 +1728,16 @@ function paginaResumen(db, key, query = {}) {
   const bloquePendientes = pendientes.length ? `
       <div class="shdr">Para que el bot trabaje solo <small>· ${pendientes.length} dato${pendientes.length === 1 ? '' : 's'} por cargar</small></div>
       <div class="zlist">
-        ${pendientes.slice(0, 6).map((p) => `<a class="prow" href="${p.href}">
+        ${pendientes.slice(0, 8).map((p) => `<a class="prow" href="${p.href}">
           <span class="pico2">${p.ico}</span>
           <span class="ptxt"><b>${p.que}</b><small>${p.para}</small></span>
           <span class="pcta">${p.cta} ›</span></a>`).join('')}
       </div>` : '';
 
-  const abiertos = db.partidosAbiertos();
+  // La próxima pichanga es la próxima que SE PUEDE OFRECER, no la primera de la
+  // lista: sin `vigentes` el hero se quedaba pegado al partido de esta mañana
+  // que ya se jugó.
+  const abiertos = db.partidosAbiertos(null, { vigentes: true });
   const prox = abiertos[0] || null;
   const heroPartido = prox
     ? `<a class="marcador" style="display:block;margin-bottom:14px" href="/admin/leads?key=${key}&vista=partidos&partido=${prox.id}">
@@ -2464,6 +2636,38 @@ function paginaConfig(db, key, conexion = null, query = {}) {
       </div>
     </div>`;
 
+  /**
+   * LA GRACIA: cuánto tiempo después del partido se siguen aceptando Yapes.
+   *
+   * Es el dato que reemplaza a "no cerramos nunca". Antes la única forma de no
+   * perder el Yape que llega a las 11 de la noche era dejar el partido abierto
+   * para siempre — y así quedaron 16 partidos jugados figurando como si
+   * todavía se pudiera entrar. Ahora es un número, y lo pone el que conoce a
+   * su gente.
+   */
+  const bloqueGracia = `
+    <div class="ancla" id="gracia">
+      <div class="shdr">⏱ Yapes tardíos <small>· hasta cuándo un partido sigue aceptando pagos</small></div>
+      <div class="group">
+        <form method="post" action="/admin/config/general">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <p style="padding:13px 14px 0;font-size:13.5px;color:var(--ink-2);line-height:1.45">
+            Pasado el partido, la inscripción y los pagos siguen entrando durante estas horas: es el rato en que
+            llegan los Yapes de los que jugaron y pagaron después. Cumplido el plazo, el partido pasa a
+            <b>"por liquidar"</b> — no se borra nada y siempre lo puedes reabrir.
+          </p>
+          <div class="campos">
+            ${campo('cfg-gracia', 'Horas después del partido',
+              `<input id="cfg-gracia" name="gracia_horas" type="number" min="1" max="336" inputmode="numeric" value="${db.graciaHoras()}">`,
+              'Por defecto 24 h: el Yape del domingo de noche entra el lunes.')}
+          </div>
+          <div class="pie-form">
+            <button class="btn-toque btn-guardar">Guardar</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+
   const nuevoDistrito = `
     <div class="ancla" id="nuevo-distrito">
       <div class="shdr">➕ Nuevo distrito <small>· al crearlo aparece en el bot, los partidos y esta página</small></div>
@@ -2573,6 +2777,7 @@ function paginaConfig(db, key, conexion = null, query = {}) {
 
       ${bloqueCorte}
       ${bloqueFrescura}
+      ${bloqueGracia}
       ${zonasOp.map((z) => bloqueZona(z)).join('')}
       ${nuevoDistrito}
 
@@ -2584,30 +2789,59 @@ function paginaConfig(db, key, conexion = null, query = {}) {
 // ==============================================================================
 //  Vista PARTIDOS — convocatorias, inscripciones, lista de espera, asistencia
 // ==============================================================================
-const ESTADOS_PARTIDO = { abierto: 'Abierto', cerrado: 'Cerrado', jugado: 'Jugado ✅', cancelado: 'Cancelado' };
 const ESTADOS_INSC = { pagado: 'Pagado ✅', reservado: 'Reservado', espera: 'En espera ⏳', baja: 'Baja' };
+// Cómo se pinta cada fase. La fase la calcula db.js (fasePartido) — acá solo
+// vive el color, para que el panel no pueda contar una historia distinta a la
+// que cuenta el bot.
+const COLOR_FASE = {
+  proximo: 'est-ok', en_curso: 'est-ok', gracia: 'est-debe',
+  por_liquidar: 'est-debe', cerrado: 'est-off', liquidado: 'est-off', cancelado: 'est-off',
+};
 
+/**
+ * VISTA PARTIDOS — una SEMANA, no una lista plana.
+ *
+ * El negocio se piensa por semana ("los domingos 6pm en el Politécnico"), y es
+ * en una semana donde un duplicado o un hueco se ven solos. La lista plana
+ * ordenada por fecha descendente mostraba el mes entero y no dejaba ver que el
+ * domingo que viene no tenía nada cargado — que es exactamente lo que pasó el
+ * 15/08: se vendió un partido que no existía.
+ */
 function paginaPartidos(db, key, query = {}) {
   const keyRaw = decodeURIComponent(key);
   const partidoId = Number(query.partido) || null;
   if (partidoId) return paginaPartidoDetalle(db, key, keyRaw, partidoId, query);
 
-  const todosPartidos = db.listPartidos();
-  const verCancelados = query.cancelados === '1';
-  // Los cancelados sin nadie adentro son ruido (duplicados, cargas erradas):
-  // se ocultan salvo que se pidan explícitamente.
-  const ocultos = todosPartidos.filter((p) => p.estado === 'cancelado' && !p.ocupados && !p.en_espera).length;
-  const partidos = verCancelados ? todosPartidos : todosPartidos.filter((p) => !(p.estado === 'cancelado' && !p.ocupados && !p.en_espera));
+  // Al abrir la vista se materializan los turnos activos. Es idempotente y no
+  // toca el camino caliente del bot (partidosAbiertos sigue siendo una lectura
+  // pura): acá sí, porque es la pantalla donde Clarck viene a ver la semana y
+  // tiene que estar completa cuando la mira.
+  try { db.generarPartidosDeTurnos(); } catch (e) { console.error('[turnos] No se pudieron generar:', e.message); }
+
   const neg = db.getNegocio();
   const hoy = hoyLima();
+  const todosPartidos = db.listPartidos();
 
-  // Hora de Lima, para saber qué turno de HOY ya arrancó.
-  const horaAhora = Number(new Date(Date.now() - 5 * 3600e3).toISOString().slice(11, 13));
-  const yaEmpezo = (p) => p.fecha < hoy || (p.fecha === hoy && db.ordenHora(p.hora) <= horaAhora);
+  // Navegación por semanas: 0 = la que empieza HOY. La semana arranca hoy y no
+  // el lunes a propósito — a Clarck le importa "de acá para adelante", no el
+  // calendario.
+  const semana = Math.max(-8, Math.min(8, Number(query.semana) || 0));
+  const desde = db.sumarDias(hoy, semana * 7);
+  const dias = Array.from({ length: 7 }, (_, i) => db.sumarDias(desde, i));
+  const hasta = dias[6];
+
+  const porFecha = {};
+  for (const p of todosPartidos) (porFecha[p.fecha] ||= []).push(p);
+  for (const f of Object.keys(porFecha)) porFecha[f].sort((a, b) => (a.inicio_min ?? 9999) - (b.inicio_min ?? 9999));
+
+  const huecos = db.diasSinCargar({ dias: Math.max(14, (semana + 1) * 7) });
+  const porLiquidar = db.partidosPorLiquidar();
+  const vacios = db.partidosArchivables();
+  const conflictos = db.conflictosDePartidos();
+  const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 })}`;
 
   const fila = (p) => {
     const z = ZONAS[p.zona];
-    const pasado = yaEmpezo(p);
     const lleno = p.ocupados >= p.cupo;
     // "Lleno" se decía SOLO pintando el "12/14" de ámbar en vez de verde: con
     // daltonismo rojo-verde los dos son el mismo marrón, y a contraluz tampoco
@@ -2615,22 +2849,14 @@ function paginaPartidos(db, key, query = {}) {
     const chipCupos = lleno
       ? `<span class="est est-lleno">${p.ocupados}/${p.cupo} lleno</span>`
       : `<span class="est est-ok">${p.ocupados}/${p.cupo} · ${p.cupo - p.ocupados} libre${p.cupo - p.ocupados === 1 ? '' : 's'}</span>`;
-    const abierto = p.estado === 'abierto' && !pasado;
-    // Un partido cuya hora ya pasó seguía diciendo "Abierto" — nada lo cierra
-    // solo, y el estado se imprimía crudo. A las 12pm la lista mostraba tres
-    // turnos de la mañana como si todavía se pudiera entrar. El bot ya no los
-    // ofrece (partidosAbiertos con vigentes), así que lo que faltaba era que
-    // el panel lo dijera y diera el atajo para cerrarlo.
-    const sinCerrar = p.estado === 'abierto' && pasado;
-    const etiquetaEstado = sinCerrar ? 'Terminó — ciérralo' : (ESTADOS_PARTIDO[p.estado] || p.estado);
     return `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}">
-      <span class="pfecha"><b>${esc(p.fecha.slice(8, 10))}</b><small>${esc(mesCorto(p.fecha))}</small></span>
+      <span class="pfecha"><b>${esc(p.hora ? p.hora.split('-')[0] : '—')}</b><small>${esc(p.hora ? (/am/i.test(p.hora) ? 'am' : 'pm') : 'sin hora')}</small></span>
       <span class="lbody">
-        <span class="lname">${z ? z.nombre : esc(p.zona)}${p.hora ? ` · ${esc(p.hora)}` : ''}</span>
+        <span class="lname">${z ? z.nombre : esc(p.zona)}${p.turno_id ? ' <small style="font-weight:600;color:var(--ink-3)">· turno fijo</small>' : ''}</span>
         <span class="lsub">${esc(p.sede || 'Sede por definir')} · S/ ${esc(p.precio ?? neg.zonas[p.zona]?.precio ?? '?')}</span>
         <span class="pchips">
           ${chipCupos}
-          <span class="est ${abierto ? 'est-ok' : sinCerrar ? 'est-debe' : 'est-off'}">${esc(etiquetaEstado)}</span>
+          <span class="est ${COLOR_FASE[p.fase] || 'est-off'}">${esc(db.FASES[p.fase].corto)}</span>
           ${p.pagados ? `<span class="est est-ok">${p.pagados} pagados</span>` : ''}
           ${p.en_espera ? `<span class="est est-debe">${p.en_espera} en espera</span>` : ''}
         </span>
@@ -2639,11 +2865,172 @@ function paginaPartidos(db, key, query = {}) {
     </a>`;
   };
 
+  /** Un día de la grilla: sus partidos, o el hueco con el aviso de costumbre. */
+  const bloqueDia = (fecha) => {
+    const delDia = (porFecha[fecha] || []).filter((p) => p.fase !== 'cancelado' || p.ocupados || p.en_espera);
+    const huecosDia = huecos.filter((h) => h.fecha === fecha);
+    const esHoy = fecha === hoy;
+    const nombreDia = db.DIAS_NOMBRE[db.diaSemanaDe(fecha)];
+    return `
+      <div class="shdr" style="${esHoy ? 'color:var(--lime-ink)' : ''}">
+        ${esHoy ? 'HOY · ' : ''}${esc(nombreDia)} ${Number(fecha.slice(8, 10))} ${esc(mesCorto(fecha))}
+        <small>· <a style="color:var(--lime-ink)" href="/admin/leads?key=${key}&vista=partidos&dia=${fecha}#abrir">+ abrir</a></small>
+      </div>
+      <div class="group">
+        ${delDia.map(fila).join('')}
+        ${huecosDia.map((h) => `
+          <div class="prow" style="border-bottom:0">
+            <span class="pico2">📅</span>
+            <span class="ptxt"><b>Nada cargado a las ${esc(h.hora)} en ${esc(db.nombreDeZona(h.zona))}</b>
+              <small>${h.cancelado ? 'Este día está cancelado.' : `Los últimos ${h.veces} ${esc(db.diaPlural(h.dia_nombre))} jugaste a esta hora${h.sede ? ` en ${esc(h.sede)}` : ''}. Si lo vendes por WhatsApp no habrá dónde anotarlo.`}</small></span>
+            ${h.cancelado ? '' : `<a class="pcta" href="/admin/leads?key=${key}&vista=partidos&dia=${fecha}&hora=${encodeURIComponent(h.hora)}&zona=${encodeURIComponent(h.zona)}#abrir">Cargarlo ›</a>`}
+          </div>`).join('')}
+        ${!delDia.length && !huecosDia.length ? '<p style="padding:12px 14px;color:var(--ink-3);font-size:14px">Sin pichangas este día.</p>' : ''}
+      </div>`;
+  };
+
+  // Cola de cierre: lo que terminó y todavía necesita algo de Clarck.
+  const bloqueLiquidar = (porLiquidar.length || vacios.length) ? `
+      <div class="shdr ancla" id="liquidar">Terminados <small>· cuenta la plata y archiva lo que ya es historia</small></div>
+      ${porLiquidar.length ? `<div class="group">
+        ${porLiquidar.map((p) => `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}#liquidacion">
+          <span class="pfecha"><b>${esc(p.fecha.slice(8, 10))}</b><small>${esc(mesCorto(p.fecha))}</small></span>
+          <span class="lbody">
+            <span class="lname">${ZONAS[p.zona] ? ZONAS[p.zona].nombre : esc(p.zona)}${p.hora ? ` · ${esc(p.hora)}` : ''}</span>
+            <span class="lsub">${p.ocupados} jugador${p.ocupados === 1 ? '' : 'es'} · cobrado ${soles(p.caja ? p.caja.cobrado : 0)}${p.caja && p.caja.porCobrar > 0 ? ` · falta ${soles(p.caja.porCobrar)}` : ''}</span>
+            <span class="pchips"><span class="est ${p.caja && p.caja.porCobrar > 0 ? 'est-debe' : 'est-ok'}">${p.caja && p.caja.porCobrar > 0 ? 'falta cobrar' : 'todo cobrado'}</span></span>
+          </span>
+          ${SVG.chev}
+        </a>`).join('')}
+      </div>` : ''}
+      ${vacios.length ? `
+      <form method="post" action="/admin/partidos/archivar-vacios" class="group" style="padding:14px;margin-top:10px">
+        <input type="hidden" name="key" value="${esc(keyRaw)}">
+        <div style="font-size:var(--t-s);color:var(--ink-2);line-height:1.45;margin-bottom:10px">
+          <b>${vacios.length} partido${vacios.length === 1 ? '' : 's'} terminado${vacios.length === 1 ? '' : 's'} para archivar</b> (${vacios.slice(0, 4).map((p) => esc(fechaCompacta(p.fecha, false, false))).join(' · ')}${vacios.length > 4 ? ` y ${vacios.length - 4} más` : ''}).
+          ${(() => { const conGente = vacios.length - vacios.filter((p) => (p.ocupados + p.en_espera) === 0).length;
+            // Decir "vacíos" de un partido con 10 inscritos y 9 pagados sería
+            // mentirle: lo archiva creyendo que no había nadie. Los de antes
+            // del arranque SÍ tuvieron gente; lo que dice el corte es que ya
+            // son historia, no que estuvieran vacíos.
+            return conGente
+              ? `${vacios.length - conGente} terminaron sin nadie inscrito y ${conGente} son anteriores al punto de arranque (ya jugados, con su gente adentro). Archivar es darlos por cerrados.`
+              : 'No hay plata que contar: se archivan todos juntos.'; })()}
+        </div>
+        <button class="btn-toque" style="width:100%;min-height:var(--tap);background:var(--surface-2);color:var(--ink);border:1.5px solid var(--line-strong)">🧹 Archivar los ${vacios.length} terminados</button>
+      </form>` : ''}` : '';
+
+  const bloqueConflictos = conflictos.length ? `
+      <div class="banner px" style="margin:0 0 14px">
+        <div class="bic">⚠️</div>
+        <div class="btxt"><b>${conflictos.length} partido${conflictos.length === 1 ? '' : 's'} duplicado${conflictos.length === 1 ? '' : 's'} con gente en las DOS listas.</b>
+          ${esc(conflictos.join(' · '))}. Nadie los junta solo: entra a cada uno, decide cuál es la lista buena y da de baja la otra.</div>
+      </div>` : '';
+
+  // --- Turnos fijos: la plantilla de la que salen las fechas -------------------
+  const turnos = db.listTurnos();
+  const sugeridos = db.turnosSugeridos();
+  const sedesTodas = db.listSedes();
+  const filaTurno = (t) => `
+    <div class="finsc">
+      <div style="flex:1;min-width:150px">
+        <div style="font-weight:700;font-size:var(--t-m)">${esc(db.diaPlural(t.dia_nombre.charAt(0).toUpperCase() + t.dia_nombre.slice(1)))} · ${esc(t.hora)}</div>
+        <div style="font-size:var(--t-s);color:var(--ink-2);margin-top:3px">
+          ${esc(db.nombreDeZona(t.zona))}${t.sede_nombre ? ` · ${esc(t.sede_nombre)}` : ''} · ${t.cupo} cupos${t.precio != null ? ` · S/ ${esc(t.precio)}` : ''}
+        </div>
+        <div style="margin-top:5px">
+          <span class="badge ${t.activo ? 'b-done' : 'b-new'}">${t.activo ? `Activo · carga ${db.HORIZONTE_DIAS} días` : 'Pausado'}</span>
+          ${t.nota ? `<span class="badge b-new">${esc(t.nota)}</span>` : ''}
+        </div>
+      </div>
+      <div class="finsc-acc">
+        <form method="post" action="/admin/turno/activo" style="display:inline">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${t.id}"><input type="hidden" name="activo" value="${t.activo ? '0' : '1'}">
+          <button class="btn-fila" style="${t.activo
+            ? 'background:var(--surface-2);color:var(--ink-2);border:1.5px solid var(--line-strong)'
+            : 'background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink)'}">${t.activo ? '⏸ Pausar' : '▶ Encender'}</button>
+        </form>
+      </div>
+      <div class="finsc-peligro">
+        <form method="post" action="/admin/turno/eliminar" style="display:inline" onsubmit="return confirm('¿Borrar este turno fijo? Los partidos ya cargados no se tocan.')">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${t.id}">
+          <button class="btn-fila" style="background:var(--st-alerta-bg);color:var(--st-alerta-ink);border:1.5px solid var(--st-alerta-ink)">🗑</button>
+        </form>
+      </div>
+    </div>`;
+
+  const bloqueTurnos = `
+      <div class="shdr ancla" id="turnos">Turnos fijos <small>· la plantilla, no el partido</small></div>
+      <div class="group">
+        ${turnos.length ? turnos.map(filaTurno).join('')
+          : '<p style="padding:14px;color:var(--ink-3);font-size:14px">Todavía no hay turnos fijos. Un turno es "todos los domingos 6pm en el Politécnico": encendido, carga solo las próximas dos semanas.</p>'}
+      </div>
+      ${sugeridos.length ? `
+      <div class="group" style="margin-top:10px;padding:14px">
+        <div style="font-size:var(--t-s);color:var(--ink-2);line-height:1.45;margin-bottom:10px">
+          <b>Esto ya lo juegas, aunque no esté escrito:</b> ${esc(sugeridos.slice(0, 4).map((s) => `${db.diaPlural(s.dia_nombre)} ${s.hora} en ${db.nombreDeZona(s.zona)} (${s.veces} veces)`).join(' · '))}.
+          Cárgalo como turno fijo abajo y enciéndelo cuando quieras que se materialice solo.
+        </div>
+      </div>` : ''}
+      <div class="group" style="margin-top:10px">
+        <form method="post" action="/admin/turno">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <div class="campos" style="padding-top:14px">
+            <div class="campo">
+              <label for="t-zona">Distrito</label>
+              <select id="t-zona" name="zona">
+                ${db.zonasOperativas().map((z) => `<option value="${esc(z)}">${esc(db.nombreDeZona(z))}</option>`).join('')}
+              </select>
+            </div>
+            <div class="campo campo-ancho">
+              <label for="t-sede">Cancha</label>
+              <select id="t-sede" name="sede_id">
+                <option value="">Por definir</option>
+                ${sedesTodas.map((s) => `<option value="${s.id}">🏟 ${esc(db.nombreDeZona(s.zona))} — ${esc(s.nombre)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="campo">
+              <label for="t-dia">Día de la semana</label>
+              <select id="t-dia" name="dia_semana">
+                ${db.DIAS_NOMBRE.map((d, i) => `<option value="${i}">${esc(db.diaPlural(d.charAt(0).toUpperCase() + d.slice(1)))}</option>`).join('')}
+              </select>
+            </div>
+            <div class="campo">
+              <label for="t-hora">Hora de inicio</label>
+              <input id="t-hora" name="hora" type="time" step="1800" required>
+            </div>
+            <div class="campo">
+              <label for="t-cupo">Cupo</label>
+              <input id="t-cupo" name="cupo" type="number" min="2" max="60" value="14">
+            </div>
+            <div class="campo">
+              <label for="t-precio">Precio por jugador</label>
+              <input id="t-precio" name="precio" type="number" step="0.5" placeholder="S/ auto">
+              <small>Vacío = el precio del distrito</small>
+            </div>
+          </div>
+          <div style="padding:0 14px 14px">
+            <button class="btn-toque btn-guardar" style="width:100%;min-height:var(--tap-lg);font-size:var(--t-l)">Guardar turno fijo</button>
+            <div style="font-size:var(--t-s);color:var(--ink-2);margin-top:9px;text-align:center">
+              Nace APAGADO. Un turno encendido carga partidos reales, y cada partido es una cancha que hay que pagar: eso lo enciendes tú.
+            </div>
+          </div>
+        </form>
+      </div>`;
+
+  // Precarga del formulario cuando se llega desde un hueco ("Cargarlo ›").
+  const diaPre = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : hoy;
+  const horaPre = db.horaInput(query.hora || '');
+  const zonaPre = db.zonasOperativas().includes(query.zona) ? query.zona : db.zonasOperativas()[0];
+
   return baseHtml('Partidos · Pichangueros', `
     <div class="px">
       <div class="ltitle"><div><div class="eyebrow">Convocatorias</div><h2>Partidos</h2></div></div>
 
-      <div class="shdr">Abrir partido nuevo <small>· 3 toques: zona, día y listo</small></div>
+      ${bloqueConflictos}
+      ${bloqueLiquidar}
+
+      <div class="shdr ancla" id="abrir">Abrir partido nuevo <small>· 3 toques: zona, día y listo</small></div>
       <style>
         /* 44px de alto: son los tres primeros toques para abrir un partido. */
         .zbtn{flex:1;min-height:var(--tap);display:inline-flex;align-items:center;justify-content:center;
@@ -2664,18 +3051,18 @@ function paginaPartidos(db, key, query = {}) {
           <input type="hidden" name="key" value="${esc(keyRaw)}">
           <label>¿Dónde?</label>
           <div style="display:flex;gap:8px;flex-basis:100%;flex-wrap:wrap">
-            ${db.zonasOperativas().map((z, i) => `<label class="zbtn"><input type="radio" name="zona" value="${esc(z)}" ${i === 0 ? 'checked' : ''} onchange="pintaSedes('${esc(z)}')">${esc(db.nombreDeZona(z))}</label>`).join('')}
+            ${db.zonasOperativas().map((z) => `<label class="zbtn"><input type="radio" name="zona" value="${esc(z)}" ${z === zonaPre ? 'checked' : ''} onchange="pintaSedes('${esc(z)}')">${esc(db.nombreDeZona(z))}</label>`).join('')}
           </div>
           <select name="sede" id="selSede" onchange="cupoDeSede()"></select>
           <label>¿Cuándo?</label>
           <div style="display:flex;gap:8px;flex-basis:100%;align-items:center">
-            <button type="button" class="qd on" onclick="setDia(this,'${hoy}')">Hoy</button>
-            <button type="button" class="qd" onclick="setDia(this,'${fechaLima(1)}')">Mañana</button>
-            <input name="fecha" id="fFecha" type="date" required min="${hoy}" value="${hoy}" style="flex:1;min-width:130px">
+            <button type="button" class="qd${diaPre === hoy ? ' on' : ''}" onclick="setDia(this,'${hoy}')">Hoy</button>
+            <button type="button" class="qd${diaPre === fechaLima(1) ? ' on' : ''}" onclick="setDia(this,'${fechaLima(1)}')">Mañana</button>
+            <input name="fecha" id="fFecha" type="date" required min="${hoy}" value="${esc(diaPre)}" style="flex:1;min-width:130px">
           </div>
           <div class="campos" style="flex-basis:100%">
             ${campo('fHora', 'Hora de inicio',
-              '<input id="fHora" name="hora" type="time" step="1800" required>',
+              `<input id="fHora" name="hora" type="time" step="1800" value="${esc(horaPre)}" required>`,
               'El turno dura una hora: si pones 8:00 pm, los jugadores ven "8-9pm".')}
             ${campo('fCupo', 'Cupo',
               '<input id="fCupo" name="cupo" type="number" min="2" max="60" inputmode="numeric" value="14">',
@@ -2708,13 +3095,24 @@ function paginaPartidos(db, key, query = {}) {
         }
         document.getElementById('fFecha').addEventListener('input', () =>
           document.querySelectorAll('.qd').forEach(b => b.classList.remove('on')));
-        pintaSedes('brena');
+        pintaSedes(${JSON.stringify(zonaPre)});
       </script>
 
-      <div class="shdr">Todos los partidos ${ocultos ? `<small>· <a style="color:var(--lime-ink)" href="/admin/leads?key=${key}&vista=partidos${verCancelados ? '' : '&cancelados=1'}">${verCancelados ? 'ocultar' : `ver ${ocultos}`} cancelado${ocultos === 1 ? '' : 's'} vacío${ocultos === 1 ? '' : 's'}</a></small>` : ''}</div>
-      <div class="group">
-        ${partidos.map(fila).join('') || '<p style="padding:14px;color:var(--ink-3);font-size:14px">Sin partidos todavía. Abre el primero arriba — el bot lo ofrece automáticamente a quien pida jugar.</p>'}
+      ${/* LA SEMANA. Es como se piensa el negocio ("los domingos 6pm") y es
+            donde un hueco o un duplicado se ven solos — en la lista plana
+            ordenada por fecha no se veía que el domingo estaba vacío. */ ''}
+      <div class="shdr">La semana <small>· ${esc(fechaCompacta(desde, true, false))} al ${esc(fechaCompacta(hasta, true, false))}</small></div>
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <a class="btn-toque" style="flex:1;text-align:center;text-decoration:none;min-height:var(--tap);display:flex;align-items:center;justify-content:center;background:var(--surface);color:var(--ink);border:1.5px solid var(--line-strong)"
+           href="/admin/leads?key=${key}&vista=partidos&semana=${semana - 1}">‹ Semana anterior</a>
+        ${semana !== 0 ? `<a class="btn-toque" style="flex:1;text-align:center;text-decoration:none;min-height:var(--tap);display:flex;align-items:center;justify-content:center;background:var(--lime);color:var(--on-lime);border:1.5px solid var(--lime)"
+           href="/admin/leads?key=${key}&vista=partidos">Esta semana</a>` : ''}
+        <a class="btn-toque" style="flex:1;text-align:center;text-decoration:none;min-height:var(--tap);display:flex;align-items:center;justify-content:center;background:var(--surface);color:var(--ink);border:1.5px solid var(--line-strong)"
+           href="/admin/leads?key=${key}&vista=partidos&semana=${semana + 1}">Semana siguiente ›</a>
       </div>
+      ${dias.map(bloqueDia).join('')}
+
+      ${bloqueTurnos}
 
       <div class="foot">⚽ Pichangueros · Partidos</div>
     </div>
@@ -2733,6 +3131,10 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   const lista = db.textoLista(partidoId);
   const pagosSueltos = db.pagosSinPartido();
   const libres = Math.max(0, p.cupo - ocupados);
+  // La fase se CALCULA (db.fasePartido): esta pantalla no la deduce por su
+  // cuenta, así que no puede contar una historia distinta a la del bot.
+  const fase = db.fasePartido(p);
+  const termino = db.yaPaso(p);
 
   /**
    * CONVOCAR — "¿a quién le escribo para llenar el viernes en Breña?".
@@ -2827,7 +3229,10 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   const chipInsc = { pagado: 'b-done', reservado: 'b-new', espera: 'b-wait', baja: 'b-new' };
   const filaInsc = (i) => {
     const nombre = i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : '¿?');
-    const puedeMarcar = p.estado === 'jugado' || p.fecha <= hoyLima();
+    // Pasar lista se habilita cuando el partido ya arrancó, no cuando alguien
+    // lo declaró jugado: nadie iba a apretar un botón antes de entrar a la
+    // cancha, y sin eso los botones "Vino/Faltó" no aparecían nunca.
+    const puedeMarcar = fase !== 'proximo' || p.fecha <= hoyLima();
     return `<div class="finsc ancla" id="insc-${i.id}">
       <div style="flex:1;min-width:140px">
         <div style="font-weight:700;font-size:var(--t-m)">${i.numero ? `<a href="/admin/leads?key=${key}&numero=${i.numero}">${esc(nombre)}</a>` : esc(nombre)}</div>
@@ -2974,6 +3379,61 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
       .editor summary:hover{background:var(--surface-2)}
     </style>`;
 
+  /**
+   * LIQUIDAR — la pantalla que "Cerrar" nunca fue.
+   *
+   * "Marcar jugado" no compraba nada: los recurrentes se cuentan por FECHA, no
+   * por estado, así que apretarlo no cambiaba ningún número y por eso nadie lo
+   * tocaba. Liquidar sí dice algo — quién vino, cuánto entró, cuánto falta, qué
+   * costó la cancha y qué queda — y recién después se afirma que está contado.
+   *
+   * Solo aparece cuando el partido YA TERMINÓ: antes de eso no hay nada que
+   * liquidar y el botón sería una trampa.
+   */
+  const vinieron = activas.filter((i) => i.asistencia === 'si').length;
+  const sinMarcar = activas.filter((i) => !i.asistencia).length;
+  const deudores = activas.filter((i) => i.estado === 'reservado');
+  const nombreDe = (i) => i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : 'Sin nombre');
+  const bloqueLiquidacion = (termino && fase !== 'liquidado' && fase !== 'cancelado') ? `
+    <div class="shdr ancla" id="liquidacion">Liquidar <small>· este partido ya se jugó</small></div>
+    <div class="group" style="padding:14px;margin-bottom:14px">
+      <div style="font-size:var(--t-m);line-height:1.5">
+        <b>${vinieron || ocupados} de ${activas.length}</b> ${vinieron ? 'marcados como que vinieron' : 'inscritos'}${sinMarcar ? ` · ${sinMarcar} sin marcar asistencia` : ''}.
+      </div>
+      ${deudores.length ? `<div style="font-size:var(--t-s);color:var(--st-alerta-ink);margin-top:8px;line-height:1.5">
+        <b>Falta cobrarle a ${deudores.length}:</b> ${deudores.map((i) => (i.numero
+          ? `<a href="https://wa.me/${esc(i.numero)}" target="_blank" rel="noopener">${esc(nombreDe(i))}</a>`
+          : esc(nombreDe(i)))).join(' · ')}.
+        Puedes cobrar ahora y marcarlos con "💰 Pagó" antes de liquidar.
+      </div>` : '<div style="font-size:var(--t-s);color:var(--ink-2);margin-top:8px">No queda nadie por cobrar.</div>'}
+      <form method="post" action="/admin/partido/liquidar" style="margin-top:12px"
+        onsubmit="return confirm('${jsTxt(`¿Liquidar el partido del ${db.fechaBonita(p.fecha, { relativa: false })}? Es afirmar que la plata ya está contada.${deudores.length ? ` Quedan ${deudores.length} sin pagar y se van a dar por perdidos.` : ''} Deja de aceptar pagos.`)}')">
+        <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${partidoId}">
+        <button class="btn-toque btn-guardar" style="width:100%;min-height:var(--tap-lg);font-size:var(--t-l)">🧾 Liquidar este partido</button>
+      </form>
+      <div style="font-size:var(--t-s);color:var(--ink-2);margin-top:9px;text-align:center">
+        Hasta que lo liquides sigue aceptando Yapes tardíos (${db.graciaHoras()} h después del partido, o siempre que lo reabras).
+      </div>
+    </div>` : '';
+
+  /**
+   * Cancelado con gente adentro: la lista con sus wa.me.
+   *
+   * NADIE recibe aviso automático — un mensaje masivo del bot diciendo "no hay
+   * pichanga" es exactamente lo que no puede salir solo. Lo que sí se puede
+   * hacer es dejarle los links a un toque para que escriba él.
+   */
+  const bloqueAvisar = (fase === 'cancelado' && activas.length) ? `
+    <div class="group" style="padding:14px;margin-bottom:14px;border:1.5px solid var(--st-alerta-ink)">
+      <div style="font-size:var(--t-m);font-weight:700">Este partido está cancelado y tiene ${activas.length} inscrito${activas.length === 1 ? '' : 's'}.</div>
+      <div style="font-size:var(--t-s);color:var(--ink-2);margin-top:6px;line-height:1.5">
+        Nadie recibe aviso automático. Escríbeles tú, uno por uno:
+        ${activas.map((i) => (i.numero
+          ? `<a href="https://wa.me/${esc(i.numero)}?text=${encodeURIComponent(`Habla crack, se cayó la pichanga del ${db.fechaBonita(p.fecha, { relativa: false })}${p.hora ? ` de ${p.hora}` : ''}. ${i.estado === 'pagado' ? 'Te devuelvo tu Yape o te lo dejo para la próxima, tú me dices.' : 'Te aviso apenas tenga otra fecha.'}`)}" target="_blank" rel="noopener">${esc(nombreDe(i))}</a>`
+          : esc(nombreDe(i)))).join(' · ')}.
+      </div>
+    </div>` : '';
+
   return baseHtml(`Partido ${p.fecha} · Pichangueros`, `
     <div class="px">
       <div class="ltitle">
@@ -2986,26 +3446,33 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
                 badges son relleno oscuro con blanco encima, todos sobre 5:1. */ ''}
           ${p.fecha === hoyLima() ? '<span class="badge b-zona" style="background:var(--st-debe-solid)">HOY</span>'
             : p.fecha === fechaLima(1) ? '<span class="badge b-zona" style="background:var(--navy-9)">MAÑANA</span>' : ''}
-          <span class="badge b-zona" style="background:${p.estado === 'abierto' ? 'var(--st-ok-solid)' : 'var(--st-off-solid)'}">${esc(ESTADOS_PARTIDO[p.estado] || p.estado)}</span>
+          <span class="badge b-zona" style="background:${db.FASES[fase].ok ? 'var(--st-ok-solid)' : 'var(--st-off-solid)'}">${esc(db.FASES[fase].label)}</span>
         </span>
       </div>
       ${caja}
 
+      ${bloqueAvisar}
+      ${bloqueLiquidacion}
+
       ${editor}
 
       <div style="display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center;margin-bottom:var(--s3)">
-        ${p.estado === 'abierto' ? cambioEstado('cerrado', '🔒 Cerrar inscripción', 'background:var(--surface-2);color:var(--ink);border:1.5px solid var(--line-strong)') : cambioEstado('abierto', '🔓 Reabrir', 'background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink)')}
-        ${p.estado !== 'jugado' ? cambioEstado('jugado', '✅ Marcar jugado', 'background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink)') : ''}
+        ${fase === 'proximo' || fase === 'en_curso' || fase === 'gracia'
+          ? cambioEstado('cerrado', '🔒 Cerrar inscripción', 'background:var(--surface-2);color:var(--ink);border:1.5px solid var(--line-strong)')
+          : cambioEstado('abierto', `🔓 Reabrir${termino ? ` (${db.graciaHoras()} h más)` : ''}`, 'background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink)')}
       </div>
 
       ${/* Lo destructivo va en su propia fila, separado por 24px y una línea:
            antes "✖ Cancelar" y "🗑 Eliminar" compartían fila con "Cerrar" y
            "Marcar jugado", y en 360px eso envuelve — el botón que saca el
            partido de la parrilla del bot terminaba justo debajo del dedo. */ ''}
-      ${(p.estado !== 'cancelado' || !inscripciones.length) ? `
+      ${(fase !== 'cancelado' || !inscripciones.length) ? `
       <div class="acc-peligro" style="margin-bottom:16px">
-        ${p.estado !== 'cancelado' ? cambioEstado('cancelado', '✖ Cancelar', 'background:var(--st-alerta-bg);color:var(--st-alerta-ink);border:1.5px solid var(--st-alerta-ink)',
-          `¿CANCELAR el partido del ${db.fechaBonita(p.fecha, { relativa: false })}? ${activas.length ? `Hay ${activas.length} inscritos y nadie recibe aviso automático: tienes que avisarles tú.` : 'No hay nadie inscrito.'}`) : ''}
+        ${fase !== 'cancelado' ? `
+        <form method="post" action="/admin/partido/cancelar-fecha" style="display:inline" onsubmit="return confirm('${jsTxt(`¿CANCELAR el partido del ${db.fechaBonita(p.fecha, { relativa: false })}? ${activas.length ? `Hay ${activas.length} inscritos y nadie recibe aviso automático: tienes que avisarles tú.` : 'No hay nadie inscrito.'}${p.turno_id ? ' El turno fijo sigue activo para las demás semanas.' : ''}`)}')">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${partidoId}">
+          <button class="btn-toque" style="font-size:13px;background:var(--st-alerta-bg);color:var(--st-alerta-ink);border:1.5px solid var(--st-alerta-ink)">✖ Cancelar${p.turno_id ? ' esta fecha' : ''}</button>
+        </form>` : ''}
         ${!inscripciones.length ? `
         <form method="post" action="/admin/partido/eliminar" style="display:inline" onsubmit="return confirm('¿Eliminar este partido? Solo se puede porque no tiene a nadie inscrito.')">
           <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${partidoId}">

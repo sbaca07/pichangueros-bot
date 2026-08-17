@@ -483,6 +483,9 @@ const CAMPOS_CONFIG = [
   // Umbrales de frescura: a los cuántos días sin venir un jugador se está
   // enfriando y a los cuántos se dio por perdido (ver umbralesFrescura).
   'dias_frio', 'dias_perdido',
+  // Cuántas horas después del pitazo final un partido sigue aceptando un Yape
+  // tardío o una inscripción a mano (ver graciaHoras).
+  'gracia_horas',
 ];
 
 // Nombres bonitos de las zonas conocidas; una zona nueva sin entrada acá sale
@@ -659,81 +662,184 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_insc_partido ON inscripciones(partido_id, estado);
   CREATE INDEX IF NOT EXISTS idx_insc_numero ON inscripciones(numero);
+
+  -- TURNOS (2026-08-17): la unidad real del negocio no es el partido, es
+  -- "todos los domingos 6pm en el Politécnico". Hasta hoy eso vivía SOLO en la
+  -- cabeza de Clarck, y por eso se vende lo que no está cargado: el 15/08
+  -- prometió un domingo 6pm, un jugador pagó S/20 por dos cupos y ese partido
+  -- nunca existió. Un turno es la plantilla; los partidos son sus instancias.
+  CREATE TABLE IF NOT EXISTS turnos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zona TEXT NOT NULL,
+    sede_id INTEGER,                       -- la cancha (sedes.id); NULL = por definir
+    dia_semana INTEGER NOT NULL,           -- 0 domingo … 6 sábado (como strftime('%w'))
+    inicio_min INTEGER NOT NULL,           -- minutos desde medianoche (1080 = 6pm)
+    duracion_min INTEGER NOT NULL DEFAULT 60,
+    cupo INTEGER NOT NULL DEFAULT 14,
+    precio REAL,
+    activo INTEGER NOT NULL DEFAULT 0,     -- NACE APAGADO: ninguna plantilla se enciende sola
+    vigente_desde TEXT,                    -- YYYY-MM-DD (NULL = desde siempre)
+    vigente_hasta TEXT,                    -- YYYY-MM-DD (NULL = sin fin)
+    nota TEXT,
+    creado_en TEXT NOT NULL DEFAULT (datetime('now', '-5 hours'))
+  );
+
+  -- "Esta semana no se juega": la excepción es del TURNO en una fecha, así que
+  -- saltear un domingo no toca la plantilla ni las demás semanas.
+  CREATE TABLE IF NOT EXISTS turno_excepciones (
+    turno_id INTEGER NOT NULL,
+    fecha TEXT NOT NULL,
+    motivo TEXT,
+    creado_en TEXT NOT NULL DEFAULT (datetime('now', '-5 hours')),
+    PRIMARY KEY (turno_id, fecha)
+  );
 `);
 
-const hoyLimaDb = () => new Date(Date.now() - 5 * 3600e3).toISOString().slice(0, 10);
+/**
+ * LA FASE DEL PARTIDO SE CALCULA, NO SE GUARDA (2026-08-17).
+ *
+ * `partidos.estado` contestaba dos preguntas a la vez y por eso no se podía
+ * automatizar nada:
+ *   1. ¿el bot puede OFRECERLO? → termina cuando el partido EMPIEZA.
+ *   2. ¿puede recibir todavía una inscripción o un pago? → termina mucho
+ *      después: los Yapes tardíos y la lista a mano ocurren con el partido ya
+ *      empezado.
+ * "Cerrar" apagaba las dos cosas juntas, así que no se podía cerrar sin perder
+ * los pagos que llegan tarde — y por eso había 16 partidos jugados que seguían
+ * en 'abierto' con el panel pidiéndole a Clarck que los cerrara a mano.
+ *
+ * Desde acá `estado` registra SOLO decisiones humanas, y con fecha:
+ *   · cancelado_en → "este partido no se juega" (lo dijo él)
+ *   · liquidado_en → "ya cobré y pagué la cancha, cerrado" (lo dijo él)
+ *   · cierra_en    → "no entra nadie más" (override manual del cierre automático)
+ * Todo lo demás —si empezó, si terminó, si todavía admite un Yape— se DERIVA de
+ * fecha + hora + ahora, así que no puede quedar desactualizado.
+ *
+ * La hora deja de ser texto: `inicio_min`/`duracion_min` son el dato, y `hora`
+ * pasa a ser el caché de presentación (se sigue imprimiendo en la lista del
+ * grupo, en la parrilla del bot, en el prompt, en el Sheet y en los avisos).
+ */
+const colsPartidos = db.prepare('PRAGMA table_info(partidos)').all().map((c) => c.name);
+if (!colsPartidos.includes('cancelado_en')) db.exec('ALTER TABLE partidos ADD COLUMN cancelado_en TEXT');
+if (!colsPartidos.includes('liquidado_en')) db.exec('ALTER TABLE partidos ADD COLUMN liquidado_en TEXT');
+if (!colsPartidos.includes('cierra_en')) db.exec('ALTER TABLE partidos ADD COLUMN cierra_en TEXT');
+if (!colsPartidos.includes('inicio_min')) db.exec('ALTER TABLE partidos ADD COLUMN inicio_min INTEGER');
+if (!colsPartidos.includes('duracion_min')) db.exec('ALTER TABLE partidos ADD COLUMN duracion_min INTEGER DEFAULT 60');
+// De qué turno salió esta fecha (NULL = lo abrió Clarck a mano).
+if (!colsPartidos.includes('turno_id')) db.exec('ALTER TABLE partidos ADD COLUMN turno_id INTEGER');
+// La sede por ID además del nombre: el índice anti-duplicado necesita comparar
+// canchas, y el nombre en texto ya llegó tipeado de tres formas distintas.
+if (!colsPartidos.includes('sede_id')) db.exec('ALTER TABLE partidos ADD COLUMN sede_id INTEGER');
 
-/** '9pm' → '9-10pm' (los turnos duran 1 h): un solo formato en todo el sistema. */
+/**
+ * EL RELOJ DE LIMA, EN UN SOLO LUGAR.
+ *
+ * Había cuatro copias de `new Date(Date.now() - 5*3600e3)` repartidas (db.js,
+ * panel.js, backup.js, el filtro de vigentes) y cada una se quedaba con un
+ * pedazo distinto con `.slice()`: una la fecha, otra la hora ENTERA. Esa última
+ * es la que hacía que un turno de 8:30-9:30pm se dejara de ofrecer a las 8:00
+ * en punto — comparar por horas enteras pierde los minutos.
+ *
+ * Perú no mueve la hora en todo el año, así que UTC-5 fijo es exacto y no una
+ * aproximación.
+ *
+ * @returns {{fecha: string, min: number, ts: string}} fecha 'YYYY-MM-DD',
+ *   minutos desde medianoche (1080 = 6pm) y timestamp 'YYYY-MM-DD HH:MM:SS'.
+ */
+function ahoraLima() {
+  const iso = new Date(Date.now() - 5 * 3600e3).toISOString();
+  return {
+    fecha: iso.slice(0, 10),
+    min: Number(iso.slice(11, 13)) * 60 + Number(iso.slice(14, 16)),
+    ts: `${iso.slice(0, 10)} ${iso.slice(11, 19)}`,
+  };
+}
+const hoyLimaDb = () => ahoraLima().fecha;
+/** La fecha de Lima corrida N días (negativo = hacia atrás). */
+const fechaLimaDb = (dias = 0) => new Date(Date.now() - 5 * 3600e3 + dias * 86400e3).toISOString().slice(0, 10);
+
 /** 20 → '8', 20 con 30' → '8:30' (sin el am/pm, que lo pone quien llama). */
 const en12 = (h, min) => `${h % 12 || 12}${min ? `:${String(min).padStart(2, '0')}` : ''}`;
 const meridiano = (h) => (h % 24 < 12 ? 'am' : 'pm');
 
 /**
+ * LA HORA COMO DATO: '8-9pm' → { inicio: 1200, duracion: 60 }.
+ *
+ * Hasta hoy la hora era TEXTO y se volvía a parsear con una regex distinta en
+ * cada lugar que la necesitaba (ordenHora, horaInput, normalizarHora), con
+ * DURACION_H = 1 asumiendo que todo dura una hora. Costó dos bugs: '20:00'
+ * leído como las 8 de la mañana, y '11am-12pm' leído como las 23. Ahora hay UN
+ * parser y todos los demás se construyen encima.
+ *
+ * El meridiano del PRIMER bloque manda; si ese bloque no trae ninguno se usa el
+ * del final de la cadena ('8-9pm' → los dos son pm); si no hay ninguno es
+ * formato de 24 h ('20:00') y va tal cual.
+ *
+ * @returns {{inicio: number, duracion: number}|null} minutos desde medianoche.
+ */
+function parseHora(hora) {
+  const t = String(hora || '').trim();
+  if (!t) return null;
+  const sufFinal = ((/(am|pm)\s*$/i.exec(t) || [])[1] || '').toLowerCase() || null;
+  const m1 = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(t);
+  if (!m1) return null;
+  const a24 = (h, suf) => (suf ? (h % 12) + (suf === 'pm' ? 12 : 0) : Math.min(h, 23));
+  const suf1 = (m1[3] || sufFinal || '').toLowerCase() || null;
+  const inicio = Math.max(0, Math.min(1439, a24(Number(m1[1]), suf1) * 60 + Number(m1[2] || 0)));
+
+  // Segundo bloque (la hora de fin) si viene: '8-9pm', '20:00-22:00'.
+  const m2 = /^\s*[-a–—]\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(t.slice(m1[0].length));
+  let duracion = 60;
+  if (m2) {
+    const suf2 = (m2[3] || sufFinal || '').toLowerCase() || null;
+    let d = (a24(Number(m2[1]), suf2) * 60 + Number(m2[2] || 0)) - inicio;
+    if (d <= 0) d += 1440; // cruza la medianoche ('11pm-12am')
+    // Una pichanga de más de 6 h no existe: es un formato ambiguo ('11-12pm',
+    // que quiere decir 11pm a medianoche). Ante la duda, la hora de siempre.
+    duracion = d > 0 && d <= 360 ? d : 60;
+  }
+  return { inicio, duracion };
+}
+
+/** 1200 + 60 → '8-9pm'. La cara legible del dato, para jugadores y para Clarck. */
+function textoHora(inicio, duracion = 60) {
+  if (inicio == null || !Number.isFinite(Number(inicio))) return null;
+  const i = ((Math.round(Number(inicio)) % 1440) + 1440) % 1440;
+  const f = i + (Number(duracion) > 0 ? Math.round(Number(duracion)) : 60);
+  const hI = Math.floor(i / 60) % 24, mI = i % 60;
+  const hF = Math.floor(f / 60) % 24, mF = f % 60;
+  // Si el turno cruza el mediodía o la medianoche se escriben los dos sufijos
+  // ('11am-12pm'); si no, uno solo al final ('8-9pm').
+  return meridiano(hI) === meridiano(hF)
+    ? `${en12(hI, mI)}-${en12(hF, mF)}${meridiano(hF)}`
+    : `${en12(hI, mI)}${meridiano(hI)}-${en12(hF, mF)}${meridiano(hF)}`;
+}
+
+/**
  * Deja la hora en el formato que leen los jugadores ('8-9pm').
  *
  * Acepta lo que manda el reloj del navegador ('20:00', '20:00-21:00'), que es
- * como el panel la pide desde el 15/08. Antes el campo era texto libre y solo
- * se entendía '9pm': cualquier otra cosa se guardaba cruda, y '20:00' hacía que
- * ordenHora lo leyera como las 8 de la MAÑANA — con lo cual el bot dejaba de
- * ofrecer un partido de las 8 de la noche desde las 8am, sin que se notara.
+ * como el panel la pide desde el 15/08. Lo que no se entiende se devuelve tal
+ * cual: es texto que cargó un humano y borrarlo sería peor que mostrarlo raro.
  */
 function normalizarHora(hora) {
-  const t = (hora || '').trim();
+  const t = String(hora || '').trim();
   if (!t) return t;
-  // Reloj (24 h): '20:00' o '20:00-21:00'. Sin hora de fin se asume 1 hora.
-  const reloj = /^(\d{1,2}):(\d{2})(?:\s*[-a]\s*(\d{1,2}):(\d{2}))?$/.exec(t);
-  if (reloj && !/am|pm/i.test(t)) {
-    const hIni = Number(reloj[1]) % 24;
-    const mIni = Number(reloj[2]);
-    const hFin = reloj[3] != null ? Number(reloj[3]) % 24 : (hIni + 1) % 24;
-    const mFin = reloj[4] != null ? Number(reloj[4]) : mIni;
-    // Si el turno cruza el mediodía o la medianoche, se escriben los dos
-    // sufijos ('11am-12pm'); si no, uno solo al final ('8-9pm').
-    return meridiano(hIni) === meridiano(hFin)
-      ? `${en12(hIni, mIni)}-${en12(hFin, mFin)}${meridiano(hFin)}`
-      : `${en12(hIni, mIni)}${meridiano(hIni)}-${en12(hFin, mFin)}${meridiano(hFin)}`;
-  }
-  const m = /^(\d{1,2})\s*(am|pm)$/i.exec(t);
-  if (!m) return t;
-  const n = Number(m[1]);
-  return `${n}-${n === 12 ? 1 : n + 1}${m[2].toLowerCase()}`;
+  const h = parseHora(t);
+  return h ? textoHora(h.inicio, h.duracion) : t;
 }
 
 /** '8-9pm' → '20:00' — para precargar el <input type="time"> del panel. */
 function horaInput(hora) {
-  const t = (hora || '').trim();
-  if (!t) return '';
-  // Mismo cuidado que ordenHora: el meridiano del PRIMER bloque.
-  const m = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(t);
-  if (!m) return '';
-  const suf = (m[3] || (/(am|pm)\s*$/i.exec(t) || [])[1] || '').toLowerCase();
-  let h = Number(m[1]);
-  if (suf) h = (h % 12) + (suf === 'pm' ? 12 : 0);
-  if (h > 23) return '';
-  return `${String(h).padStart(2, '0')}:${m[2] || '00'}`;
+  const h = parseHora(hora);
+  if (!h) return '';
+  return `${String(Math.floor(h.inicio / 60)).padStart(2, '0')}:${String(h.inicio % 60).padStart(2, '0')}`;
 }
 
-/** '8-9pm' → 20 · '9-10am' → 9 — para ordenar los turnos dentro del día. */
-/**
- * Hora de INICIO en 0-23.
- *
- * Ojo con el meridiano: hay que mirar el del PRIMER bloque, no el de la cadena
- * entera. '11am-12pm' contiene "pm" al final y se leía como las 23 — o sea que
- * el turno de las 11 de la mañana se seguía ofreciendo hasta las 11 de la
- * noche, aceptaba Yapes toda la tarde y, al abrir y guardar el editor, se
- * mudaba solo a las 11pm. Lo introdujo el propio formato "11am-12pm" que
- * genera normalizarHora para los turnos que cruzan el mediodía.
- */
+/** '8-9pm' → 20 · '9-10am' → 9. Sin hora, 99: ante la duda nunca se descarta. */
 function ordenHora(hora) {
-  const t = (hora || '').trim();
-  const m = /^(\d{1,2})(?::\d{2})?\s*(am|pm)?/i.exec(t);
-  if (!m) return 99;
-  const n = Number(m[1]);
-  // El sufijo propio del primer bloque manda; si no tiene, el del final sirve
-  // ('8-9pm'). Sin ninguno es formato de 24 h ('20:00') y va tal cual.
-  const suf = (m[2] || (/(am|pm)\s*$/i.exec(t) || [])[1] || '').toLowerCase();
-  if (!suf) return Math.min(n, 23);
-  return (n % 12) + (suf === 'pm' ? 12 : 0);
+  const h = parseHora(hora);
+  return h ? Math.floor(h.inicio / 60) : 99;
 }
 
 // Migración (2026-08-11, una vez): normalizar horas ya guardadas ('9pm' → '9-10pm').
@@ -759,6 +865,57 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'sedes_mojibake_2026_08'
   if (n) console.log(`[mojibake] ${n} partidos con sede rota corregidos desde la tabla sedes.`);
 }
 
+// Migración (2026-08-17, una vez): la hora de texto a número. Se rellena
+// inicio_min/duracion_min con el MISMO parseo que ya existía, así que nada
+// cambia de significado. `hora` NULL → inicio_min NULL: sin hora cargada el
+// comportamiento sigue siendo el de siempre (ante la duda, se ofrece).
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'hora_en_minutos_2026_08'").get()) {
+  let n = 0;
+  const set = db.prepare('UPDATE partidos SET inicio_min = ?, duracion_min = ? WHERE id = ?');
+  for (const p of db.prepare('SELECT id, hora FROM partidos WHERE hora IS NOT NULL AND inicio_min IS NULL').all()) {
+    const h = parseHora(p.hora);
+    if (!h) continue;
+    set.run(h.inicio, h.duracion, p.id);
+    n++;
+  }
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('hora_en_minutos_2026_08', '1')").run();
+  if (n) console.log(`[hora] ${n} partidos con la hora guardada como número (inicio_min).`);
+}
+
+// Migración (2026-08-17, una vez): la sede por ID, copiada del nombre que ya
+// estaba guardado. Sin esto el índice anti-duplicado no puede comparar canchas.
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'partidos_sede_id_2026_08'").get()) {
+  const n = db.prepare(`
+    UPDATE partidos SET sede_id = (SELECT s.id FROM sedes s WHERE s.zona = partidos.zona AND s.nombre = partidos.sede)
+    WHERE sede_id IS NULL AND sede IS NOT NULL
+  `).run().changes;
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('partidos_sede_id_2026_08', '1')").run();
+  if (n) console.log(`[partidos] ${n} partidos enlazados a su cancha por ID.`);
+}
+
+/**
+ * Migración (2026-08-17, una vez): de la columna `estado` a las tres fechas.
+ *
+ * Solo se rescata lo que es una DECISIÓN de Clarck; lo demás se recalcula:
+ *   · 'cancelado' → cancelado_en   · 'jugado' → liquidado_en
+ *   · 'cerrado'   → cierra_en      · 'abierto' → nada que guardar
+ *
+ * La fecha exacta en que se apretó cada botón no quedó registrada en ningún
+ * lado, así que se usa creado_en: lo que importa es QUE se decidió, y que la
+ * marca quede en el pasado para que el partido se lea igual que hoy.
+ *
+ * `estado` NO se limpia: se sigue escribiendo en paralelo (doble escritura) por
+ * si hay que revertir el deploy — el código viejo tiene que poder seguir
+ * leyendo estos partidos.
+ */
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'fase_derivada_2026_08'").get()) {
+  const cancel = db.prepare("UPDATE partidos SET cancelado_en = creado_en WHERE estado = 'cancelado' AND cancelado_en IS NULL").run().changes;
+  const liq = db.prepare("UPDATE partidos SET liquidado_en = creado_en WHERE estado = 'jugado' AND liquidado_en IS NULL").run().changes;
+  const cerr = db.prepare("UPDATE partidos SET cierra_en = creado_en WHERE estado = 'cerrado' AND cierra_en IS NULL").run().changes;
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('fase_derivada_2026_08', '1')").run();
+  if (cancel + liq + cerr) console.log(`[fase] ${cancel} cancelados · ${liq} liquidados · ${cerr} cerrados a mano pasados a fecha. El resto se calcula solo.`);
+}
+
 // "2026-08-12" es formato de máquina. Todo lo que ve un humano (mensajes del
 // bot, avisos a Clarck, la lista del grupo, el panel) usa esta versión.
 const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
@@ -777,18 +934,194 @@ function fechaBonita(ymd, { relativa = true } = {}) {
 // Cupos que ocupan lugar en cancha (la espera y las bajas no cuentan).
 const OCUPAN = "('reservado','pagado')";
 
+// ==============================================================================
+//  LA FASE DEL PARTIDO — derivada de fecha + hora + ahora, nunca guardada
+// ==============================================================================
+
 /**
- * Crea un partido. La zona tiene que ser una operativa: `actualizarPartido` ya
- * lo validaba y acá no, así que un partido con zona inválida nacía invisible
- * para el bot (no entra en ninguna zona del prompt) y sin precio de referencia.
- * @returns {number|null} el id, o null si la zona no existe.
+ * GRACIA: cuánto tiempo DESPUÉS del pitazo final un partido sigue aceptando
+ * inscripciones y pagos.
+ *
+ * Es exactamente el requisito de "no autocerramos porque ahí se enganchan los
+ * Yapes tardíos", pero escrito como un dato en vez de como una omisión: antes
+ * la única forma de no perder esos pagos era no cerrar NUNCA, y eso dejaba 16
+ * partidos jugados figurando como si todavía se pudiera entrar.
+ *
+ * Editable en Config (clave `gracia_horas`): el que sabe cuánto tardan los
+ * Yapes de su gente es Clarck, no el código.
  */
-function crearPartido({ zona, fecha, hora, sede, cupo, precio }) {
-  if (!zonasOperativas().includes(zona)) return null;
-  const r = db.prepare(
-    "INSERT INTO partidos (zona, fecha, hora, sede, cupo, precio, creado_en) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
-  ).run(zona, fecha, normalizarHora(hora) || null, sede || null, cupo || 14, precio ?? null);
-  return Number(r.lastInsertRowid);
+const GRACIA_H_DEFAULT = 24;
+// Lectura de UNA clave, no del mapa entero: esto se llama una vez por partido
+// al calcular la fase, y la vista Partidos pinta la lista completa.
+function graciaHoras() {
+  const r = db.prepare("SELECT valor FROM config WHERE clave = 'gracia_horas'").get();
+  const v = Number(r && r.valor);
+  return v > 0 ? Math.min(v, 24 * 14) : GRACIA_H_DEFAULT;
+}
+
+/** Un instante como "minutos absolutos" — permite comparar fecha+hora de un tiro. */
+const minutosAbs = (fecha, min = 0) => Math.round(Date.parse(`${fecha}T00:00:00Z`) / 60000) + min;
+/** 'YYYY-MM-DD HH:MM:SS' → minutos absolutos (los timestamps ya vienen en hora de Lima). */
+function tsAbs(ts) {
+  const t = String(ts || '');
+  if (!/^\d{4}-\d{2}-\d{2}/.test(t)) return null;
+  return minutosAbs(t.slice(0, 10), Number(t.slice(11, 13) || 0) * 60 + Number(t.slice(14, 16) || 0));
+}
+/** Inicio del partido en minutos absolutos. null = sin hora cargada (ante la duda, no se descarta). */
+function inicioAbs(p) {
+  const ini = p.inicio_min != null ? Number(p.inicio_min) : (parseHora(p.hora) || {}).inicio;
+  return ini == null ? null : minutosAbs(p.fecha, ini);
+}
+/** Fin del partido en minutos absolutos. null si no hay hora. */
+function finAbs(p) {
+  const ini = inicioAbs(p);
+  if (ini == null) return null;
+  const dur = Number(p.duracion_min) > 0 ? Number(p.duracion_min) : (parseHora(p.hora) || {}).duracion || 60;
+  return ini + dur;
+}
+
+/**
+ * Por qué este partido YA NO acepta a nadie más — o null si todavía acepta.
+ *
+ * Devolver el motivo y no un booleano es la mitad del arreglo: el panel decía
+ * "no se pudo anotar a nadie", que para Clarck es indistinguible de "está roto".
+ * @returns {'cancelado'|'liquidado'|'cerrado'|'muy_viejo'|null}
+ */
+function motivoCierre(p, ahora = ahoraLima()) {
+  if (!p) return 'no_existe';
+  if (p.cancelado_en) return 'cancelado';
+  if (p.liquidado_en) return 'liquidado';
+  const hoyAbs = minutosAbs(ahora.fecha, ahora.min);
+  // `cierra_en` es override EN LOS DOS SENTIDOS: adelanta el cierre ("no entra
+  // nadie más") y también lo estira. Sin lo segundo, "Reabrir" un partido de la
+  // semana pasada no haría nada — volvería a estar vencido en el mismo
+  // instante — y no habría forma de completar una lista vieja.
+  const cierre = tsAbs(p.cierra_en);
+  if (cierre != null) return hoyAbs >= cierre ? 'cerrado' : null;
+  // Sin hora cargada, el "fin" es el final de ese día: es lo más tarde que
+  // pudo haberse jugado, y de ahí corre la gracia igual.
+  const fin = finAbs(p) ?? minutosAbs(p.fecha, 24 * 60);
+  return hoyAbs >= fin + graciaHoras() * 60 ? 'muy_viejo' : null;
+}
+
+/** ¿Puede entrar todavía una inscripción o un pago? (fin + GRACIA). */
+const admiteInscripcion = (p, ahora = ahoraLima()) => motivoCierre(p, ahora) === null;
+
+/** ¿El bot puede OFRECERLO? Termina cuando el partido EMPIEZA, no cuando cierra. */
+function ofrecible(p, ahora = ahoraLima()) {
+  if (!admiteInscripcion(p, ahora)) return false;
+  const ini = inicioAbs(p);
+  // Sin hora, se ofrece todo el día: es lo que hacía el filtro viejo (ordenHora
+  // devolvía 99 y ninguna hora del día lo superaba).
+  if (ini == null) return p.fecha >= ahora.fecha;
+  return ini > minutosAbs(ahora.fecha, ahora.min);
+}
+
+/** ¿Ya terminó de jugarse? (independiente de si alguien lo canceló o liquidó). */
+function yaPaso(p, ahora = ahoraLima()) {
+  const fin = finAbs(p);
+  if (fin == null) return p.fecha < ahora.fecha;
+  return minutosAbs(ahora.fecha, ahora.min) >= fin;
+}
+
+/** ¿Está la plata cobrada? (nadie reservado sin pagar). Un partido vacío está saldado. */
+function saldado(p) {
+  const k = cajaPartido(typeof p === 'object' ? p.id : p);
+  return !k || k.porPagar === 0;
+}
+
+/**
+ * FASES — lo que se muestra. Ninguna se guarda: todas salen de las tres fechas
+ * humanas más el reloj.
+ */
+const FASES = {
+  proximo: { label: 'Abierto', corto: 'Abierto', ok: true },
+  en_curso: { label: 'En curso', corto: 'Jugándose', ok: true },
+  gracia: { label: 'Terminó — todavía entra un Yape', corto: 'Terminó', ok: false },
+  por_liquidar: { label: 'Por liquidar', corto: 'Por liquidar', ok: false },
+  cerrado: { label: 'Cerrado a mano', corto: 'Cerrado', ok: false },
+  liquidado: { label: 'Liquidado ✅', corto: 'Liquidado', ok: false },
+  cancelado: { label: 'Cancelado', corto: 'Cancelado', ok: false },
+};
+function fasePartido(p, ahora = ahoraLima()) {
+  const motivo = motivoCierre(p, ahora);
+  if (motivo === 'cancelado' || motivo === 'liquidado' || motivo === 'cerrado') return motivo;
+  if (motivo === 'muy_viejo') return 'por_liquidar';
+  if (ofrecible(p, ahora)) return 'proximo';
+  return yaPaso(p, ahora) ? 'gracia' : 'en_curso';
+}
+
+// ==============================================================================
+//  Alta de partidos
+// ==============================================================================
+
+/** El id de la cancha por su nombre dentro de la zona (NULL si no calza ninguna). */
+function sedeIdDe(zona, nombre) {
+  if (!nombre) return null;
+  const s = db.prepare('SELECT id FROM sedes WHERE zona = ? AND nombre = ?').get(zona, String(nombre).trim());
+  return s ? s.id : null;
+}
+
+/**
+ * El gemelo de un partido: misma fecha, misma zona, misma cancha, misma hora.
+ * Es la definición de duplicado que sostiene el índice único.
+ */
+function partidoGemelo({ fecha, zona, sedeId = null, inicioMin = null }) {
+  return db.prepare(`
+    SELECT * FROM partidos
+    WHERE fecha = ? AND zona = ? AND COALESCE(sede_id, -1) = ? AND COALESCE(inicio_min, -1) = ?
+    ORDER BY id LIMIT 1
+  `).get(fecha, zona, sedeId ?? -1, inicioMin ?? -1) || null;
+}
+
+/**
+ * Abre un partido — o devuelve el que YA existe.
+ *
+ * No inserta un gemelo: cargar dos veces el mismo domingo 6pm en el Politécnico
+ * partía la lista en dos y hacía que el bot ofreciera cupos de una lista y
+ * cobrara en la otra. Cuando ya existe, se devuelve `creado: false` para que el
+ * panel diga "ya existe, ábrela" en vez de fingir que abrió uno nuevo.
+ *
+ * La zona tiene que ser operativa: un partido con zona inválida nace invisible
+ * para el bot (no entra en ninguna zona del prompt) y sin precio de referencia.
+ *
+ * @returns {{id: number|null, creado: boolean, partido: object|null, motivo: string|null}}
+ */
+function abrirPartido({ zona, fecha, hora, sede, sede_id, cupo, precio, turno_id = null }) {
+  if (!zonasOperativas().includes(zona)) return { id: null, creado: false, partido: null, motivo: 'zona_invalida' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return { id: null, creado: false, partido: null, motivo: 'fecha_invalida' };
+
+  const h = parseHora(hora);
+  const nombreSede = (sede || '').trim() || null;
+  const sedeId = sede_id ?? sedeIdDe(zona, nombreSede);
+
+  const previo = partidoGemelo({ fecha, zona, sedeId, inicioMin: h ? h.inicio : null });
+  if (previo) return { id: previo.id, creado: false, partido: previo, motivo: 'ya_existe' };
+
+  const r = db.prepare(`
+    INSERT INTO partidos (zona, fecha, hora, inicio_min, duracion_min, sede, sede_id, cupo, precio, turno_id, creado_en)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))
+  `).run(
+    zona, fecha,
+    // `hora` sobrevive como CACHÉ de presentación: se escribe una vez acá y de
+    // ahí se imprime en la lista del grupo, en la parrilla del bot, en el
+    // prompt, en el Sheet y en los avisos. La fuente es inicio_min.
+    h ? textoHora(h.inicio, h.duracion) : (String(hora || '').trim() || null),
+    h ? h.inicio : null, h ? h.duracion : 60,
+    nombreSede, sedeId, cupo || 14, precio ?? null, turno_id,
+  );
+  const id = Number(r.lastInsertRowid);
+  return { id, creado: true, partido: getPartido(id), motivo: null };
+}
+
+/**
+ * Crea un partido y devuelve su id (o el del gemelo que ya existía).
+ * Sigue devolviendo un ENTERO: es la firma que usan los tests y el resto del
+ * sistema. Quien necesite saber si de verdad lo creó usa `abrirPartido`.
+ * @returns {number|null} el id, o null si la zona/fecha no son válidas.
+ */
+function crearPartido(campos) {
+  return abrirPartido(campos).id;
 }
 
 function getPartido(id) {
@@ -823,8 +1156,20 @@ function actualizarPartido(id, campos) {
 
   if (campos.zona && zonasOperativas().includes(campos.zona)) poner('zona', campos.zona);
   if (/^\d{4}-\d{2}-\d{2}$/.test(campos.fecha || '')) poner('fecha', campos.fecha);
-  if (campos.hora !== undefined) poner('hora', normalizarHora(campos.hora) || null);
-  if (campos.sede !== undefined) poner('sede', (campos.sede || '').trim() || null);
+  if (campos.hora !== undefined) {
+    // La hora entra como texto (reloj del panel) y sale como TRES columnas: el
+    // número que manda (inicio_min), cuánto dura, y el texto legible que se
+    // imprime en la lista del grupo y en los mensajes del bot.
+    const h = parseHora(campos.hora);
+    poner('hora', h ? textoHora(h.inicio, h.duracion) : (String(campos.hora || '').trim() || null));
+    poner('inicio_min', h ? h.inicio : null);
+    poner('duracion_min', h ? h.duracion : 60);
+  }
+  if (campos.sede !== undefined) {
+    const nombre = (campos.sede || '').trim() || null;
+    poner('sede', nombre);
+    poner('sede_id', sedeIdDe(campos.zona || p.zona, nombre));
+  }
   if (campos.cupo != null && campos.cupo !== '') {
     const cupo = Math.max(2, Math.min(60, Number(campos.cupo) || p.cupo));
     if (cupo < ocupados) {
@@ -835,6 +1180,17 @@ function actualizarPartido(id, campos) {
   if (campos.precio !== undefined) poner('precio', campos.precio === '' || campos.precio == null ? null : Number(campos.precio));
 
   if (!sets.length) return { ok: false, motivo: 'No cambiaste nada.' };
+
+  // Corregir la hora o la fecha puede dejar el partido encima de otro que ya
+  // existe. Se avisa en vez de dejar que reviente el índice único: el mensaje
+  // de SQLite ("UNIQUE constraint failed") no le dice nada a nadie.
+  const nuevo = { ...p };
+  sets.forEach((s, i) => { nuevo[s.split(' ')[0]] = valores[i]; });
+  const choque = partidoGemelo({ fecha: nuevo.fecha, zona: nuevo.zona, sedeId: nuevo.sede_id, inicioMin: nuevo.inicio_min });
+  if (choque && choque.id !== id) {
+    return { ok: false, motivo: `Ya hay otro partido ese día a esa hora en la misma cancha (#${choque.id}). Ábrelo en vez de duplicarlo.` };
+  }
+
   db.prepare(`UPDATE partidos SET ${sets.join(', ')} WHERE id = ?`).run(...valores, id);
   return { ok: true };
 }
@@ -848,9 +1204,68 @@ function eliminarPartido(id) {
   return true;
 }
 
+/**
+ * DECISIONES HUMANAS sobre un partido. Son las únicas cuatro cosas que se
+ * GUARDAN: todo lo demás (si empezó, si terminó, si todavía entra un Yape) se
+ * calcula.
+ *
+ * `estado` se sigue escribiendo EN PARALELO con el valor equivalente del enum
+ * viejo. No es redundancia por gusto: si hay que revertir el deploy, el código
+ * anterior tiene que poder seguir leyendo estos partidos sin quedarse con 200
+ * filas que no sabe interpretar. Es requisito de la transición, no un adorno.
+ */
+const marcar = (id, columna, valor, estadoViejo) =>
+  db.prepare(`UPDATE partidos SET ${columna} = ?, estado = ? WHERE id = ?`).run(valor, estadoViejo, id).changes > 0;
+
+/** "Este partido no se juega". Nadie recibe aviso automático: eso lo hace él. */
+const cancelarPartido = (id) => marcar(id, 'cancelado_en', ahoraLima().ts, 'cancelado');
+
+/** "No entra nadie más" — override manual del cierre automático (fin + gracia). */
+const cerrarInscripcion = (id) => marcar(id, 'cierra_en', ahoraLima().ts, 'cerrado');
+
+/**
+ * LIQUIDAR: "ya cobré, ya pagué la cancha, este partido está cerrado".
+ *
+ * Es lo que antes se llamaba "cerrar" y no compraba nada. Nunca es automático:
+ * liquidar es una AFIRMACIÓN sobre plata que solo puede hacer un humano.
+ */
+function liquidarPartido(id) {
+  const p = getPartido(id);
+  if (!p) return { ok: false, motivo: 'no_existe' };
+  if (p.liquidado_en) return { ok: false, motivo: 'ya_liquidado' };
+  db.prepare("UPDATE partidos SET liquidado_en = ?, estado = 'jugado' WHERE id = ?").run(ahoraLima().ts, id);
+  return { ok: true, caja: cajaPartido(id) };
+}
+
+/**
+ * Deshace las tres marcas: el partido vuelve a la vida.
+ *
+ * Si YA se jugó, reabrir no lo devuelve al futuro: le da otra ventana de gracia
+ * para terminar de cobrar o completar la lista. Sin eso el botón no haría nada
+ * visible sobre un partido de la semana pasada — quedaría vencido en el mismo
+ * instante en que se reabre.
+ */
+function reabrirPartido(id) {
+  const p = getPartido(id);
+  if (!p) return false;
+  const extender = yaPaso(p)
+    ? new Date(Date.now() - 5 * 3600e3 + graciaHoras() * 3600e3).toISOString().slice(0, 19).replace('T', ' ')
+    : null;
+  return db.prepare(
+    "UPDATE partidos SET cancelado_en = NULL, liquidado_en = NULL, cierra_en = ?, estado = 'abierto' WHERE id = ?"
+  ).run(extender, id).changes > 0;
+}
+
+/**
+ * Compatibilidad con el enum viejo: index.js, los tests y cualquier código que
+ * todavía piense en estados siguen funcionando, pero por debajo se escriben las
+ * fechas. Se mantiene a propósito durante la transición.
+ */
 function setEstadoPartido(id, estado) {
-  if (!['abierto', 'cerrado', 'jugado', 'cancelado'].includes(estado)) return;
-  db.prepare('UPDATE partidos SET estado = ? WHERE id = ?').run(estado, id);
+  if (estado === 'abierto') return void reabrirPartido(id);
+  if (estado === 'cerrado') return void cerrarInscripcion(id);
+  if (estado === 'jugado') return void liquidarPartido(id);
+  if (estado === 'cancelado') return void cancelarPartido(id);
 }
 
 /**
@@ -947,7 +1362,7 @@ function metricasPorNumero() {
       SELECT i.numero AS numero, p.fecha AS dia
         FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
         WHERE i.numero IS NOT NULL AND i.estado != 'baja'
-          AND p.estado != 'cancelado' AND p.fecha < date('now', '-5 hours')
+          AND p.cancelado_en IS NULL AND p.fecha < date('now', '-5 hours')
     ) GROUP BY numero
   `).all();
   const plata = db.prepare(`
@@ -1023,57 +1438,61 @@ function frescuraDe(dias, um = null) {
   return 'perdido';
 }
 
-/** Todos los partidos con sus conteos (para el panel), próximos primero. */
+/** Todos los partidos con sus conteos (para el panel), próximos primero.
+ *  Cada fila trae su FASE ya calculada: la pantalla no tiene que volver a
+ *  deducirla (y no puede deducirla distinto que el bot, que era el problema). */
 function listPartidos() {
+  const ahora = ahoraLima();
   return db.prepare(`
     SELECT p.*,
       (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id AND i.estado IN ${OCUPAN}) AS ocupados,
       (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id AND i.estado = 'pagado') AS pagados,
       (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id AND i.estado = 'espera') AS en_espera
-    FROM partidos p ORDER BY p.fecha DESC, p.id DESC
-  `).all();
+    FROM partidos p ORDER BY p.fecha DESC, p.inicio_min DESC, p.id DESC
+  `).all().map((p) => ({ ...p, fase: fasePartido(p, ahora) }));
 }
-
-/** Cuánto dura un turno. Los de Pichangueros son de una hora ("8-9pm"). */
-const DURACION_H = 1;
 
 /**
  * Partidos con inscripción abierta.
  *
  * Dos recortes distintos, porque "todavía sirve" significa dos cosas:
  *
- * - `vigentes: true` → los que AÚN NO EMPEZARON. Es lo que se le OFRECE al
- *   jugador. El 15/08 a las 10:40 el bot ofrecía "Breña 9am y 10am, Comas 9am":
- *   los tres habían arrancado, porque acá solo se filtraba por FECHA.
+ * - `vigentes: true` → los que AÚN NO EMPEZARON (ofrecible). Es lo que se le
+ *   OFRECE al jugador. El 15/08 a las 10:40 el bot ofrecía "Breña 9am y 10am,
+ *   Comas 9am": los tres habían arrancado, porque acá solo se filtraba por
+ *   FECHA.
  * - `+ incluirEnCurso: true` → los que aún NO TERMINARON. Es lo que puede
- *   recibir un PAGO: el Yape que entra 8:05pm es del partido de 8-9pm que ya
- *   arrancó, y tiene que engancharse ahí.
+ *   recibir un PAGO AUTOMÁTICO: el Yape que entra 8:05pm es del partido de
+ *   8-9pm que ya arrancó, y tiene que engancharse ahí. Ojo: acá NO corre la
+ *   gracia de 24 h — el 15/08 Anthony yapeó a las 11:07 y el único candidato de
+ *   Comas era el de ese día 9-10am, terminado hacía una hora, donde quedaron él
+ *   y su invitado. La gracia es para lo que decide un humano (inscribir a mano,
+ *   asignar un pago suelto), no para que el sistema adivine hacia atrás.
  *
- * Sin ninguna de las dos, la lista completa: la usa el panel (Clarck necesita
- * el partido en curso para pasar lista).
- *
- * Por qué importa la diferencia: el 15/08 Anthony yapeó S/20 a las 11:07 por
- * dos cupos del domingo. El único candidato de Comas era el de ESE día 9-10am,
- * terminado hacía una hora — y ahí se metieron él y su invitado.
+ * Sin ninguna de las dos, la lista completa de los que siguen vivos: la usa el
+ * panel (Clarck necesita el partido en curso para pasar lista).
  */
 function partidosAbiertos(zona = null, { vigentes = false, incluirEnCurso = false } = {}) {
+  const ahora = ahoraLima();
   const filas = db.prepare(`
     SELECT p.*,
       (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id AND i.estado IN ${OCUPAN}) AS ocupados
     FROM partidos p
-    WHERE p.estado = 'abierto' AND p.fecha >= ? ${zona ? 'AND p.zona = ?' : ''}
+    WHERE p.cancelado_en IS NULL AND p.liquidado_en IS NULL AND p.fecha >= ? ${zona ? 'AND p.zona = ?' : ''}
     ORDER BY p.fecha, p.id
-  `).all(...(zona ? [hoyLimaDb(), zona] : [hoyLimaDb()]));
+  `).all(...(zona ? [ahora.fecha, zona] : [ahora.fecha]));
   const lista = filas
     .map((p) => ({ ...p, restante: Math.max(0, p.cupo - p.ocupados) }))
     // Dentro del día, por hora de inicio (la BD solo ordena por fecha e id).
-    .sort((a, b) => (a.fecha === b.fecha ? ordenHora(a.hora) - ordenHora(b.hora) : a.fecha < b.fecha ? -1 : 1));
+    // Con los minutos adentro: 8:30pm ya no empata con 8:00pm.
+    .sort((a, b) => (a.fecha === b.fecha
+      ? (inicioAbs(a) ?? Infinity) - (inicioAbs(b) ?? Infinity)
+      : (a.fecha < b.fecha ? -1 : 1)));
+  // Sin filtro se devuelven todos los que no están cancelados ni liquidados,
+  // incluido el cerrado a mano: el panel lo necesita para pasar lista.
   if (!vigentes) return lista;
-  const hoy = hoyLimaDb();
-  const horaAhora = Number(new Date(Date.now() - 5 * 3600e3).toISOString().slice(11, 13));
-  const margen = incluirEnCurso ? DURACION_H : 0;
-  // Sin hora cargada, ordenHora devuelve 99: ante la duda se sigue ofreciendo.
-  return lista.filter((p) => p.fecha > hoy || ordenHora(p.hora) + margen > horaAhora);
+  if (!incluirEnCurso) return lista.filter((p) => ofrecible(p, ahora));
+  return lista.filter((p) => admiteInscripcion(p, ahora) && !yaPaso(p, ahora));
 }
 
 function inscripcionesDe(partidoId) {
@@ -1095,25 +1514,38 @@ function inscripcionActiva(partidoId, numero) {
 /**
  * Inscribe un cupo. Si el partido está lleno entra como 'espera'.
  * Idempotente por número: si ya tiene inscripción activa, la devuelve tal cual.
- * @returns {{inscripcion: object, resultado: 'reservado'|'espera'|'ya_inscrito'|null}}
+ *
+ * YA NO MIRA EL ENUM. Mira si el partido todavía admite gente: no cancelado, no
+ * liquidado, no cerrado a mano, y dentro de la gracia (fin + 24 h). Eso es lo
+ * que hace que un Yape que llega a las 11 de la noche de un partido de las 8
+ * todavía tenga dónde engancharse, sin necesidad de dejar el partido "abierto"
+ * para siempre.
+ *
+ * Devuelve SIEMPRE el motivo: `lleno` acompaña a la lista de espera (no es un
+ * fallo, es una explicación), y `cancelado` / `liquidado` / `cerrado` /
+ * `muy_viejo` explican por qué no entró nadie. Sin eso el panel solo podía
+ * decir "no se pudo anotar a nadie", que para Clarck es indistinguible de
+ * "está roto".
+ *
+ * @returns {{inscripcion: object|null, resultado: 'reservado'|'espera'|'pagado'|'ya_inscrito'|null, motivo: string|null}}
  */
 function inscribir(partidoId, numero, { nombre = null, estado = null, pagoId = null } = {}) {
   const p = getPartido(partidoId);
-  // El motivo importa: sin él el panel solo podía decir "no se pudo anotar a
-  // nadie", que para Clarck es indistinguible de "está roto".
   if (!p) return { inscripcion: null, resultado: null, motivo: 'no_existe' };
-  if (p.estado !== 'abierto') return { inscripcion: null, resultado: null, motivo: p.estado };
+  const cerrado = motivoCierre(p);
+  if (cerrado) return { inscripcion: null, resultado: null, motivo: cerrado };
   if (numero) {
     const previa = inscripcionActiva(partidoId, numero);
-    if (previa) return { inscripcion: previa, resultado: 'ya_inscrito' };
+    if (previa) return { inscripcion: previa, resultado: 'ya_inscrito', motivo: 'ya_inscrito' };
   }
   const ocupados = db.prepare(`SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ? AND estado IN ${OCUPAN}`).get(partidoId).n;
-  const final = estado || (ocupados < p.cupo ? 'reservado' : 'espera');
+  const lleno = ocupados >= p.cupo;
+  const final = estado || (lleno ? 'espera' : 'reservado');
   const r = db.prepare(
     "INSERT INTO inscripciones (partido_id, numero, nombre, estado, pago_id, creado_en) VALUES (?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
-  ).run(partidoId, numero || null, nombre || null, final === 'pagado' && ocupados >= p.cupo ? 'espera' : final, pagoId ?? null);
+  ).run(partidoId, numero || null, nombre || null, final === 'pagado' && lleno ? 'espera' : final, pagoId ?? null);
   const insc = db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(Number(r.lastInsertRowid));
-  return { inscripcion: insc, resultado: insc.estado };
+  return { inscripcion: insc, resultado: insc.estado, motivo: lleno ? 'lleno' : null };
 }
 
 /** Cuántos cupos ocupa hoy un partido (reservados + pagados). */
@@ -1241,7 +1673,7 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null, { pa
     // respeta — pero solo si sigue abierto: nunca se mete gente a un partido
     // cerrado o cancelado.
     const elegido = partidoId ? getPartido(partidoId) : null;
-    if (elegido && elegido.estado === 'abierto') {
+    if (elegido && admiteInscripcion(elegido)) {
       partido = elegido;
     } else {
       const candidatos = candidatosDePago(zona, monto);
@@ -1265,11 +1697,16 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null, { pa
  *  Con varias reservas activas (ej. Breña S/15 y Comas S/10), si se pasa el
  *  monto se PREFIERE la reserva cuyo precio calce con lo pagado. */
 function partidoReservadoDe(numero, monto = null) {
+  const ahora = ahoraLima();
   const filas = db.prepare(`
     SELECT p.* FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
-    WHERE i.numero = ? AND i.estado IN ('reservado','espera') AND p.estado = 'abierto' AND p.fecha >= ?
+    WHERE i.numero = ? AND i.estado IN ('reservado','espera')
+      AND p.cancelado_en IS NULL AND p.liquidado_en IS NULL AND p.fecha >= ?
     ORDER BY p.fecha, i.id
-  `).all(numero, hoyLimaDb());
+  `).all(numero, ahora.fecha)
+    // Una reserva en un partido cerrado a mano o vencido ya no captura el pago:
+    // el enum decía 'abierto' o no, ahora lo dice el reloj.
+    .filter((p) => admiteInscripcion(p, ahora));
   if (!filas.length) return null;
   if (monto != null) {
     const neg = getNegocio();
@@ -1423,6 +1860,366 @@ function candidatosConvocatoria(partidoId) {
     .sort((a, b) => (a.ultima === b.ultima ? b.visitas - a.visitas : (b.ultima || '').localeCompare(a.ultima || '')));
 }
 
+// ==============================================================================
+//  COLAS DE CIERRE — liquidar lo que movió plata, archivar lo que quedó vacío
+// ==============================================================================
+
+/**
+ * Los partidos que TERMINARON y siguen sin liquidar, con la caja adentro.
+ *
+ * Reemplaza al pendiente "N partidos ya jugados sin cerrar" del Resumen, que le
+ * pedía a Clarck que rompiera la única red que atrapaba los pagos tardíos. Acá
+ * no se le pide que cierre: se le pide que CUENTE la plata, que es lo único que
+ * un partido terminado todavía necesita de él.
+ *
+ * Se parten en dos porque son dos trabajos distintos:
+ *   · con gente adentro → cola de LIQUIDACIÓN (una pantalla, una decisión)
+ *   · vacíos            → basura de carga: se archivan en lote, sin ritual
+ */
+function partidosPorLiquidar({ soloConPlata = true } = {}) {
+  const ahora = ahoraLima();
+  const corte = getCorte() || '0000-00-00';
+  return listPartidos()
+    .filter((p) => p.fase === 'por_liquidar' && p.fecha >= corte)
+    .filter((p) => (soloConPlata ? (p.ocupados + p.en_espera) > 0 : true))
+    .map((p) => ({ ...p, caja: cajaPartido(p.id) }))
+    .sort((a, b) => (a.fecha < b.fecha ? -1 : 1));
+}
+
+/**
+ * Los que se archivan en lote, sin ritual de liquidación. Dos casos:
+ *
+ * 1. Terminaron SIN nadie adentro: no hay nada que contar.
+ * 2. Son ANTERIORES al punto de arranque, tengan gente o no. El corte declara
+ *    que eso ya es historia; si no entraran acá quedarían atascados para
+ *    siempre — fuera de la cola de liquidación (que respeta el corte) y fuera
+ *    de "vacíos" (porque tienen inscritos). Pasó al migrar: 6 partidos del
+ *    12 al 15 de agosto, uno con 10 inscritos y 9 pagados, no aparecían en
+ *    NINGUNA lista. Invisibles no es lo mismo que resueltos.
+ */
+function partidosArchivables() {
+  const corte = getCorte() || '0000-00-00';
+  return listPartidos().filter((p) => p.fase === 'por_liquidar'
+    && ((p.ocupados + p.en_espera) === 0 || p.fecha < corte));
+}
+
+/** Solo los vacíos, para poder contarlos aparte en el panel. */
+function partidosVacios() {
+  return listPartidos().filter((p) => p.fase === 'por_liquidar' && (p.ocupados + p.en_espera) === 0);
+}
+
+/**
+ * Archiva en lote los partidos terminados y vacíos.
+ *
+ * Archivar = liquidar un partido sin plata: la afirmación "acá no hay nada que
+ * cobrar" es verdadera por construcción (cero inscritos), así que no necesita
+ * que un humano la revise uno por uno. Tambien entran los ANTERIORES al punto
+ * de arranque: el corte ya declaro que eso es historia, y si no, quedaban
+ * atascados sin aparecer en ninguna lista. Los que movieron dinero DESPUES del
+ * corte nunca pasan por aca: esos se liquidan uno por uno.
+ * @returns {number} cuántos se archivaron.
+ */
+function archivarPartidosVacios() {
+  const vacios = partidosArchivables();
+  const ts = ahoraLima().ts;
+  const stmt = db.prepare("UPDATE partidos SET liquidado_en = ?, estado = 'jugado' WHERE id = ?");
+  for (const p of vacios) stmt.run(ts, p.id);
+  return vacios.length;
+}
+
+// ==============================================================================
+//  TURNOS — la plantilla semanal ("todos los domingos 6pm en el Politécnico")
+// ==============================================================================
+
+const DIAS_NOMBRE = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+/** "los lunes" no lleva s; "los domingos" sí. Un turno se nombra en plural. */
+const diaPlural = (dia) => (/s$/.test(dia || '') ? dia : `${dia}s`);
+/** Día de la semana de una fecha (0 domingo … 6 sábado), en hora de Lima. */
+const diaSemanaDe = (ymd) => new Date(`${ymd}T12:00:00-05:00`).getUTCDay();
+/** Suma días a una fecha YYYY-MM-DD sin pasar por el huso horario. */
+const sumarDias = (ymd, n) => new Date(Date.parse(`${ymd}T12:00:00Z`) + n * 86400e3).toISOString().slice(0, 10);
+
+/**
+ * TOPE DURO DE HORIZONTE. Un turno mal configurado (día de semana equivocado,
+ * vigencia abierta) no puede materializar 300 partidos que después hay que
+ * borrar a mano. 14 días es lo que se genera; 21 es lo máximo que se acepta
+ * aunque alguien pida más.
+ */
+const HORIZONTE_DIAS = 14;
+const HORIZONTE_MAX = 21;
+
+function listTurnos({ soloActivos = false } = {}) {
+  return db.prepare(`
+    SELECT t.*, s.nombre AS sede_nombre
+    FROM turnos t LEFT JOIN sedes s ON s.id = t.sede_id
+    ${soloActivos ? 'WHERE t.activo = 1' : ''}
+    ORDER BY t.activo DESC, t.dia_semana, t.inicio_min
+  `).all().map((t) => ({
+    ...t,
+    hora: textoHora(t.inicio_min, t.duracion_min),
+    dia_nombre: DIAS_NOMBRE[t.dia_semana] || '?',
+  }));
+}
+
+function getTurno(id) {
+  return listTurnos().find((t) => t.id === Number(id)) || null;
+}
+
+/**
+ * Crea una plantilla. NACE APAGADA (`activo = 0`) salvo que se pida lo
+ * contrario: encender un turno compromete a Clarck a pagar canchas reales, así
+ * que esa decisión se toma con el dedo, no por inercia de una migración.
+ */
+function crearTurno({ zona, sede_id = null, dia_semana, hora, inicio_min, duracion_min, cupo, precio, activo = 0, vigente_desde = null, vigente_hasta = null, nota = null }) {
+  if (!zonasOperativas().includes(zona)) return null;
+  const h = hora ? parseHora(hora) : null;
+  const ini = inicio_min != null ? Number(inicio_min) : (h ? h.inicio : null);
+  if (ini == null || !Number.isFinite(ini)) return null;
+  const dia = Number(dia_semana);
+  if (!(dia >= 0 && dia <= 6)) return null;
+  const r = db.prepare(`
+    INSERT INTO turnos (zona, sede_id, dia_semana, inicio_min, duracion_min, cupo, precio, activo, vigente_desde, vigente_hasta, nota, creado_en)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))
+  `).run(
+    zona, sede_id ?? null, dia, ini,
+    Number(duracion_min) > 0 ? Number(duracion_min) : (h ? h.duracion : 60),
+    Math.max(2, Math.min(60, Number(cupo) || 14)),
+    precio === '' || precio == null ? null : Number(precio),
+    activo ? 1 : 0, vigente_desde || null, vigente_hasta || null, nota || null,
+  );
+  return Number(r.lastInsertRowid);
+}
+
+function actualizarTurno(id, campos) {
+  const t = getTurno(id);
+  if (!t) return { ok: false, motivo: 'Ese turno ya no existe.' };
+  const sets = [], valores = [];
+  const poner = (col, v) => { sets.push(`${col} = ?`); valores.push(v); };
+  if (campos.zona && zonasOperativas().includes(campos.zona)) poner('zona', campos.zona);
+  if (campos.sede_id !== undefined) poner('sede_id', campos.sede_id ? Number(campos.sede_id) : null);
+  if (campos.dia_semana !== undefined && Number(campos.dia_semana) >= 0 && Number(campos.dia_semana) <= 6) poner('dia_semana', Number(campos.dia_semana));
+  if (campos.hora) {
+    const h = parseHora(campos.hora);
+    if (h) { poner('inicio_min', h.inicio); poner('duracion_min', h.duracion); }
+  }
+  if (campos.cupo != null && campos.cupo !== '') poner('cupo', Math.max(2, Math.min(60, Number(campos.cupo) || t.cupo)));
+  if (campos.precio !== undefined) poner('precio', campos.precio === '' || campos.precio == null ? null : Number(campos.precio));
+  if (campos.vigente_desde !== undefined) poner('vigente_desde', /^\d{4}-\d{2}-\d{2}$/.test(campos.vigente_desde || '') ? campos.vigente_desde : null);
+  if (campos.vigente_hasta !== undefined) poner('vigente_hasta', /^\d{4}-\d{2}-\d{2}$/.test(campos.vigente_hasta || '') ? campos.vigente_hasta : null);
+  if (!sets.length) return { ok: false, motivo: 'No cambiaste nada.' };
+  db.prepare(`UPDATE turnos SET ${sets.join(', ')} WHERE id = ?`).run(...valores, id);
+  return { ok: true };
+}
+
+const setTurnoActivo = (id, activo) => db.prepare('UPDATE turnos SET activo = ? WHERE id = ?').run(activo ? 1 : 0, id).changes > 0;
+
+/** Borra la plantilla. Los partidos YA generados se quedan: son compromisos reales. */
+function eliminarTurno(id) {
+  db.prepare('UPDATE partidos SET turno_id = NULL WHERE turno_id = ?').run(id);
+  db.prepare('DELETE FROM turno_excepciones WHERE turno_id = ?').run(id);
+  return db.prepare('DELETE FROM turnos WHERE id = ?').run(id).changes > 0;
+}
+
+/** "Esta semana no se juega": la fecha queda excluida de la generación. */
+function agregarExcepcion(turnoId, fecha, motivo = null) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return false;
+  db.prepare(
+    "INSERT INTO turno_excepciones (turno_id, fecha, motivo, creado_en) VALUES (?, ?, ?, datetime('now','-5 hours')) ON CONFLICT(turno_id, fecha) DO UPDATE SET motivo = excluded.motivo"
+  ).run(Number(turnoId), fecha, motivo);
+  return true;
+}
+const quitarExcepcion = (turnoId, fecha) => db.prepare('DELETE FROM turno_excepciones WHERE turno_id = ? AND fecha = ?').run(Number(turnoId), fecha).changes > 0;
+const excepcionesDe = (turnoId) => db.prepare('SELECT * FROM turno_excepciones WHERE turno_id = ? ORDER BY fecha').all(Number(turnoId));
+
+/**
+ * Materializa los próximos N días de cada turno activo.
+ *
+ * IDEMPOTENTE: correrlo dos veces no crea nada de más, porque `abrirPartido`
+ * devuelve el gemelo en vez de insertar. Por eso se puede llamar en cada tick y
+ * cada vez que se abre la vista Partidos, sin llevar la cuenta de nada.
+ *
+ * SNAPSHOT: cupo, precio y sede se COPIAN del turno al partido. Si mañana sube
+ * el precio del turno, el domingo que ya está cargado sigue costando lo que
+ * costaba cuando se prometió — el precio no puede moverse debajo de alguien que
+ * ya se anotó.
+ *
+ * NUNCA se llama desde `partidosAbiertos()`: ese es el camino caliente del bot
+ * y las lecturas tienen que seguir siendo lecturas.
+ */
+function generarPartidosDeTurnos({ dias = HORIZONTE_DIAS } = {}) {
+  const horizonte = Math.max(1, Math.min(Number(dias) || HORIZONTE_DIAS, HORIZONTE_MAX));
+  const hoy = hoyLimaDb();
+  const creados = [];
+  for (const t of db.prepare('SELECT * FROM turnos WHERE activo = 1').all()) {
+    const sede = t.sede_id ? db.prepare('SELECT nombre FROM sedes WHERE id = ?').get(t.sede_id) : null;
+    for (let i = 0; i < horizonte; i++) {
+      const fecha = sumarDias(hoy, i);
+      if (diaSemanaDe(fecha) !== t.dia_semana) continue;
+      if (t.vigente_desde && fecha < t.vigente_desde) continue;
+      if (t.vigente_hasta && fecha > t.vigente_hasta) continue;
+      if (db.prepare('SELECT 1 FROM turno_excepciones WHERE turno_id = ? AND fecha = ?').get(t.id, fecha)) continue;
+      const r = abrirPartido({
+        zona: t.zona, fecha, hora: textoHora(t.inicio_min, t.duracion_min),
+        sede: sede ? sede.nombre : null, sede_id: t.sede_id,
+        cupo: t.cupo, precio: t.precio, turno_id: t.id,
+      });
+      if (r.creado) creados.push({ id: r.id, fecha, zona: t.zona, hora: textoHora(t.inicio_min, t.duracion_min) });
+    }
+  }
+  if (creados.length) console.log(`[turnos] ${creados.length} partidos generados desde las plantillas activas.`);
+  return { creados: creados.length, detalle: creados };
+}
+
+/**
+ * SIEMBRA POR INFERENCIA: los turnos que Clarck ya juega sin haberlos escrito.
+ *
+ * Se agrupan los partidos existentes por (zona, cancha, día de semana, hora) y
+ * los grupos con 2+ ocurrencias se proponen como plantilla. Se proponen APAGADAS:
+ * el sistema levanta la mano, el que se compromete a pagar la cancha es él.
+ */
+function turnosSugeridos({ minimo = 2 } = {}) {
+  const filas = db.prepare(`
+    SELECT zona, sede_id, CAST(strftime('%w', fecha) AS INTEGER) AS dia_semana, inicio_min,
+           COUNT(*) AS veces, MAX(fecha) AS ultima,
+           MAX(duracion_min) AS duracion_min, MAX(cupo) AS cupo, MAX(precio) AS precio,
+           MAX(sede) AS sede
+    FROM partidos
+    WHERE inicio_min IS NOT NULL AND cancelado_en IS NULL
+    GROUP BY zona, sede_id, dia_semana, inicio_min
+    HAVING veces >= ?
+    ORDER BY veces DESC, dia_semana
+  `).all(minimo);
+  const yaHay = new Set(db.prepare('SELECT zona, sede_id, dia_semana, inicio_min FROM turnos').all()
+    .map((t) => `${t.zona}|${t.sede_id ?? ''}|${t.dia_semana}|${t.inicio_min}`));
+  return filas
+    .filter((f) => !yaHay.has(`${f.zona}|${f.sede_id ?? ''}|${f.dia_semana}|${f.inicio_min}`))
+    .map((f) => ({ ...f, hora: textoHora(f.inicio_min, f.duracion_min), dia_nombre: DIAS_NOMBRE[f.dia_semana] }));
+}
+
+function sembrarTurnosPorInferencia() {
+  let n = 0;
+  for (const s of turnosSugeridos()) {
+    const id = crearTurno({
+      zona: s.zona, sede_id: s.sede_id, dia_semana: s.dia_semana,
+      inicio_min: s.inicio_min, duracion_min: s.duracion_min,
+      cupo: s.cupo, precio: s.precio, activo: 0,
+      nota: `Inferido de ${s.veces} partidos ya jugados (último: ${s.ultima}).`,
+    });
+    if (id) n++;
+  }
+  return n;
+}
+
+/**
+ * DÍAS HUÉRFANOS: "los últimos 3 domingos jugaste 6-7pm en Comas y hoy no hay
+ * nada cargado".
+ *
+ * Es el aviso que habría evitado el caso del 15/08 — un domingo prometido por
+ * WhatsApp, un jugador que pagó S/20 por dos cupos, y ningún partido cargado
+ * donde ponerlos. Mira la costumbre (los partidos que ya se jugaron), no las
+ * plantillas: sirve incluso si Clarck nunca configuró un turno.
+ *
+ * @returns {Array<{fecha, zona, hora, veces, sede}>} un hueco por día/turno.
+ */
+function diasSinCargar({ dias = HORIZONTE_DIAS, minimo = 3 } = {}) {
+  const horizonte = Math.max(1, Math.min(Number(dias) || HORIZONTE_DIAS, HORIZONTE_MAX));
+  const hoy = hoyLimaDb();
+  const costumbre = db.prepare(`
+    SELECT zona, sede_id, MAX(sede) AS sede, CAST(strftime('%w', fecha) AS INTEGER) AS dia_semana,
+           inicio_min, MAX(duracion_min) AS duracion_min, COUNT(*) AS veces
+    FROM partidos
+    WHERE inicio_min IS NOT NULL AND cancelado_en IS NULL AND fecha < ?
+    GROUP BY zona, sede_id, dia_semana, inicio_min
+    HAVING veces >= ?
+  `).all(hoy, minimo);
+  if (!costumbre.length) return [];
+
+  const huecos = [];
+  for (let i = 0; i < horizonte; i++) {
+    const fecha = sumarDias(hoy, i);
+    const dia = diaSemanaDe(fecha);
+    for (const c of costumbre.filter((x) => x.dia_semana === dia)) {
+      const existe = partidoGemelo({ fecha, zona: c.zona, sedeId: c.sede_id, inicioMin: c.inicio_min });
+      if (existe && !existe.cancelado_en) continue;
+      huecos.push({
+        fecha, zona: c.zona, sede: c.sede, sede_id: c.sede_id, inicio_min: c.inicio_min,
+        hora: textoHora(c.inicio_min, c.duracion_min), veces: c.veces, dia_nombre: DIAS_NOMBRE[dia],
+        cancelado: Boolean(existe && existe.cancelado_en),
+      });
+    }
+  }
+  return huecos;
+}
+
+/**
+ * ANTI-DUPLICADO: un índice único por (fecha, zona, cancha, hora).
+ *
+ * Va en try/catch y NUNCA dentro del db.exec de arranque: si hay duplicados
+ * preexistentes el CREATE INDEX falla, y si eso pasa dentro del arranque el bot
+ * no levanta — el negocio entero se queda sin WhatsApp por un índice.
+ *
+ * Antes del índice se limpian las colisiones, pero SOLO las inofensivas: si una
+ * de las dos filas está vacía se borra la vacía; si las DOS tienen gente
+ * adentro no se toca nada y el conflicto queda visible en el panel. Fusionar
+ * inscripciones es una decisión sobre plata y personas: no la puede tomar una
+ * migración a las 3 de la mañana.
+ */
+function asegurarIndiceUnico() {
+  try {
+    const grupos = db.prepare(`
+      SELECT fecha, zona, COALESCE(sede_id, -1) AS s, COALESCE(inicio_min, -1) AS i, COUNT(*) AS n
+      FROM partidos GROUP BY fecha, zona, s, i HAVING n > 1
+    `).all();
+    const conflictos = [];
+    let borrados = 0;
+    for (const g of grupos) {
+      const filas = db.prepare(`
+        SELECT p.id, p.fecha, p.zona, p.hora,
+          (SELECT COUNT(*) FROM inscripciones i WHERE i.partido_id = p.id) AS gente
+        FROM partidos p WHERE fecha = ? AND zona = ? AND COALESCE(sede_id, -1) = ? AND COALESCE(inicio_min, -1) = ?
+        ORDER BY p.id
+      `).all(g.fecha, g.zona, g.s, g.i);
+      const conGente = filas.filter((f) => f.gente > 0);
+      if (conGente.length > 1) {
+        conflictos.push(`${g.fecha} ${g.zona}${filas[0].hora ? ` ${filas[0].hora}` : ''} → partidos ${filas.map((f) => `#${f.id} (${f.gente})`).join(' y ')}`);
+        continue;
+      }
+      const sobrevive = conGente[0] || filas[0];
+      for (const f of filas) {
+        if (f.id === sobrevive.id) continue;
+        db.prepare('DELETE FROM partidos WHERE id = ?').run(f.id);
+        borrados++;
+      }
+    }
+    if (borrados) console.log(`[partidos] ${borrados} duplicados VACÍOS eliminados (los que tenían gente no se tocaron).`);
+    if (conflictos.length) {
+      // Sin índice, pero con el conflicto a la vista: el panel lo muestra y
+      // Clarck decide qué lista es la buena.
+      setMarca('partidos_en_conflicto', conflictos.join(' · '));
+      console.error(`[partidos] ${conflictos.length} duplicados CON GENTE en las dos listas — no se fusionan solos: ${conflictos.join(' · ')}`);
+      return { ok: false, conflictos };
+    }
+    setMarca('partidos_en_conflicto', '');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_partidos_unico ON partidos(fecha, zona, COALESCE(sede_id, -1), COALESCE(inicio_min, -1))');
+    return { ok: true, conflictos: [] };
+  } catch (e) {
+    console.error('[partidos] No se pudo crear el índice anti-duplicado:', e.message);
+    return { ok: false, conflictos: [], error: e.message };
+  }
+}
+/** Los duplicados con gente en las dos listas que quedaron sin resolver. */
+const conflictosDePartidos = () => (getMarca('partidos_en_conflicto') || '').split(' · ').filter(Boolean);
+
+asegurarIndiceUnico();
+
+// Siembra por inferencia (2026-08-17, una vez): las plantillas que Clarck ya
+// juega sin haberlas escrito. Todas APAGADAS — las enciende él, una por una.
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'turnos_inferidos_2026_08'").get()) {
+  const n = sembrarTurnosPorInferencia();
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('turnos_inferidos_2026_08', '1')").run();
+  if (n) console.log(`[turnos] ${n} turnos propuestos desde los partidos ya jugados (apagados: los enciende Clarck).`);
+}
+
 /** Historial de asistencia de un contacto (para la ficha del CRM). */
 function asistenciasDe(numero) {
   return db.prepare(`
@@ -1438,11 +2235,21 @@ module.exports = {
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
-  crearPartido, getPartido, actualizarPartido, cajaPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
+  crearPartido, abrirPartido, getPartido, actualizarPartido, cajaPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
+  // La fase se calcula, no se guarda: estas son las preguntas que antes
+  // contestaba (mal) la columna `estado`.
+  FASES, fasePartido, ofrecible, admiteInscripcion, motivoCierre, yaPaso, saldado, graciaHoras,
+  cancelarPartido, cerrarInscripcion, liquidarPartido, reabrirPartido,
+  partidosPorLiquidar, partidosVacios, partidosArchivables, archivarPartidosVacios, partidoGemelo,
+  // Turnos: la plantilla semanal y sus instancias.
+  listTurnos, getTurno, crearTurno, actualizarTurno, setTurnoActivo, eliminarTurno,
+  agregarExcepcion, quitarExcepcion, excepcionesDe,
+  generarPartidosDeTurnos, turnosSugeridos, sembrarTurnosPorInferencia, diasSinCargar,
+  conflictosDePartidos, diaSemanaDe, sumarDias, DIAS_NOMBRE, diaPlural, HORIZONTE_DIAS,
   metricasPorNumero, metricasDe, RECURRENTE_DESDE, RELACIONES, relacionDe, FRESCURAS, frescuraDe, diasDesde, umbralesFrescura,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago, candidatosDePago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita, candidatosConvocatoria,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
-  hoyLima: hoyLimaDb, ordenHora, horaInput, normalizarHora,
+  hoyLima: hoyLimaDb, fechaLima: fechaLimaDb, ahoraLima, ordenHora, horaInput, normalizarHora, parseHora, textoHora,
   getMarca, setMarca, handoffsDesde,
 };

@@ -19,6 +19,25 @@ const check = (nombre, cond) => { if (cond) { ok++; console.log(`  ✓ ${nombre}
 const enDias = (n) => new Date(Date.now() - 5 * 3600e3 + n * 86400e3).toISOString().slice(0, 10);
 const ocupados = (id) => db.inscripcionesDe(id).filter((i) => ['reservado', 'pagado'].includes(i.estado)).length;
 
+/**
+ * Un partido que YA se jugó, con su gente adentro.
+ *
+ * Desde el 17/08 no se puede anotar a nadie en un partido que terminó hace más
+ * de 24 h (la GRACIA): la historia vieja se construye, no se declara — se abre
+ * a futuro, se anota a los jugadores y se le mueve la fecha al pasado. El slot
+ * futuro se reutiliza porque al mover la fecha queda libre de nuevo.
+ */
+let slotLibre = 60;
+const partidoJugado = (fecha, jugadores, zona = 'brena') => {
+  const id = db.crearPartido({ zona, fecha: enDias(slotLibre++), hora: '10-11pm', cupo: 20, precio: 15 });
+  for (const j of jugadores) db.inscribir(id, j, { nombre: j });
+  // Si la fecha destino ya tiene un partido igual, que reviente acá: en
+  // silencio quedaría un partido en el futuro que nadie está probando.
+  const r = db.actualizarPartido(id, { fecha });
+  if (!r.ok) throw new Error(`partidoJugado(${fecha}) no pudo mover la fecha: ${r.motivo}`);
+  return id;
+};
+
 console.log('== 1 · La cancha no se sobrevende desde el panel ==');
 // Cupo 2: dos en cancha y uno en espera. Subir al de espera metía 3 en 2.
 const p = db.crearPartido({ zona: 'brena', fecha: enDias(1), hora: '8-9pm', cupo: 2, precio: 15 });
@@ -135,8 +154,7 @@ check('pero los vouchers se cuentan aparte', db.metricasDe(dosCupos).pagos === 2
 
 // Un partido pasado con inscripción viva también es una visita, aunque no haya
 // voucher (el efectivo en la cancha, el invitado que pagó otro).
-const pViejo = db.crearPartido({ zona: 'brena', fecha: enDias(-3), hora: '8-9pm', cupo: 14, precio: 15 });
-db.inscribir(pViejo, dosCupos, { nombre: 'Dos Cupos' });
+partidoJugado(enDias(-3), [dosCupos]);
 check('un partido jugado suma otra visita', db.metricasDe(dosCupos).visitas === 2);
 check('…y la relación sube sola a "vuelve"', db.relacionDe(db.metricasDe(dosCupos).visitas) === 'vuelve');
 
@@ -144,8 +162,7 @@ check('…y la relación sube sola a "vuelve"', db.relacionDe(db.metricasDe(dosC
 const dupli = '51900000110';
 db.getOrCreateLead(dupli);
 db.updateLead(dupli, { zona: 'brena' });
-const pHoy = db.crearPartido({ zona: 'brena', fecha: enDias(-1), hora: '8-9pm', cupo: 14, precio: 15 });
-db.inscribir(pHoy, dupli, { nombre: 'Duplicado' });
+partidoJugado(enDias(-1), [dupli]);
 const conn2 = new (require('node:sqlite').DatabaseSync)(db.dbPath);
 const pagoDup = db.registrarPago({ numero: dupli, monto: 15, numero_operacion: 'OP-INV-14', estado: 'confirmado' });
 conn2.prepare("UPDATE pagos SET creado_en = datetime(? || ' 20:00:00') WHERE id = ?").run(enDias(-1), pagoDup);

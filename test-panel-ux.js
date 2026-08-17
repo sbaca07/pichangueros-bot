@@ -24,6 +24,28 @@ const express = require('./node_modules/express');
 
 // --- Semilla realista: leads de todo tipo, partido con de todo ---------------
 const enDias = (n) => new Date(Date.now() - 5 * 3600e3 + n * 86400e3).toISOString().slice(0, 10);
+
+/**
+ * Un partido que YA se jugó, con su gente adentro.
+ *
+ * Desde el 17/08 no se puede anotar a nadie en un partido que terminó hace más
+ * de 24 h (la GRACIA), así que la historia vieja se construye: se abre a
+ * futuro, se anota a los jugadores y recién ahí se le mueve la fecha al pasado.
+ * El slot futuro se reutiliza porque al mover la fecha queda libre de nuevo.
+ */
+let slotLibre = 60;
+const partidoJugado = (fecha, jugadores, extra = {}) => {
+  // Cada llamada usa un slot futuro PROPIO: desde el 17/08 dos partidos de la
+  // misma cancha, día y hora son el mismo partido, y un slot compartido
+  // devolvería el gemelo y mezclaría dos listas en una.
+  const id = db.crearPartido({ zona: 'brena', fecha: enDias(slotLibre++), hora: '10-11pm', cupo: 20, ...extra });
+  for (const j of jugadores) db.inscribir(id, j);
+  // Si la fecha destino ya está ocupada, que reviente acá y no tres tests
+  // despues con un partido que quedo en el futuro sin que nadie se enterara.
+  const r = db.actualizarPartido(id, { fecha });
+  if (!r.ok) throw new Error(`partidoJugado(${fecha}) no pudo mover la fecha: ${r.motivo}`);
+  return id;
+};
 const L = {
   tester: '51900000001', completo: '51911111111', handoff: '51922222222',
   espera: '51933333333', pagador: '51944444444', nuevo: '51955555555',
@@ -291,9 +313,7 @@ const srv = app.listen(0, async () => {
     db.updateLead(ocasional, { nombre: 'Otto Ocasional', zona: 'brena' });
     // 6 partidos pasados para uno, 5 para el otro: el corte cae justo en medio.
     for (let i = 1; i <= 6; i++) {
-      const p = db.crearPartido({ zona: 'brena', fecha: enDias(-i), cupo: 20 });
-      db.inscribir(p, habitual);
-      if (i <= 5) db.inscribir(p, ocasional);
+      partidoJugado(enDias(-i), i <= 5 ? [habitual, ocasional] : [habitual]);
     }
     const met = db.metricasPorNumero();
     check('cuenta 6 visitas', met[habitual].visitas === 6, String(met[habitual].visitas));
@@ -308,8 +328,7 @@ const srv = app.listen(0, async () => {
     // Una reserva futura y un partido cancelado no cuentan como visitas.
     const futuro = db.crearPartido({ zona: 'brena', fecha: enDias(9), cupo: 20 });
     db.inscribir(futuro, ocasional);
-    const cancelado = db.crearPartido({ zona: 'brena', fecha: enDias(-9), cupo: 20 });
-    db.inscribir(cancelado, ocasional);
+    const cancelado = partidoJugado(enDias(-9), [ocasional]);
     db.setEstadoPartido(cancelado, 'cancelado');
     check('una reserva futura no suma como visita', db.metricasPorNumero()[ocasional].visitas === 5, String(db.metricasPorNumero()[ocasional].visitas));
 
@@ -470,7 +489,9 @@ const srv = app.listen(0, async () => {
 
     // Inscribir a mano sobre un partido cerrado no hacía NADA: ni inscripción
     // ni mensaje. Es el caso real de "llega un amigo a la cancha".
-    const cerrado = db.crearPartido({ zona: 'brena', fecha: enDias(2), hora: '8-9pm', cupo: 10 });
+    // Fecha/hora propias: desde el 17/08 dos partidos de la misma cancha, día y
+    // hora son EL MISMO partido (crearPartido devuelve el que ya existe).
+    const cerrado = db.crearPartido({ zona: 'brena', fecha: enDias(13), hora: '7-8pm', cupo: 10 });
     db.setEstadoPartido(cerrado, 'cerrado');
     const rCerrado = await POST('/admin/partido/inscribir', { key: 'ux', partido_id: cerrado, nombre: 'Amigo Tardío' });
     check('inscribir en un partido cerrado dice qué hacer', /Reabrir/.test(avisoDe(rCerrado.location)) && /err=1/.test(rCerrado.location), avisoDe(rCerrado.location));
@@ -478,8 +499,8 @@ const srv = app.listen(0, async () => {
 
     // Pasar lista: 14 toques seguidos, parado en la cancha. Cada uno recargaba
     // y devolvía arriba de todo, había que volver a bajar hasta donde ibas.
-    const jugado = db.crearPartido({ zona: 'brena', fecha: enDias(-2), hora: '8-9pm', cupo: 10 });
-    const iAsist = db.inscribir(jugado, '51960000001').inscripcion;
+    const jugado = partidoJugado(enDias(-15), ['51960000001'], { cupo: 10 });
+    const iAsist = db.inscripcionesDe(jugado)[0];
     const rAsist = await POST('/admin/inscripcion/asistencia', { key: 'ux', id: iAsist.id, partido_id: jugado, valor: 'si' });
     check('marcar asistencia vuelve a LA FILA, no al top', anclaDe(rAsist.location) === `insc-${iAsist.id}`, anclaDe(rAsist.location));
     const pagAsist = await GET(rAsist.location);
@@ -572,6 +593,66 @@ const srv = app.listen(0, async () => {
     // eliminar un partido con gente adentro se rechaza igual.
     const rEliminar = await POST('/admin/partido/eliminar', { key: 'ux', id: conGente });
     check('borrar un partido con gente se rechaza en el servidor', /err=1/.test(rEliminar.location) && db.getPartido(conGente) !== null);
+  }
+
+  console.log('== 4k2 · La semana, los turnos fijos y la cola de liquidación ==');
+  {
+    const avisoDe = (loc) => decodeURIComponent((loc.match(/aviso=([^&#]*)/) || [, ''])[1].replace(/\+/g, ' '));
+    const partidos = (await GET('/admin/leads?key=ux&vista=partidos')).html;
+    check('la vista abre en SEMANA, no en lista plana', /La semana/.test(partidos) && /Semana siguiente/.test(partidos));
+    check('cada día de la semana es un bloque con su atajo para abrir', (partidos.match(/\+ abrir/g) || []).length === 7);
+    check('hay un bloque de turnos fijos', /Turnos fijos/.test(partidos) && /id="turnos"/.test(partidos));
+    check('…que explica que la plantilla no es el partido', /la plantilla, no el partido/.test(partidos));
+    const otra = await GET('/admin/leads?key=ux&vista=partidos&semana=1');
+    check('la semana siguiente responde', otra.status === 200 && /Esta semana/.test(otra.html));
+
+    // Un turno fijo: nace apagado, se enciende a mano y recién ahí carga fechas.
+    const rTurno = await POST('/admin/turno', { key: 'ux', zona: 'comas', dia_semana: '3', hora: '18:00', cupo: '12', precio: '10' });
+    check('crear un turno avisa que quedó APAGADO', /APAGADO/.test(avisoDe(rTurno.location)), avisoDe(rTurno.location));
+    const t = db.listTurnos().find((x) => x.dia_semana === 3 && x.inicio_min === 1080);
+    check('…y en la BD está apagado de verdad', t && t.activo === 0);
+    const antesGen = db.listPartidos().filter((p) => p.turno_id === t.id).length;
+    check('apagado no cargó ninguna fecha', antesGen === 0);
+    const rOn = await POST('/admin/turno/activo', { key: 'ux', id: t.id, activo: '1' });
+    check('encenderlo carga las fechas al toque', db.listPartidos().filter((p) => p.turno_id === t.id).length >= 1, avisoDe(rOn.location));
+    check('…y lo dice en el aviso', /encendido/i.test(avisoDe(rOn.location)), avisoDe(rOn.location));
+    const conTurno = (await GET('/admin/leads?key=ux&vista=partidos')).html;
+    check('los partidos generados se marcan como "turno fijo"', /turno fijo/.test(conTurno));
+
+    // Cancelar UNA fecha no toca el turno, y el generador no la resucita.
+    const instancia = db.listPartidos().filter((p) => p.turno_id === t.id).sort((a, b) => (a.fecha < b.fecha ? -1 : 1))[0];
+    const rCanc = await POST('/admin/partido/cancelar-fecha', { key: 'ux', id: instancia.id });
+    check('cancelar una fecha avisa que el turno sigue activo', /turno fijo sigue activo/.test(avisoDe(rCanc.location)), avisoDe(rCanc.location));
+    check('…el turno sigue encendido', db.getTurno(t.id).activo === 1);
+    db.generarPartidosDeTurnos();
+    check('…y el generador NO la vuelve a crear', Boolean(db.getPartido(instancia.id).cancelado_en)
+      && db.listPartidos().filter((p) => p.fecha === instancia.fecha && p.turno_id === t.id).length === 1);
+
+    // Liquidar: la pantalla que "Marcar jugado" nunca fue.
+    const viejo = partidoJugado(enDias(-11), ['51965000001'], { cupo: 10, precio: 15 });
+    const detalleViejo = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${viejo}`)).html;
+    check('un partido terminado ofrece LIQUIDAR, no "marcar jugado"', /Liquidar este partido/.test(detalleViejo) && !/Marcar jugado/.test(detalleViejo));
+    check('…mostrando a quién falta cobrarle, con su wa.me', /Falta cobrarle a 1/.test(detalleViejo) && /wa\.me\/51965000001/.test(detalleViejo), (detalleViejo.match(/Falta cobrarle[\s\S]{0,220}/) || ['SIN BLOQUE'])[0]);
+    check('la cola de liquidación aparece en Partidos', /id="liquidar"/.test(partidos) || /id="liquidar"/.test(conTurno));
+    const rLiq = await POST('/admin/partido/liquidar', { key: 'ux', id: viejo });
+    check('liquidar dice cuánta plata quedó contada', /cobrados/.test(avisoDe(rLiq.location)), avisoDe(rLiq.location));
+    check('…y queda con su fecha de liquidación', Boolean(db.getPartido(viejo).liquidado_en));
+    check('…sin que nada se autoliquide', !db.partidosPorLiquidar().some((p) => p.id === viejo));
+
+    // Los vacíos se archivan en lote, sin ritual.
+    const vacio = partidoJugado(enDias(-12), [], { cupo: 10 });
+    check('un partido terminado y vacío entra a la cola de archivo', db.partidosVacios().some((p) => p.id === vacio));
+    const rArch = await POST('/admin/partidos/archivar-vacios', { key: 'ux' });
+    check('se archivan todos de un toque', /archivado/.test(avisoDe(rArch.location)) && !db.partidosVacios().length, avisoDe(rArch.location));
+
+    // Anotar sobre un partido vencido explica qué hacer, no falla mudo.
+    const rTarde = await POST('/admin/partido/inscribir', { key: 'ux', partido_id: vacio, nombre: 'Muy Tarde' });
+    check('inscribir en un partido liquidado dice cómo destrabarlo', /Reabrir|reabrirlo/.test(avisoDe(rTarde.location)) && /err=1/.test(rTarde.location), avisoDe(rTarde.location));
+
+    const rDel = await POST('/admin/turno/eliminar', { key: 'ux', id: t.id });
+    check('borrar el turno no se lleva los partidos ya cargados',
+      !db.getTurno(t.id) && db.listPartidos().some((p) => p.fecha === instancia.fecha));
+    check('…y lo dice', /no se tocaron/.test(avisoDe(rDel.location)), avisoDe(rDel.location));
   }
 
   console.log('== 4l · Jugadores: tres desplegables, no catorce chips ==');

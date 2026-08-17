@@ -356,7 +356,11 @@ async function procesarVoucher(numero, zona, imageBuffer) {
         } else {
           respuesta += `\n⏳ El partido del ${db.fechaBonita(p.fecha)} está lleno: quedaste primero en la lista de espera y te avisamos si se libera un cupo.`;
         }
-      } else if (db.partidosAbiertos().length) {
+      } else if (db.partidosAbiertos(null, { vigentes: true }).length) {
+        // Se pregunta solo si hay algún partido que TODAVÍA se pueda ofrecer.
+        // Sin `vigentes` la lista incluía los de hoy que ya se jugaron, y el bot
+        // preguntaba "¿para qué pichanga es tu pago?" sin tener ninguna que
+        // ofrecerle si contestaba.
         // Sin reserva y con varios partidos posibles: en vez de dejar el pago
         // huérfano en el panel, se le pregunta al jugador — cuando responda y
         // se inscriba, index.js le pega este pago a su inscripción solo.
