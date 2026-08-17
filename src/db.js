@@ -161,6 +161,13 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'tz_migrado_v2_2026_07'"
 // Migración suave del CRM (2026-06-10): agrega columnas si la BD es anterior.
 const colsLeads = db.prepare('PRAGMA table_info(leads)').all().map((c) => c.name);
 if (!colsLeads.includes('etiquetas')) db.exec('ALTER TABLE leads ADD COLUMN etiquetas TEXT');
+// Fecha en que se le mandó el link del grupo (2026-08-16). Es el ÚNICO hecho
+// nuevo que se guarda al desarmar la escalera de etapas: todo lo demás
+// (relación, frescura) se recomputa de los pagos y los partidos, pero "le
+// mandamos el link" no deja rastro en ninguna otra tabla. Fecha, no booleano:
+// "se lo mandamos hace tres meses y nunca entró" es una historia distinta a
+// "se lo mandamos ayer".
+if (!colsLeads.includes('grupo_enviado_en')) db.exec('ALTER TABLE leads ADD COLUMN grupo_enviado_en TEXT');
 // proxima_accion / proxima_nota: en desuso desde el 16/08 (ver panel.js). Las
 // columnas se quedan —borrarlas en SQLite obliga a rehacer la tabla— pero ya
 // no las escribe ni las lee nadie.
@@ -191,6 +198,11 @@ db.exec(`
 // Migración (2026-08-16, una vez): el que ya pagó pasa a "Jugador ⭐". El
 // embudo solo avanzaba con datos y con el link del grupo, así que los clientes
 // de verdad —los que yapean sin registrarse— quedaban en "Nuevo" para siempre.
+//
+// QUEDA INERTE desde `relacion_derivada_2026_08` (más abajo): la columna
+// `estado` ya no la escribe ni la lee nadie. No se revierte a propósito —
+// revertirla sería tocar 265 filas para volver a un valor que igual se ignora,
+// y el flag ya está puesto en las bases de producción.
 if (!db.prepare("SELECT valor FROM config WHERE clave = 'etapa_por_pago_2026_08'").get()) {
   const r = db.prepare(`
     UPDATE leads SET estado = 'activo'
@@ -199,6 +211,43 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'etapa_por_pago_2026_08'
   `).run();
   db.prepare("INSERT INTO config (clave, valor) VALUES ('etapa_por_pago_2026_08', '1')").run();
   if (r.changes) console.log(`[etapas] ${r.changes} contactos con pago confirmado pasaron a "Jugador".`);
+}
+
+/**
+ * Migración (2026-08-16, una vez): se APAGA la escalera de etapas.
+ *
+ * `estado` metía dos ejes en una sola columna —cuánto sabemos de alguien y qué
+ * tan cliente es— y por eso mentía: Luiggi tenía 3 pagos y S/30 y figuraba
+ * "Nuevo", y 510 contactos con datos completos que nunca pagaron figuraban más
+ * arriba que él. Desde acá la relación y la frescura se DERIVAN de los hechos
+ * (pagos, partidos, mensajes) en cada carga, así que no hay nada que mantener a
+ * mano y no pueden quedar desactualizadas.
+ *
+ * De la columna vieja solo se rescatan los dos valores que ningún hecho puede
+ * reconstruir:
+ *   - `invitado_grupo` → la FECHA en que se le mandó el link (columna nueva).
+ *   - `inactivo` → etiqueta `dado-de-baja`: es lo único genuinamente manual de
+ *     la escalera (ninguna línea de código lo escribió nunca; si está, lo puso
+ *     Clarck a mano y esa decisión no se deduce de ningún pago).
+ * El resto se recomputa. `estado` queda congelada en la tabla: nadie la
+ * escribe, nadie la lee (borrar una columna en SQLite obliga a rehacer la
+ * tabla, y eso sí es un riesgo real sobre la base de producción).
+ */
+if (!db.prepare("SELECT valor FROM config WHERE clave = 'relacion_derivada_2026_08'").get()) {
+  const invitados = db.prepare(`
+    UPDATE leads SET grupo_enviado_en = substr(actualizado_en, 1, 10)
+    WHERE estado = 'invitado_grupo' AND grupo_enviado_en IS NULL
+  `).run().changes;
+  // La etiqueta se AGREGA a las que ya tenga (son texto separado por comas):
+  // pisarlas borraría notas de Clarck que no están en ningún otro lado.
+  const bajas = db.prepare(`
+    UPDATE leads SET etiquetas = CASE
+        WHEN etiquetas IS NULL OR trim(etiquetas) = '' THEN 'dado-de-baja'
+        ELSE etiquetas || ',dado-de-baja' END
+    WHERE estado = 'inactivo' AND (etiquetas IS NULL OR etiquetas NOT LIKE '%dado-de-baja%')
+  `).run().changes;
+  db.prepare("INSERT INTO config (clave, valor) VALUES ('relacion_derivada_2026_08', '1')").run();
+  console.log(`[relacion] Etapas apagadas: ${invitados} con fecha de link de grupo · ${bajas} etiquetados "dado-de-baja". La relación ahora se calcula sola.`);
 }
 
 const stmtGetLead = db.prepare('SELECT * FROM leads WHERE numero = ?');
@@ -230,9 +279,12 @@ function getOrCreateLead(numero) {
   return lead;
 }
 
-/** Actualiza solo los campos provistos (no pisa datos ya capturados con null). */
+/** Actualiza solo los campos provistos (no pisa datos ya capturados con null).
+ *  `estado` NO está en la lista a propósito: la columna quedó congelada el
+ *  16/08 (ver migración `relacion_derivada_2026_08`). Cualquier escritura sería
+ *  un dato que nadie lee y que volvería a desincronizarse de los hechos. */
 function updateLead(numero, campos) {
-  const permitidos = ['nombre', 'edad', 'distrito', 'zona', 'estado', 'handoff', 'handoff_motivo'];
+  const permitidos = ['nombre', 'edad', 'distrito', 'zona', 'handoff', 'handoff_motivo'];
   const sets = [];
   const valores = [];
   for (const campo of permitidos) {
@@ -278,9 +330,13 @@ function deleteLead(numero) {
   db.prepare('DELETE FROM leads WHERE numero = ?').run(numero);
 }
 
+/** Los contactos, con lo que HOY se lee de ellos.
+ *  Fuera del SELECT: `estado` (congelada) y proxima_accion/proxima_nota (en
+ *  desuso desde el 16/08). Si no se seleccionan, no hay forma de que una vista
+ *  nueva las vuelva a mostrar por inercia. */
 function listLeads() {
   return db
-    .prepare('SELECT numero, nombre, edad, distrito, zona, estado, handoff, handoff_motivo, etiquetas, proxima_accion, proxima_nota, creado_en, actualizado_en FROM leads ORDER BY actualizado_en DESC')
+    .prepare('SELECT numero, nombre, edad, distrito, zona, handoff, handoff_motivo, etiquetas, grupo_enviado_en, creado_en, actualizado_en FROM leads ORDER BY actualizado_en DESC')
     .all();
 }
 
@@ -289,14 +345,10 @@ function registrarPago({ numero, monto, titular, numero_operacion, estado, motiv
   const r = db.prepare(
     "INSERT INTO pagos (numero, monto, titular, numero_operacion, estado, motivo, medio, cupos, creado_en) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
   ).run(numero, monto ?? null, titular || null, numero_operacion || null, estado || 'confirmado', motivo || null, medio || 'yape', cupos || 1);
-  // Quien paga es CLIENTE, aunque nunca haya dado sus datos. Antes ninguna
-  // etapa se movía con la plata: Luiggi llevaba 3 pagos y S/30 y seguía en
-  // "Nuevo", porque el embudo solo avanzaba con nombre+edad+distrito y con el
-  // link del grupo. El que paga sin registrarse —el que deja plata— se caía
-  // del modelo. 'inactivo' también se revive: si vuelve a pagar, volvió.
-  if ((estado || 'confirmado') === 'confirmado') {
-    db.prepare("UPDATE leads SET estado = 'activo', actualizado_en = datetime('now', '-5 hours') WHERE numero = ? AND estado != 'activo'").run(numero);
-  }
+  // Acá vivía el parche del 16/08 que movía la etapa a 'activo' con cada pago
+  // confirmado. Ya no hace falta: la relación se calcula desde esta misma tabla
+  // (metricasPorNumero), así que el pago que se acaba de insertar YA cuenta
+  // como visita. Un dato derivado no se guarda: se deriva.
   return Number(r.lastInsertRowid);
 }
 
@@ -321,15 +373,11 @@ function pagosPorRevisar() {
   return db.prepare("SELECT COUNT(*) AS n FROM pagos WHERE estado = 'revisar' AND substr(creado_en, 1, 10) >= ?").get(corte).n;
 }
 
-/** Cuántas personas distintas tienen al menos un pago confirmado (para el embudo). */
-function pagadores() {
-  return db.prepare("SELECT COUNT(DISTINCT numero) AS n FROM pagos WHERE estado = 'confirmado'").get().n;
-}
-
-/** Números (distintos) con al menos un pago confirmado (para el filtro "pagaron"). */
-function numerosPagadores() {
-  return db.prepare("SELECT DISTINCT numero FROM pagos WHERE estado = 'confirmado'").all().map((r) => r.numero);
-}
+// `pagadores()` y `numerosPagadores()` se fueron el 16/08: contaban "cuántos
+// pagaron" por su lado, en paralelo a metricasPorNumero. Dos formas de contar
+// lo mismo terminan dando números distintos en dos pantallas — y ese fue
+// exactamente el problema que se vino a arreglar. La cuenta vive en un solo
+// lugar: metricasPorNumero (visitas / pagos / soles).
 
 /** Todos los pagos con los datos del contacto (para la vista Pagos del panel). */
 function listPagosTodos() {
@@ -342,8 +390,21 @@ function listPagosTodos() {
 }
 
 // --- CRM ----------------------------------------------------------------------
-function setEstado(numero, estado) {
-  db.prepare("UPDATE leads SET estado = ?, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?").run(estado, numero);
+/**
+ * Deja constancia de que a este contacto ya se le mandó el link del grupo.
+ *
+ * Reemplaza al viejo `setEstado(numero, 'invitado_grupo')`: aquello movía a la
+ * persona de escalón (y por lo tanto BORRABA lo que dijera el escalón anterior
+ * — un Jugador que recibía el link "retrocedía" a invitado). Esto solo agrega
+ * un hecho, y solo la primera vez: reenviarle el link en septiembre no cambia
+ * la fecha en que entró al grupo.
+ * @returns {boolean} true si se marcó ahora (false = ya estaba marcado).
+ */
+function marcarGrupoEnviado(numero, fecha = null) {
+  const f = /^\d{4}-\d{2}-\d{2}$/.test(fecha || '') ? fecha : hoyLimaDb();
+  return db.prepare(
+    "UPDATE leads SET grupo_enviado_en = ?, actualizado_en = datetime('now', '-5 hours') WHERE numero = ? AND grupo_enviado_en IS NULL"
+  ).run(f, numero).changes > 0;
 }
 
 function setEtiquetas(numero, etiquetas) {
@@ -419,6 +480,9 @@ function resumenPagos() {
 const CAMPOS_CONFIG = [
   'marca', 'yape_numero', 'yape_titular', 'hora_llegada', 'pago', 'devoluciones',
   'convivencia', 'mecanica', 'bienvenida', 'emojis',
+  // Umbrales de frescura: a los cuántos días sin venir un jugador se está
+  // enfriando y a los cuántos se dio por perdido (ver umbralesFrescura).
+  'dias_frio', 'dias_perdido',
 ];
 
 // Nombres bonitos de las zonas conocidas; una zona nueva sin entrada acá sale
@@ -849,24 +913,114 @@ function cajaPartido(id) {
 }
 
 /**
- * Cuántas pichangas jugó cada contacto → { numero: n }.
+ * VISITAS: la métrica única de "cuántas veces vino este jugador".
  *
- * "Recurrente" es más de 5 partidos (definición de Clarck, 12-ago). Va en UNA
- * consulta y no una por lead: la lista de Jugadores pinta cientos de filas.
- * Solo cuentan partidos que YA pasaron y que no se cancelaron — una reserva
- * para el jueves no es un partido jugado, y un partido cancelado no lo jugó
- * nadie.
+ * Antes esto se contaba SOLO con inscripciones a partidos pasados. La tabla
+ * `partidos` nació el 10/08 y tiene 17 filas; los ~400 pagos vienen de julio,
+ * cuando no existía el concepto de partido. Resultado: el filtro "Recurrentes"
+ * y el badge "N partidos" estaban estructuralmente VACÍOS para todos — no
+ * porque nadie sea recurrente, sino porque su historia no estaba en esa tabla.
+ *
+ * Una VISITA es UN DÍA en que el jugador vino. Se arma uniendo dos fuentes:
+ *   - días con pago confirmado (la historia larga: julio en adelante),
+ *   - días de partidos pasados con inscripción viva (la historia nueva).
+ * `UNION` y no `UNION ALL` a propósito: el mismo día contado por las dos
+ * fuentes —el caso normal desde agosto, donde el Yape ya se engancha a un
+ * partido— es UNA visita, no dos.
+ *
+ * Y se cuentan DÍAS, no cupos: un Yape de S/30 por dos cupos es una persona
+ * que vino con un amigo, no dos visitas suyas. `pagos` y `soles` sí cuentan
+ * los vouchers, que es otra pregunta ("cuánto ha dejado").
+ *
+ * Dos consultas para toda la lista (no una por contacto): la vista Jugadores
+ * pinta cientos de filas.
+ *
+ * @returns {Object<string, {visitas:number, ultima:string|null, pagos:number, soles:number}>}
  */
-const RECURRENTE_DESDE = 6; // "más de 5"
-function partidosJugadosPorNumero() {
-  const filas = db.prepare(`
-    SELECT i.numero AS numero, COUNT(*) AS n
-    FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
-    WHERE i.numero IS NOT NULL AND i.estado != 'baja'
-      AND p.estado != 'cancelado' AND p.fecha < date('now', '-5 hours')
-    GROUP BY i.numero
+const RECURRENTE_DESDE = 6; // "más de 5" (definición de Clarck, 12-ago)
+function metricasPorNumero() {
+  const visitas = db.prepare(`
+    SELECT numero, COUNT(*) AS visitas, MAX(dia) AS ultima FROM (
+      SELECT numero, substr(creado_en, 1, 10) AS dia
+        FROM pagos WHERE estado = 'confirmado' AND numero IS NOT NULL
+      UNION
+      SELECT i.numero AS numero, p.fecha AS dia
+        FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
+        WHERE i.numero IS NOT NULL AND i.estado != 'baja'
+          AND p.estado != 'cancelado' AND p.fecha < date('now', '-5 hours')
+    ) GROUP BY numero
   `).all();
-  return Object.fromEntries(filas.map((f) => [f.numero, f.n]));
+  const plata = db.prepare(`
+    SELECT numero, COUNT(*) AS pagos, COALESCE(SUM(monto), 0) AS soles
+    FROM pagos WHERE estado = 'confirmado' AND numero IS NOT NULL GROUP BY numero
+  `).all();
+
+  const mapa = {};
+  for (const v of visitas) mapa[v.numero] = { visitas: v.visitas, ultima: v.ultima, pagos: 0, soles: 0 };
+  for (const p of plata) {
+    const m = mapa[p.numero] || (mapa[p.numero] = { visitas: 0, ultima: null, pagos: 0, soles: 0 });
+    m.pagos = p.pagos;
+    m.soles = Number(p.soles) || 0;
+  }
+  return mapa;
+}
+/** Métricas de UN contacto (misma definición que la versión batch). */
+const SIN_METRICAS = { visitas: 0, ultima: null, pagos: 0, soles: 0 };
+const metricasDe = (numero) => metricasPorNumero()[numero] || { ...SIN_METRICAS };
+
+/**
+ * RELACIÓN: qué tan cliente es alguien. Se DERIVA de las visitas, no se guarda
+ * —por eso no se puede desactualizar y no hay ningún botón que apretar.
+ */
+const RELACIONES = {
+  nuevo: { label: 'Nuevo', largo: 'Nunca pagó', desde: 0 },
+  probo: { label: 'Probó', largo: 'Vino una vez', desde: 1 },
+  vuelve: { label: 'Vuelve', largo: 'Volvió (2 a 5 visitas)', desde: 2 },
+  casero: { label: 'Casero', largo: `Casero (${RECURRENTE_DESDE}+ visitas)`, desde: RECURRENTE_DESDE },
+};
+function relacionDe(visitas = 0) {
+  const v = Number(visitas) || 0;
+  if (v >= RECURRENTE_DESDE) return 'casero';
+  if (v >= 2) return 'vuelve';
+  if (v >= 1) return 'probo';
+  return 'nuevo';
+}
+
+/**
+ * FRESCURA: hace cuánto no se sabe nada de él. También derivada.
+ *
+ * Los dos umbrales viven en `config` (dias_frio / dias_perdido) como los
+ * precios y los links: el ritmo de una pichanga semanal no es el de una
+ * quincenal, y eso lo sabe Clarck, no el código.
+ */
+const FRIO_DEFAULT = 21;      // ~3 semanas sin venir: todavía se recupera
+const PERDIDO_DEFAULT = 45;   // mes y medio: ya se fue a otra pichanga
+function umbralesFrescura() {
+  const c = getConfigMap();
+  const frio = Number(c.dias_frio) > 0 ? Math.round(Number(c.dias_frio)) : FRIO_DEFAULT;
+  // El segundo umbral tiene que estar DESPUÉS del primero: si Clarck los
+  // invierte sin querer, "Enfriándose" se quedaría sin ningún día adentro.
+  const perdido = Number(c.dias_perdido) > 0 ? Math.round(Number(c.dias_perdido)) : PERDIDO_DEFAULT;
+  return { frio, perdido: Math.max(perdido, frio + 1) };
+}
+const FRESCURAS = {
+  al_dia: { label: 'Al día', corto: 'Al día' },
+  enfriando: { label: 'Enfriándose', corto: 'Frío' },
+  perdido: { label: 'Perdido', corto: 'Perdido' },
+};
+/** Días enteros entre una fecha (o timestamp) y hoy en Lima. null si no hay fecha. */
+function diasDesde(fecha) {
+  const d = String(fecha || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  return Math.max(0, Math.round((Date.parse(`${hoyLimaDb()}T00:00:00Z`) - Date.parse(`${d}T00:00:00Z`)) / 86400e3));
+}
+/** @param {number|null} dias @param {{frio:number,perdido:number}} [um] */
+function frescuraDe(dias, um = null) {
+  if (dias == null) return null;
+  const { frio, perdido } = um || umbralesFrescura();
+  if (dias <= frio) return 'al_dia';
+  if (dias <= perdido) return 'enfriando';
+  return 'perdido';
 }
 
 /** Todos los partidos con sus conteos (para el panel), próximos primero. */
@@ -1231,6 +1385,44 @@ function textoLista(partidoId) {
   return lineas.join('\n');
 }
 
+/**
+ * A quién le escribo para llenar ESTE partido.
+ *
+ * La pregunta que ninguna pantalla contestaba: quedan 6 cupos para el viernes
+ * en Breña y la lista de contactos está ordenada por "último mensaje", que no
+ * tiene nada que ver con quién viene a jugar.
+ *
+ * Candidato = ya vino alguna vez (visitas ≥ 1) · es de esa zona · NO está ya
+ * inscrito en este partido. Ordenados por frescura: primero el que vino hace
+ * menos, que es el que más probable diga que sí.
+ *
+ * Los `dado-de-baja` quedan afuera: es la única marca manual que sobrevivió a
+ * las etapas y significa exactamente "a este no le escribas".
+ *
+ * NO manda nada: devuelve la lista. Con SAFE_MODE encendido y la cuenta con
+ * alertas de salud de Meta, un envío masivo de 200 mensajes es pedir un baneo.
+ */
+function candidatosConvocatoria(partidoId) {
+  const p = getPartido(partidoId);
+  if (!p) return [];
+  const filas = db.prepare(`
+    SELECT l.numero, l.nombre, l.distrito, l.zona, l.grupo_enviado_en, l.handoff
+    FROM leads l
+    WHERE l.zona = ?
+      AND (l.etiquetas IS NULL OR l.etiquetas NOT LIKE '%dado-de-baja%')
+      AND l.numero NOT IN (
+        SELECT numero FROM inscripciones
+        WHERE partido_id = ? AND numero IS NOT NULL AND estado != 'baja'
+      )
+  `).all(p.zona, partidoId);
+  const met = metricasPorNumero();
+  return filas
+    .map((l) => ({ ...l, ...(met[l.numero] || SIN_METRICAS) }))
+    .filter((l) => l.visitas >= 1)
+    // Más fresco primero (misma fecha → el de más visitas manda).
+    .sort((a, b) => (a.ultima === b.ultima ? b.visitas - a.visitas : (b.ultima || '').localeCompare(a.ultima || '')));
+}
+
 /** Historial de asistencia de un contacto (para la ficha del CRM). */
 function asistenciasDe(numero) {
   return db.prepare(`
@@ -1242,13 +1434,14 @@ function asistenciasDe(numero) {
 
 module.exports = {
   getLead, getOrCreateLead, updateLead, saveMessage, getHistory, setHandoff, clearHandoff, stats, listLeads,
-  setEstado, setEtiquetas, addNota, getNotas, ultimosRoles, deleteLead, actividadPorDia,
+  marcarGrupoEnviado, setEtiquetas, addNota, getNotas, ultimosRoles, deleteLead, actividadPorDia,
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
-  registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, pagadores, numerosPagadores, listPagosTodos,
+  registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
-  crearPartido, getPartido, actualizarPartido, cajaPartido, partidosJugadosPorNumero, RECURRENTE_DESDE, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
+  crearPartido, getPartido, actualizarPartido, cajaPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
+  metricasPorNumero, metricasDe, RECURRENTE_DESDE, RELACIONES, relacionDe, FRESCURAS, frescuraDe, diasDesde, umbralesFrescura,
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago, candidatosDePago,
-  pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita,
+  pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita, candidatosConvocatoria,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
   hoyLima: hoyLimaDb, ordenHora, horaInput, normalizarHora,
   getMarca, setMarca, handoffsDesde,

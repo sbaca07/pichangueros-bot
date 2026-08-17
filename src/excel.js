@@ -19,26 +19,22 @@ const ZONAS = {
   otra: { nombre: 'Otra zona', color: 'FF64748B' },
 };
 
-const ESTADOS = {
-  nuevo: 'Nuevo',
-  datos_completos: 'Completo',
-  invitado_grupo: 'En grupo',
-  activo: 'Jugador',
-  lista_espera: 'En espera',
-  inactivo: 'Inactivo',
-};
-
+// "Etapa" y "Próxima acción" salieron el 16/08: la primera quedó congelada (ya
+// no la escribe nadie) y la segunda se había retirado del panel. En su lugar
+// van Relación, Visitas y Última vez, que se calculan de los pagos y los
+// partidos y no dependen de que alguien mantenga una columna al día.
 const COLUMNAS = [
   { titulo: 'Número', ancho: 14 },
   { titulo: 'Nombre', ancho: 26 },
   { titulo: 'Edad', ancho: 7 },
   { titulo: 'Distrito', ancho: 18 },
   { titulo: 'Zona', ancho: 12 },
-  { titulo: 'Etapa', ancho: 14 },
+  { titulo: 'Relación', ancho: 12 },
+  { titulo: 'Visitas', ancho: 8 },
+  { titulo: 'Última vez', ancho: 13 },
   { titulo: 'Derivado', ancho: 10 },
   { titulo: 'Motivo derivación', ancho: 26 },
   { titulo: 'Etiquetas', ancho: 20 },
-  { titulo: 'Próxima acción', ancho: 14 },
   { titulo: 'Creado (hora Lima)', ancho: 18 },
   { titulo: 'WhatsApp', ancho: 14 },
 ];
@@ -46,6 +42,7 @@ const COLUMNAS = [
 /** @returns {Promise<Buffer>} */
 async function buildLeadsWorkbook(db) {
   const leads = db.listLeads();
+  const met = db.metricasPorNumero();
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Pichangueros CRM';
   wb.created = new Date();
@@ -97,17 +94,19 @@ async function buildLeadsWorkbook(db) {
   leads.forEach((l, i) => {
     const fila = HEADER_ROW + 1 + i;
     const z = ZONAS[l.zona];
+    const m = met[l.numero] || { visitas: 0, ultima: null };
     const valores = [
       `+${l.numero}`,
       l.nombre || '',
       l.edad || '',
       l.distrito || '',
       z ? z.nombre : (l.zona || ''),
-      ESTADOS[l.estado] || l.estado || '',
+      db.RELACIONES[db.relacionDe(m.visitas)].label,
+      m.visitas,
+      m.ultima || '',
       l.handoff ? 'Sí' : '',
       l.handoff_motivo || '',
       l.etiquetas || '',
-      l.proxima_accion || '',
       (l.creado_en || '').slice(0, 16),
       '',
     ];

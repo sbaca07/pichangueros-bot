@@ -461,13 +461,13 @@ async function manejarMensaje(sock, msg) {
 
   const actualizado = db.getOrCreateLead(numero);
   const datosCompletos = actualizado.nombre && actualizado.edad && actualizado.distrito;
-  // Solo se avanza desde 'nuevo': completar datos NUNCA puede degradar a quien
-  // ya es cliente. Antes decía `lead.estado === 'nuevo'` a secas, y con la
-  // etapa por pago un pagador que después daba sus datos se quedaba sin
-  // registrar el hecho — el precio de meter dos ejes en una sola escalera.
-  if (datosCompletos && ['nuevo'].includes(lead.estado)) {
-    const estado = actualizado.zona === 'otra' ? 'lista_espera' : 'datos_completos';
-    db.updateLead(numero, { estado });
+  // Acá se escribía la etapa ('datos_completos' / 'lista_espera'), con dos
+  // guardias encima para que completar los datos no degradara a un cliente.
+  // Desde el 16/08 no se escribe nada: "tiene datos" se lee de las COLUMNAS
+  // (nombre/edad/distrito), que es donde el dato vive de verdad, y "es de otra
+  // zona" se lee de `zona`. Un estado derivado no necesita disparador ni
+  // guardias — solo se queda el log, que es lo único que aportaba.
+  if (datosCompletos && !(lead.nombre && lead.edad && lead.distrito)) {
     // Sin aviso a Clarck: un lead nuevo NO le pide hacer nada (el bot ya lo
     // atendió) y con 50-100 mensajes/día su WhatsApp se volvía spam. Vive en
     // el panel, que es donde se revisa. A WhatsApp solo va lo ACCIONABLE:
@@ -550,19 +550,18 @@ async function manejarMensaje(sock, msg) {
     } catch (e) { console.error(`[send] ERROR → ${destino}:`, e?.message); }
     db.saveMessage(numero, 'assistant', decision.reply);
 
-    // Si la respuesta incluyó el link del grupo de su zona, el lead ya quedó
-    // invitado → se marca solo (alimenta el embudo del Resumen).
+    // Si la respuesta incluyó el link del grupo de su zona, se anota la FECHA
+    // en que se le mandó.
     //
-    // Solo se sube desde 'nuevo' o 'datos_completos'. Un 'activo' NO se toca:
-    // recibir el link es un paso hacia adelante para un desconocido y hacia
-    // ATRÁS para un cliente que ya paga. Hoy no explota porque ninguna zona
-    // tiene link cargado, pero el día que Clarck cargue el primero, esta línea
-    // degradaría a Jugador ⭐ a todo el que lo reciba.
+    // Antes esto lo movía de escalón ('invitado_grupo') y por eso necesitaba
+    // tres guardias: recibir el link es un paso adelante para un desconocido y
+    // uno ATRÁS para un cliente que ya paga, así que la misma línea que
+    // registraba el hecho podía degradar a un Jugador. Guardar el hecho a
+    // secas no tiene ese problema: no compite con nada.
     const linkZona = actualizado.zona && actualizado.zona !== 'otra'
       ? db.getNegocio().zonas[actualizado.zona]?.groupLink : null;
-    if (linkZona && decision.reply.includes(linkZona)
-        && ['nuevo', 'datos_completos', 'lista_espera'].includes(actualizado.estado)) {
-      db.setEstado(numero, 'invitado_grupo');
+    if (linkZona && decision.reply.includes(linkZona)) {
+      if (db.marcarGrupoEnviado(numero)) console.log(`[grupo] ${numero} recibió el link de ${actualizado.zona}.`);
     } else if (!linkZona && actualizado.zona && actualizado.zona !== 'otra') {
       // Sin link cargado para su zona, sumarlo al grupo es trabajo a mano. El
       // pendiente por contacto se retiró junto con "próxima acción": el bloque

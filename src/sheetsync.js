@@ -19,11 +19,11 @@ const SECRET = process.env.SHEET_SECRET || '';
 // Las zonas ya no son tres fijas: Clarck abrió Chorrillos y Rímac desde el
 // panel, y el mapa viejo (brena/comas/otra) las habría escrito en minúscula y
 // sin tilde en la hoja que él mira. El nombre sale de la config en vivo.
-const ESTADOS = {
-  nuevo: 'Nuevo', datos_completos: 'Completo', invitado_grupo: 'En grupo',
-  activo: 'Jugador', lista_espera: 'En espera', inactivo: 'Inactivo',
-};
-
+// La columna "Etapa" se fue el 16/08 con la escalera de estados: exportaba una
+// columna congelada que ya no escribe nadie. En su lugar van tres que se
+// calculan solos y responden preguntas de verdad — Relación (qué tan cliente
+// es), Última vez (cuándo vino) y Datos (cuánto sabemos de él). Los dos ejes
+// que la etapa mezclaba, ahora separados en columnas distintas.
 const ESTADOS_PAGO = { confirmado: 'Confirmado', revisar: 'Por revisar' };
 const ESTADOS_PARTIDO = { abierto: 'Abierto', cerrado: 'Cerrado', jugado: 'Jugado', cancelado: 'Cancelado' };
 const MEDIOS = {
@@ -68,19 +68,32 @@ function armarHojas(db) {
   const leads = db.listLeads();
   const pagos = db.listPagosTodos();
   const partidos = db.listPartidos();
+  const met = db.metricasPorNumero();
+
+  // "Datos" es el OTRO eje que la etapa mezclaba: cuánto sabemos de la persona.
+  // Sin nada no se le puede escribir de nada; completo entra a cualquier lista.
+  const nivelDatos = (l) => {
+    if (l.nombre && l.edad && l.distrito) return 'Completo';
+    return (l.nombre || l.edad || l.distrito) ? 'Parcial' : 'Sin datos';
+  };
 
   const hojaLeads = {
     nombre: 'Leads',
-    header: ['Número', 'Nombre', 'Edad', 'Distrito', 'Zona', 'Etapa', 'Handoff', 'Motivo',
-      'Etiquetas', 'Próxima acción', 'Nota seguimiento', 'Creado', 'Mes de ingreso', 'Actualizado', 'WhatsApp'],
-    filas: leads.map((l) => [
-      l.numero, l.nombre || '', l.edad || '', l.distrito || '',
-      l.zona ? db.nombreDeZona(l.zona) : '', ESTADOS[l.estado] || l.estado || '',
-      l.handoff ? 'Sí' : '', l.handoff_motivo || '', l.etiquetas || '',
-      l.proxima_accion || '', l.proxima_nota || '', l.creado_en || '', mes(l.creado_en),
-      l.actualizado_en || '', `https://wa.me/${l.numero}`,
-    ]),
-    fechas: [11, 13],
+    header: ['Número', 'Nombre', 'Edad', 'Distrito', 'Zona', 'Relación', 'Visitas', 'Última vez',
+      'Datos', 'Handoff', 'Motivo', 'Etiquetas', 'Creado', 'Mes de ingreso', 'Actualizado', 'WhatsApp'],
+    filas: leads.map((l) => {
+      const m = met[l.numero] || { visitas: 0, ultima: null };
+      return [
+        l.numero, l.nombre || '', l.edad || '', l.distrito || '',
+        l.zona ? db.nombreDeZona(l.zona) : '',
+        db.RELACIONES[db.relacionDe(m.visitas)].label, m.visitas, m.ultima || '',
+        nivelDatos(l), l.handoff ? 'Sí' : '', l.handoff_motivo || '', l.etiquetas || '',
+        l.creado_en || '', mes(l.creado_en), l.actualizado_en || '', `https://wa.me/${l.numero}`,
+      ];
+    }),
+    // Fecha de verdad (no texto): así se puede filtrar "los que no vienen desde
+    // julio" tildando una casilla, que es para lo que Clarck abre la hoja.
+    fechas: [7, 12, 14],
   };
 
   const hojaPagos = {
@@ -129,6 +142,12 @@ function armarHojas(db) {
       ['Contactos totales', leads.length],
       ['Con datos completos', leads.filter((l) => l.nombre && l.edad && l.zona).length],
       ['Esperando a Clarck (handoff)', leads.filter((l) => l.handoff).length],
+      ['', ''],
+      // El embudo comercial, con la misma métrica que el panel: cada uno es
+      // subconjunto del anterior (una visita = un día que vino).
+      ['Vinieron alguna vez (1+ visita)', leads.filter((l) => (met[l.numero] || {}).visitas >= 1).length],
+      ['Volvieron (2+ visitas)', leads.filter((l) => (met[l.numero] || {}).visitas >= 2).length],
+      [`Caseros (${db.RECURRENTE_DESDE}+ visitas)`, leads.filter((l) => (met[l.numero] || {}).visitas >= db.RECURRENTE_DESDE).length],
       ['', ''],
       ...Object.keys(porZona).sort((a, b) => porZona[b] - porZona[a])
         .map((z) => [`Contactos en ${db.nombreDeZona(z)}`, porZona[z]]),

@@ -93,31 +93,99 @@ const pn = db.crearPartido({ zona: 'comas', fecha: enDias(5), hora: '8-9pm', sed
 check('con el nombre tipeado distinto, igual encuentra el costo de la zona',
   db.cajaPartido(pn).costoCancha === 150);
 
-console.log('== 7 · Quien paga deja de ser "Nuevo" ==');
-// Luiggi llevaba 3 pagos y S/30 y seguía en "Nuevo": el embudo solo avanzaba
-// con nombre+edad+distrito y con el link del grupo, así que el que paga sin
-// registrarse —el que deja plata— se caía del modelo.
+console.log('== 7 · Quien paga cuenta como cliente, sin que nadie lo declare ==');
+// Luiggi llevaba 3 pagos y S/30 y figuraba "Nuevo": la etapa solo avanzaba con
+// nombre+edad+distrito y con el link del grupo, así que el que paga sin
+// registrarse —el que deja plata— se caía del modelo. Ahora no hay etapa: la
+// relación se DERIVA de los pagos y los partidos en cada lectura.
 db.getOrCreateLead('51900000107');
-check('arranca en nuevo', db.getLead('51900000107').estado === 'nuevo');
+check('sin nada, la relación es "nuevo"', db.relacionDe(db.metricasDe('51900000107').visitas) === 'nuevo');
 db.registrarPago({ numero: '51900000107', monto: 15, numero_operacion: 'OP-INV-9', estado: 'confirmado' });
-check('con un pago confirmado pasa a Jugador', db.getLead('51900000107').estado === 'activo');
+const mLuiggi = db.metricasDe('51900000107');
+check('con un pago confirmado ya cuenta una visita', mLuiggi.visitas === 1);
+check('…y la relación pasa a "probó" sola', db.relacionDe(mLuiggi.visitas) === 'probo');
 check('sin haber dado un solo dato', !db.getLead('51900000107').nombre);
+check('la plata también se suma', mLuiggi.soles === 15 && mLuiggi.pagos === 1);
 
 db.getOrCreateLead('51900000108');
 db.registrarPago({ numero: '51900000108', monto: 15, numero_operacion: 'OP-INV-10', estado: 'revisar' });
-check('un pago POR REVISAR no lo mueve', db.getLead('51900000108').estado === 'nuevo');
+check('un pago POR REVISAR no cuenta como visita', db.metricasDe('51900000108').visitas === 0);
 
-db.updateLead('51900000107', { estado: 'inactivo' });
-db.registrarPago({ numero: '51900000107', monto: 15, numero_operacion: 'OP-INV-11', estado: 'confirmado' });
-check('un inactivo que vuelve a pagar, revive', db.getLead('51900000107').estado === 'activo');
+// La columna vieja quedó CONGELADA: si algo la volviera a escribir, en un mes
+// vuelve a haber dos verdades peleando por el mismo contacto.
+const crudo = () => new (require('node:sqlite').DatabaseSync)(db.dbPath);
+const estadoCrudo = (n) => { const c = crudo(); const r = c.prepare('SELECT estado FROM leads WHERE numero = ?').get(n); c.close(); return r.estado; };
+check('registrarPago ya NO toca la columna estado', estadoCrudo('51900000107') === 'nuevo');
+db.updateLead('51900000107', { estado: 'inactivo', nombre: 'Luiggi' });
+check('updateLead tampoco la deja escribir', estadoCrudo('51900000107') === 'nuevo');
+check('…pero sí guarda los campos de verdad', db.getLead('51900000107').nombre === 'Luiggi');
 
-// Meter "cuánto sabemos de alguien" y "qué tan cliente es" en una sola escalera
-// hace que avanzar en un eje borre el otro. Hasta que se separen, al menos que
-// no retrocedan: un cliente no vuelve a ser un desconocido.
+console.log('== 7b · Una visita es un DÍA, no un cupo ni un voucher ==');
+// Un Yape de S/30 por dos cupos es una persona que vino con un amigo: una
+// visita. Y el pago que se engancha a un partido del mismo día no puede
+// contarse dos veces (por eso la unión es UNION y no UNION ALL).
+const dosCupos = '51900000109';
+db.getOrCreateLead(dosCupos);
+db.updateLead(dosCupos, { zona: 'brena' });
+db.registrarPago({ numero: dosCupos, monto: 30, cupos: 2, numero_operacion: 'OP-INV-12', estado: 'confirmado' });
+check('un pago de 2 cupos es UNA visita', db.metricasDe(dosCupos).visitas === 1);
+db.registrarPago({ numero: dosCupos, monto: 15, numero_operacion: 'OP-INV-13', estado: 'confirmado' });
+check('dos pagos el MISMO día siguen siendo una visita', db.metricasDe(dosCupos).visitas === 1);
+check('pero los vouchers se cuentan aparte', db.metricasDe(dosCupos).pagos === 2 && db.metricasDe(dosCupos).soles === 45);
+
+// Un partido pasado con inscripción viva también es una visita, aunque no haya
+// voucher (el efectivo en la cancha, el invitado que pagó otro).
+const pViejo = db.crearPartido({ zona: 'brena', fecha: enDias(-3), hora: '8-9pm', cupo: 14, precio: 15 });
+db.inscribir(pViejo, dosCupos, { nombre: 'Dos Cupos' });
+check('un partido jugado suma otra visita', db.metricasDe(dosCupos).visitas === 2);
+check('…y la relación sube sola a "vuelve"', db.relacionDe(db.metricasDe(dosCupos).visitas) === 'vuelve');
+
+// El mismo día contado por las dos fuentes: pago + partido de esa fecha.
+const dupli = '51900000110';
+db.getOrCreateLead(dupli);
+db.updateLead(dupli, { zona: 'brena' });
+const pHoy = db.crearPartido({ zona: 'brena', fecha: enDias(-1), hora: '8-9pm', cupo: 14, precio: 15 });
+db.inscribir(pHoy, dupli, { nombre: 'Duplicado' });
+const conn2 = new (require('node:sqlite').DatabaseSync)(db.dbPath);
+const pagoDup = db.registrarPago({ numero: dupli, monto: 15, numero_operacion: 'OP-INV-14', estado: 'confirmado' });
+conn2.prepare("UPDATE pagos SET creado_en = datetime(? || ' 20:00:00') WHERE id = ?").run(enDias(-1), pagoDup);
+conn2.close();
+check('pago y partido del MISMO día = una sola visita', db.metricasDe(dupli).visitas === 1, String(db.metricasDe(dupli).visitas));
+
+console.log('== 7c · Frescura: los cortes los pone Clarck, no el código ==');
+check('por defecto, 3 semanas / mes y medio', db.umbralesFrescura().frio === 21 && db.umbralesFrescura().perdido === 45);
+check('el que vino ayer está al día', db.frescuraDe(1) === 'al_dia');
+check('a los 30 días se está enfriando', db.frescuraDe(30) === 'enfriando');
+check('a los 60 está perdido', db.frescuraDe(60) === 'perdido');
+db.setConfig({ dias_frio: '7', dias_perdido: '14' });
+check('cambiados los cortes en Config, la lectura cambia', db.frescuraDe(10) === 'enfriando' && db.frescuraDe(20) === 'perdido');
+db.setConfig({ dias_frio: '30', dias_perdido: '10' });
+check('cortes invertidos no dejan "enfriándose" vacío', db.umbralesFrescura().perdido > db.umbralesFrescura().frio);
+db.setConfig({ dias_frio: '21', dias_perdido: '45' });
+check('sin fecha no se inventa una frescura', db.frescuraDe(null) === null);
+
+console.log('== 7d · El link del grupo se anota una vez y no retrocede ==');
+const conGrupo = '51900000111';
+db.getOrCreateLead(conGrupo);
+check('arranca sin grupo', !db.getLead(conGrupo).grupo_enviado_en);
+check('la primera vez se marca', db.marcarGrupoEnviado(conGrupo, '2026-08-01') === true);
+check('la segunda no pisa la fecha original', db.marcarGrupoEnviado(conGrupo, '2026-08-16') === false
+  && db.getLead(conGrupo).grupo_enviado_en === '2026-08-01');
+
 check('"con datos" se mide por los DATOS, no por la etapa',
   db.stats().completos === db.listLeads().filter((l) => l.nombre && l.edad && l.distrito).length);
-check('un pagador sin datos NO cuenta como registrado',
-  !db.listLeads().some((l) => l.numero === '51900000107' && l.nombre));
+
+console.log('== 7e · A quién convocar para llenar un partido ==');
+const pConv = db.crearPartido({ zona: 'brena', fecha: enDias(6), hora: '8-9pm', cupo: 14, precio: 15 });
+const candidatos = db.candidatosConvocatoria(pConv);
+check('los que ya vinieron a Breña son candidatos', candidatos.some((c) => c.numero === dosCupos));
+check('el que nunca vino NO lo es', !candidatos.some((c) => c.numero === '51900000108'));
+db.inscribir(pConv, dosCupos, { nombre: 'Dos Cupos' });
+check('inscrito en ESE partido, sale de la lista', !db.candidatosConvocatoria(pConv).some((c) => c.numero === dosCupos));
+db.setEtiquetas(dupli, 'dado-de-baja');
+check('un "dado-de-baja" nunca se convoca', !db.candidatosConvocatoria(pConv).some((c) => c.numero === dupli));
+check('ordena por frescura: el más reciente primero',
+  db.candidatosConvocatoria(pConv).every((c, i, a) => i === 0 || (a[i - 1].ultima || '') >= (c.ultima || '')));
 
 console.log('== 8 · La caja no devuelve NaN cuando falta el precio ==');
 // p.precio ?? Number(cfg[...]) ?? 0 → el ?? no atrapa NaN y la caja salía NaN.
@@ -126,6 +194,59 @@ db.setConfig('precio_comas', '');
 const caja = db.cajaPartido(p3);
 check('cobrado es un número', Number.isFinite(caja.cobrado));
 check('por pagar es un número', Number.isFinite(caja.porPagar));
+
+console.log('== 9 · La migración que apaga las etapas (una sola pasada) ==');
+{
+  // Las migraciones corren al CARGAR el módulo, así que esto se prueba en un
+  // proceso aparte: se prepara una BD con la escalera vieja adentro y se
+  // arranca db.js encima, que es exactamente lo que va a pasar en el deploy.
+  const TMP2 = fs.mkdtempSync(path.join(os.tmpdir(), 'pich-mig-'));
+  const { execFileSync } = require('child_process');
+  const arrancar = (script) => execFileSync(process.execPath, ['-e', script], {
+    env: { ...process.env, WWEBJS_AUTH_PATH: TMP2 }, encoding: 'utf8', cwd: __dirname,
+  });
+
+  // 1ª pasada: crea el esquema (y marca la migración como hecha).
+  arrancar("require('./src/db');");
+
+  // Se rebobina: se borra el flag y se siembra la escalera vieja a mano, con
+  // los dos casos que la migración tiene que rescatar y uno que NO debe tocar.
+  const c = new (require('node:sqlite').DatabaseSync)(path.join(TMP2, 'data', 'pichangueros.db'));
+  c.exec("DELETE FROM config WHERE clave = 'relacion_derivada_2026_08'");
+  const alta = (n, estado, etiquetas) => c.prepare(
+    "INSERT INTO leads (numero, estado, etiquetas, creado_en, actualizado_en) VALUES (?, ?, ?, '2026-07-01 10:00:00', '2026-07-20 18:30:00')"
+  ).run(n, estado, etiquetas);
+  alta('51900000901', 'invitado_grupo', null);
+  alta('51900000902', 'inactivo', 'paga efectivo');
+  alta('51900000903', 'inactivo', 'dado-de-baja');   // ya etiquetado: no duplicar
+  alta('51900000904', 'activo', 'VIP');              // no se toca
+  c.close();
+
+  arrancar("require('./src/db');");
+
+  const c2 = new (require('node:sqlite').DatabaseSync)(path.join(TMP2, 'data', 'pichangueros.db'));
+  const lee = (n) => c2.prepare('SELECT estado, etiquetas, grupo_enviado_en FROM leads WHERE numero = ?').get(n);
+  const a = lee('51900000901'), b = lee('51900000902'), d3 = lee('51900000903'), e = lee('51900000904');
+  check('el "invitado_grupo" queda con la FECHA en que se le mandó el link', a.grupo_enviado_en === '2026-07-20', String(a.grupo_enviado_en));
+  check('el "inactivo" queda etiquetado dado-de-baja', /dado-de-baja/.test(b.etiquetas || ''), String(b.etiquetas));
+  check('…sin pisar las etiquetas que ya tenía', /paga efectivo/.test(b.etiquetas || ''), String(b.etiquetas));
+  check('no se duplica la etiqueta si ya estaba', (d3.etiquetas.match(/dado-de-baja/g) || []).length === 1, String(d3.etiquetas));
+  check('un "activo" no se toca', e.etiquetas === 'VIP' && !e.grupo_enviado_en);
+  check('la columna estado se deja como estaba (congelada, no borrada)',
+    a.estado === 'invitado_grupo' && b.estado === 'inactivo' && e.estado === 'activo');
+
+  // Idempotencia: correrla de nuevo (deploy tras deploy) no puede sumar nada.
+  c2.exec("DELETE FROM config WHERE clave = 'relacion_derivada_2026_08'");
+  c2.close();
+  arrancar("require('./src/db');");
+  const c3 = new (require('node:sqlite').DatabaseSync)(path.join(TMP2, 'data', 'pichangueros.db'));
+  const b2 = c3.prepare('SELECT etiquetas FROM leads WHERE numero = ?').get('51900000902');
+  const a2 = c3.prepare('SELECT grupo_enviado_en FROM leads WHERE numero = ?').get('51900000901');
+  c3.close();
+  check('corriéndola dos veces, la etiqueta no se duplica', (b2.etiquetas.match(/dado-de-baja/g) || []).length === 1, String(b2.etiquetas));
+  check('…y la fecha del grupo no se mueve', a2.grupo_enviado_en === '2026-07-20', String(a2.grupo_enviado_en));
+  try { fs.rmSync(TMP2, { recursive: true, force: true }); } catch (_) {}
+}
 
 console.log(`\n${fallos ? '❌' : '✅'} ${ok} checks OK, ${fallos} fallos`);
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {}

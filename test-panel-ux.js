@@ -22,16 +22,19 @@ const db = require('./src/db');
 const { registrarPanel } = require('./src/panel');
 const express = require('./node_modules/express');
 
-// --- Semilla realista: leads en todos los estados, partido con de todo -------
+// --- Semilla realista: leads de todo tipo, partido con de todo ---------------
 const enDias = (n) => new Date(Date.now() - 5 * 3600e3 + n * 86400e3).toISOString().slice(0, 10);
 const L = {
   tester: '51900000001', completo: '51911111111', handoff: '51922222222',
   espera: '51933333333', pagador: '51944444444', nuevo: '51955555555',
 };
 for (const n of Object.values(L)) { db.getOrCreateLead(n); db.saveMessage(n, 'user', 'hola'); }
-db.updateLead(L.completo, { nombre: 'María Prueba', edad: 28, distrito: 'Breña', zona: 'brena', estado: 'datos_completos' });
-db.updateLead(L.pagador, { nombre: 'Pablo Pagador', zona: 'comas', estado: 'invitado_grupo' });
-db.updateLead(L.espera, { nombre: 'Elsa Espera', zona: 'otra', estado: 'lista_espera' });
+// Ya no se siembran "etapas": la relación se deriva de los pagos y partidos que
+// se cargan más abajo, que es justo lo que hay que poder verificar.
+db.updateLead(L.completo, { nombre: 'María Prueba', edad: 28, distrito: 'Breña', zona: 'brena' });
+db.updateLead(L.pagador, { nombre: 'Pablo Pagador', zona: 'comas' });
+db.marcarGrupoEnviado(L.pagador, enDias(-4));
+db.updateLead(L.espera, { nombre: 'Elsa Espera', zona: 'otra', distrito: 'Ate' });
 db.setHandoff(L.handoff, 'Queja de prueba');
 db.setEtiquetas(L.completo, 'casero,VIP');
 db.addNota(L.completo, 'nota de prueba');
@@ -130,7 +133,7 @@ const srv = app.listen(0, async () => {
 
   console.log('== 4 · Cada POST redirige a una página viva ==');
   const posts = [
-    ['/admin/lead/estado', { key: 'ux', numero: L.completo, estado: 'activo' }],
+    ['/admin/lead/grupo', { key: 'ux', numero: L.completo }],
     ['/admin/lead/etiquetas', { key: 'ux', numero: L.completo, etiquetas: 'vip' }],
     ['/admin/lead/nota', { key: 'ux', numero: L.completo, texto: 'otra nota' }],
     ['/admin/lead/reactivar', { key: 'ux', numero: L.handoff }],
@@ -280,40 +283,154 @@ const srv = app.listen(0, async () => {
     check('un contacto sin historia lo dice, no muestra ceros sueltos', /Nunca pagó por acá/.test(virgen) && /Sin reserva/.test(virgen));
   }
 
-  console.log('== 4f · Recurrente = más de 5 partidos (regla de Clarck) ==');
+  console.log('== 4f · Casero = 6+ visitas, contadas con TODA su historia ==');
   {
     const habitual = '51990000021', ocasional = '51990000022';
     for (const n of [habitual, ocasional]) db.getOrCreateLead(n);
-    db.updateLead(habitual, { nombre: 'Hugo Habitual' });
-    db.updateLead(ocasional, { nombre: 'Otto Ocasional' });
+    db.updateLead(habitual, { nombre: 'Hugo Habitual', zona: 'brena' });
+    db.updateLead(ocasional, { nombre: 'Otto Ocasional', zona: 'brena' });
     // 6 partidos pasados para uno, 5 para el otro: el corte cae justo en medio.
     for (let i = 1; i <= 6; i++) {
       const p = db.crearPartido({ zona: 'brena', fecha: enDias(-i), cupo: 20 });
       db.inscribir(p, habitual);
       if (i <= 5) db.inscribir(p, ocasional);
     }
-    const jug = db.partidosJugadosPorNumero();
-    check('cuenta 6 partidos jugados', jug[habitual] === 6, String(jug[habitual]));
-    check('y 5 para el otro', jug[ocasional] === 5, String(jug[ocasional]));
+    const met = db.metricasPorNumero();
+    check('cuenta 6 visitas', met[habitual].visitas === 6, String(met[habitual].visitas));
+    check('y 5 para el otro', met[ocasional].visitas === 5, String(met[ocasional].visitas));
+    check('la última visita es la fecha real del partido', met[habitual].ultima === enDias(-1), met[habitual].ultima);
 
     const rec = (await GET('/admin/leads?key=ux&vista=crm&filtro=recurrentes')).html;
-    check('con 6 partidos SÍ es recurrente', /Hugo Habitual/.test(rec));
-    check('con 5 exactos NO lo es ("más de 5")', !/Otto Ocasional/.test(rec));
-    check('la fila lo marca con sus partidos', /⭐ 6 partidos/.test(rec));
+    check('con 6 visitas SÍ es casero', /Hugo Habitual/.test(rec));
+    check('con 5 exactas NO lo es ("más de 5")', !/Otto Ocasional/.test(rec));
+    check('la fila lo marca con su relación y sus visitas', /⭐ Casero · 6/.test(rec));
 
-    // Una reserva futura y un partido cancelado no cuentan como jugados.
+    // Una reserva futura y un partido cancelado no cuentan como visitas.
     const futuro = db.crearPartido({ zona: 'brena', fecha: enDias(9), cupo: 20 });
     db.inscribir(futuro, ocasional);
     const cancelado = db.crearPartido({ zona: 'brena', fecha: enDias(-9), cupo: 20 });
     db.inscribir(cancelado, ocasional);
     db.setEstadoPartido(cancelado, 'cancelado');
-    check('una reserva futura no suma como jugado', db.partidosJugadosPorNumero()[ocasional] === 5, String(db.partidosJugadosPorNumero()[ocasional]));
+    check('una reserva futura no suma como visita', db.metricasPorNumero()[ocasional].visitas === 5, String(db.metricasPorNumero()[ocasional].visitas));
+
+    // EL AGUJERO QUE ORIGINÓ TODO: los pagos de julio no tenían partido (la
+    // tabla nació el 10/08), así que contar solo inscripciones dejaba a los
+    // clientes viejos con cero. Un pago SIN partido tiene que valer una visita.
+    const viejo = '51990000023';
+    db.getOrCreateLead(viejo);
+    db.updateLead(viejo, { nombre: 'Vito Viejo', zona: 'brena' });
+    const conn = new (require('node:sqlite').DatabaseSync)(db.dbPath);
+    for (let i = 1; i <= 3; i++) {
+      const id = db.registrarPago({ numero: viejo, monto: 15, numero_operacion: `VJ-${i}`, estado: 'confirmado' });
+      conn.prepare("UPDATE pagos SET creado_en = datetime(? || ' 20:00:00') WHERE id = ?").run(enDias(-30 - i), id);
+    }
+    conn.close();
+    check('tres pagos de julio, sin ningún partido, son tres visitas',
+      db.metricasPorNumero()[viejo].visitas === 3, String(db.metricasPorNumero()[viejo].visitas));
+    const crmViejo = (await GET('/admin/leads?key=ux&vista=crm')).html;
+    check('…y en la lista aparece como "Vuelve · 3", no como Nuevo', /Vuelve · 3/.test(crmViejo));
+    check('…con su badge de frescura porque hace un mes que no viene', /Frío · 3\d d/.test(crmViejo));
 
     const fichaHab = (await GET(`/admin/leads?key=ux&numero=${habitual}`)).html;
-    check('la ficha del habitual lo dice', /recurrente/.test(fichaHab));
+    // El badge dice la relación y el texto de al lado el detalle: sin repetir
+    // la palabra "Casero" dos veces en la misma línea.
+    check('la ficha del habitual lo dice en la línea de valor',
+      /class="valor"[\s\S]*?⭐ Casero[\s\S]*?6 visitas/.test(fichaHab));
 
     const nuevos = (await GET('/admin/leads?key=ux&vista=crm&filtro=nuevos')).html;
     check('el chip Nuevos filtra por los de esta semana', /Hugo Habitual/.test(nuevos));
+  }
+
+  console.log('== 4f2 · Relación y frescura: dos ejes, cero botones ==');
+  {
+    // La ficha ya no pide declarar en qué escalón está nadie.
+    const ficha = (await GET(`/admin/leads?key=ux&numero=${L.completo}`)).html;
+    check('la ficha NO tiene botones de etapa', !/action="\/admin\/lead\/estado"/.test(ficha) && !/class="pstep/.test(ficha));
+    check('…ni la fila "Etapa" del perfil', !/>Etapa</.test(ficha));
+    check('en su lugar hay una línea de valor con visitas', /class="valor"/.test(ficha) && /visitas?/.test(ficha));
+    check('y la fila "En el grupo"', /En el grupo/.test(ficha));
+
+    // El POST viejo tiene que estar MUERTO, no solo escondido de la pantalla.
+    const zombi = await POST('/admin/lead/estado', { key: 'ux', numero: L.completo, estado: 'activo' });
+    check('POST /admin/lead/estado ya no existe (404)', zombi.status === 404, `HTTP ${zombi.status}`);
+
+    // El botón del grupo solo aparece si la zona tiene link: sin link nadie
+    // pudo haber mandado nada.
+    db.setConfig({ grouplink_comas: '' });
+    const sinLink = (await GET(`/admin/leads?key=ux&numero=${L.nuevo}`)).html;
+    check('sin link cargado no se ofrece marcar el grupo', !/Le mandé el link/.test(sinLink));
+    db.setConfig({ grouplink_brena: 'https://chat.whatsapp.com/UX-BRENA' });
+    const conLink = (await GET(`/admin/leads?key=ux&numero=${L.completo}`)).html;
+    check('con link cargado sí', /Le mandé el link/.test(conLink) || /En el grupo<\/span><span class="v" style="color:var\(--lime-ink\)">Sí/.test(conLink));
+
+    // Los siete filtros de relación existen y filtran de verdad.
+    const crm = (await GET('/admin/leads?key=ux&vista=crm')).html;
+    check('el desplegable de etapas se volvió el de relación', /<select name="rel"/.test(crm) && !/<select name="estado"/.test(crm));
+    // Las opciones del desplegable son EXACTAMENTE los conjuntos que muestra el
+    // Resumen: cada fila de allá tiene que poder abrirse acá, ni más ni menos.
+    for (const v of ['nunca', 'probo', 'vuelve', 'casero', 'al_dia', 'enfriando', 'perdido', 'en_grupo', 'sin_grupo']) {
+      check(`opción de relación "${v}"`, new RegExp(`<option value="${v}"`).test(crm));
+    }
+    const soloCaseros = await GET('/admin/leads?key=ux&vista=crm&rel=casero');
+    check('rel=casero deja marcado el desplegable', /<option value="casero" selected/.test(soloCaseros.html));
+    check('…y muestra solo a los caseros', /Hugo Habitual/.test(soloCaseros.html) && !/Elsa Espera/.test(soloCaseros.html));
+    const enGrupo = (await GET('/admin/leads?key=ux&vista=crm&rel=en_grupo')).html;
+    check('rel=en_grupo usa la fecha guardada, no una etapa', /Pablo Pagador/.test(enGrupo));
+
+    // El Resumen: dos bloques monótonos en vez de un embudo que se cruzaba.
+    const resumen = (await GET('/admin/leads?key=ux')).html;
+    check('el embudo comercial va del primer mensaje al casero', /Del primer mensaje al casero/.test(resumen));
+    check('…y sus escalones llevan al CRM filtrado por relación', /vista=crm&rel=casero/.test(resumen));
+    check('hay un bloque de salud de la base', /Salud de la base/.test(resumen));
+    check('…con los tres estados de frescura', /Al día/.test(resumen) && /Enfriándose/.test(resumen) && /Perdidos/.test(resumen));
+    // Cada fila abre EXACTAMENTE su conjunto: si "Perdidos: 120" abriera una
+    // lista de 200 porque el filtro incluye a los que recién se enfrían, sería
+    // la misma clase de mentira que se vino a sacar de encima.
+    for (const v of ['al_dia', 'enfriando', 'perdido']) {
+      check(`la fila de salud "${v}" lleva a su propio filtro`, new RegExp(`vista=crm&rel=${v}`).test(resumen));
+    }
+    const nSalud = [...resumen.matchAll(/vista=crm&rel=(al_dia|enfriando|perdido)"[\s\S]*?<span class="zval">(\d+)/g)].map((m) => Number(m[2]));
+    const nClientes = Number((resumen.match(/de los (\d+) que ya vinieron/) || [, 0])[1]);
+    check(`los tres estados suman los ${nClientes} clientes (${nSalud.join('+')})`,
+      nSalud.reduce((a, b) => a + b, 0) === nClientes, nSalud.join('+'));
+    check('ya no se muestra el escalón "Dejaron sus datos" cruzado con pagos', !/Dejaron sus datos/.test(resumen));
+
+    // Monotonía: cada escalón tiene que ser subconjunto del anterior.
+    const nums = [...resumen.matchAll(/<span class="zname">(Escribieron al número|Vinieron alguna vez|Volvieron|Caseros)[\s\S]*?<span class="zval">(\d+)/g)].map((m) => Number(m[2]));
+    check(`el embudo no crece hacia abajo: ${nums.join(' ≥ ')}`,
+      nums.length === 4 && nums.every((n, i) => i === 0 || n <= nums[i - 1]), nums.join(','));
+
+    // Los cortes de frescura se editan en Ajustes.
+    const cfg = (await GET('/admin/leads?key=ux&vista=config')).html;
+    check('Ajustes deja cambiar cuándo se enfría un jugador', /id="frescura"/.test(cfg) && /name="dias_frio"/.test(cfg));
+    const rFrio = await POST('/admin/config/general', { key: 'ux', dias_frio: '10', dias_perdido: '20' });
+    check('guardar los cortes redirige a una página viva', rFrio.status === 302 && (await GET(rFrio.location.replace(B, ''))).status === 200);
+    check('…y quedaron guardados', db.umbralesFrescura().frio === 10 && db.umbralesFrescura().perdido === 20);
+    db.setConfig({ dias_frio: '21', dias_perdido: '45' });
+  }
+
+  console.log('== 4f3 · Convocar: la lista, no el envío ==');
+  {
+    // "¿A quién le escribo para llenar el viernes en Breña?" — la pregunta que
+    // ninguna pantalla contestaba.
+    const viernes = db.crearPartido({ zona: 'brena', fecha: enDias(8), hora: '8-9pm', sede: 'Melgar UX', cupo: 14, precio: 15 });
+    const cerrada = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${viernes}`)).html;
+    check('el partido ofrece "Ver a quién convocar"', /Ver a quién convocar/.test(cerrada));
+    check('…y no lista a nadie hasta que se lo pidas', !/wa\.me\/51990000021\?text/.test(cerrada));
+
+    const abierta = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${viernes}&convocar=1`)).html;
+    check('pedida, aparece el casero de esa zona', /Hugo Habitual/.test(abierta));
+    check('…con su relación y sus visitas', /Casero · 6/.test(abierta));
+    check('…y su link de WhatsApp con el mensaje ya escrito', /wa\.me\/51990000021\?text=/.test(abierta));
+    check('el mensaje dice el día, la hora y los cupos', /Quedan%2014%20cupos/.test(abierta) || /Quedan\+14\+cupos/.test(abierta));
+    check('NO hay ningún botón de envío masivo', !/Enviar a todos/.test(abierta) && !/action="\/admin\/convocar/.test(abierta));
+    check('el de otra zona no aparece', !/Pablo Pagador/.test(abierta));
+    check('el que nunca vino tampoco', !/Elsa Espera/.test(abierta));
+
+    // Inscribirlo lo saca de la lista: no se convoca a quien ya está adentro.
+    db.inscribir(viernes, '51990000021');
+    const trasInscribir = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${viernes}&convocar=1`)).html;
+    check('inscrito, deja de ser candidato', !/wa\.me\/51990000021\?text=/.test(trasInscribir));
   }
 
   console.log('== 4g · Guardar avisa QUÉ se guardó y vuelve donde estabas ==');
@@ -465,7 +582,7 @@ const srv = app.listen(0, async () => {
     const crm = (await GET('/admin/leads?key=ux&vista=crm')).html;
     const selects = [...crm.matchAll(/<select name="(\w+)"/g)].map((m) => m[1]);
     check(`la barra tiene los desplegables: ${selects.join(' · ')}`,
-      ['filtro', 'zona', 'estado'].every((s) => selects.includes(s)), selects.join(','));
+      ['filtro', 'zona', 'rel'].every((s) => selects.includes(s)), selects.join(','));
     check('ya no quedan chips de filtro sueltos', !/fchip[^"]*" href="[^"]*&filtro=nuevos/.test(crm));
 
     // Sin JS el onchange no corre: el botón de envío es la única salida.
@@ -477,7 +594,7 @@ const srv = app.listen(0, async () => {
 
     // El texto del elegido tiene que leerse solo: cerrado es lo único visible.
     check('los option de zona dicen de qué familia son', /<option value="brena"[^>]*>Zona: Breña/.test(crm));
-    check('los de etapa también', /Etapa: en el grupo/.test(crm));
+    check('los de relación también', /Relación: casero/.test(crm));
     check('y traen el conteo para no tener que abrirlos', /Sin responder \(\d+\)/.test(crm));
 
     // Las zonas salen de zonasOperativas, no de una lista escrita a mano.
@@ -485,9 +602,9 @@ const srv = app.listen(0, async () => {
     check('…y "otra" se lee como lo que es', /Zona: sin sede cerca/.test(crm));
 
     // Llegar por URL tiene que dejar el desplegable marcado. Con los chips,
-    // entrar desde el embudo del Resumen con estado=activo filtraba la lista
-    // pero ningún chip quedaba encendido: N de 912 sin decir por qué.
-    for (const [campo, valor] of [['filtro', 'handoff'], ['zona', 'comas'], ['estado', 'activo'], ['estado', 'pago']]) {
+    // entrar desde el embudo del Resumen filtraba la lista pero ningún chip
+    // quedaba encendido: N de 912 sin decir por qué.
+    for (const [campo, valor] of [['filtro', 'handoff'], ['zona', 'comas'], ['rel', 'casero'], ['rel', 'nunca']]) {
       const r = await GET(`/admin/leads?key=ux&vista=crm&${campo}=${valor}`);
       check(`${campo}=${valor}: la página vive y el desplegable queda marcado`,
         r.status === 200 && new RegExp(`<option value="${valor}" selected`).test(r.html), `HTTP ${r.status}`);

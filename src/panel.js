@@ -5,7 +5,11 @@
  * #A3C614 = verde de sistema y de cancha):
  *   Resumen → dashboard de data (marcador-estadio, métricas, crecimiento, zonas)
  *   CRM     → lista de leads con la cola "sin responder" al frente
- *   Ficha   → perfil + pipeline + etiquetas + seguimiento + notas + chat
+ *   Ficha   → perfil + línea de valor + etiquetas + notas + chat
+ *
+ * Desde el 16/08 no hay "pipeline": la relación (Nuevo/Probó/Vuelve/Casero) y
+ * la frescura (Al día/Enfriándose/Perdido) se DERIVAN de los pagos, los
+ * partidos y los mensajes en cada carga. No hay botones de etapa que apretar.
  *
  * Rutas (todas con ?key=ADMIN_KEY; sin key → 404):
  *   GET  /admin/leads                  → Resumen (dashboard)
@@ -14,7 +18,7 @@
  *   GET  /admin/leads.csv              → export CSV
  *   GET  /admin/leads.xlsx             → export Excel (con marca, colores, autofiltro)
  *   GET  /admin/backup-db              → descarga el .db completo (backup manual)
- *   POST /admin/lead/estado            → cambia etapa del pipeline (1 toque)
+ *   POST /admin/lead/grupo             → anota que ya se le mandó el link del grupo
  *   POST /admin/lead/reactivar         → saca del handoff (el bot vuelve a atender)
  *   POST /admin/lead/etiquetas         → guarda etiquetas (separadas por coma)
  *   POST /admin/lead/nota              → agrega una nota al historial
@@ -44,15 +48,30 @@ const slugZona = (nombre) => (nombre || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
   .replace(/[^a-z]/g, '').slice(0, 24);
 
-// Pipeline (etapas) — orden y etiquetas pensadas para el flujo de Clarck.
-const ESTADOS = {
-  nuevo: 'Nuevo',
-  datos_completos: 'Completo',
-  invitado_grupo: 'En grupo',
-  activo: 'Jugador ⭐',
-  lista_espera: 'En espera',
-  inactivo: 'Inactivo 💤',
+/**
+ * RELACIÓN y FRESCURA — los dos ejes que reemplazaron a la escalera de etapas
+ * (16/08). Acá vive solo cómo se PINTAN; qué son y cómo se calculan está en
+ * db.js (metricasPorNumero / relacionDe / frescuraDe).
+ *
+ * La escalera anterior (nuevo → datos_completos → invitado_grupo → activo →
+ * lista_espera → inactivo) mezclaba "cuánto sabemos de alguien" con "qué tan
+ * cliente es" en una sola columna, y por eso mentía: quien pagaba tres veces
+ * sin registrarse figuraba "Nuevo", y 510 contactos que dejaron sus datos y
+ * nunca pagaron figuraban por encima de él. Además había que mantenerla a
+ * mano. Estos dos ejes se derivan de los hechos en cada carga: no hay botón
+ * que apretar y no se pueden desactualizar.
+ */
+const COLOR_RELACION = { nuevo: 'b-new', probo: 'b-new', vuelve: 'b-mid', casero: 'b-done' };
+/** Badge de relación: SIEMPRE presente y siempre en la misma posición, con el
+ *  número de visitas al lado — dos filas del CRM se pueden comparar de reojo. */
+const badgeRelacion = (db, m) => {
+  const clave = db.relacionDe(m.visitas);
+  const etiqueta = db.RELACIONES[clave].label;
+  return `<span class="badge ${COLOR_RELACION[clave]}">${clave === 'casero' ? '⭐ ' : ''}${etiqueta}${m.visitas ? ` · ${m.visitas}` : ''}</span>`;
 };
+// El que se está enfriando es el que TODAVÍA se recupera → ámbar (hay algo que
+// hacer). El perdido ya se fue → gris: es información, no una tarea de hoy.
+const COLOR_FRESCURA = { al_dia: 'b-done', enfriando: 'b-wait', perdido: 'b-new' };
 
 // Colores de avatar (monograma) — se elige de forma estable por número.
 const AVATARES = [
@@ -158,13 +177,22 @@ function registrarPanel(app, db, conexion = null) {
   const volverAFicha = (req, res, aviso, ancla, err) =>
     volver(res, { key: req.body.key, numero: numeroDe(req), aviso, ancla, err });
 
-  app.post('/admin/lead/estado', (req, res) => {
+  /**
+   * "Le mandé el link del grupo" — el ÚNICO botón de mantenimiento que quedó.
+   *
+   * Reemplaza a los seis botones de etapa. Sobrevivió porque es el único hecho
+   * que ningún dato de la BD puede reconstruir: cuando Clarck suma a alguien al
+   * grupo desde su celular, en el sistema no queda rastro. Todo lo demás
+   * (relación, frescura, si tiene datos) sale de los pagos, los partidos y las
+   * columnas del contacto, y por eso ya no se toca a mano.
+   */
+  app.post('/admin/lead/grupo', (req, res) => {
     if (!autorizado(req, res)) return;
     const numero = numeroDe(req);
-    const estado = ESTADOS[req.body.estado] ? req.body.estado : null;
-    if (!estado) return volverAFicha(req, res, 'Esa etapa no existe.', 'etapa', true);
-    db.setEstado(numero, estado);
-    volverAFicha(req, res, `${nombreLead(numero)} ahora está en "${ESTADOS[estado]}".`, 'etapa');
+    const marcado = db.marcarGrupoEnviado(numero);
+    volverAFicha(req, res, marcado
+      ? `Anotado: a ${nombreLead(numero)} ya se le mandó el link del grupo.`
+      : `A ${nombreLead(numero)} ya estaba anotado como que recibió el link.`, 'grupo');
   });
 
   app.post('/admin/lead/reactivar', (req, res) => {
@@ -203,16 +231,23 @@ function registrarPanel(app, db, conexion = null) {
   });
 
   // --- Export CSV ----------------------------------------------------------------
+  // La columna "estado" salió del export: quedó congelada el 16/08 y exportarla
+  // sería repartir un dato que ya no se escribe. En su lugar van los tres que
+  // sí se leen hoy: relación, visitas y cuándo vino por última vez.
   app.get('/admin/leads.csv', (req, res) => {
     if (!autorizado(req, res)) return;
-    const filas = db.listLeads().map((l) =>
-      [l.numero, l.nombre, l.edad, l.distrito, l.zona, l.estado, l.handoff, l.handoff_motivo, l.etiquetas, l.creado_en]
-        .map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`)
-        .join(',')
-    );
+    const met = db.metricasPorNumero();
+    const filas = db.listLeads().map((l) => {
+      const m = met[l.numero] || { visitas: 0, ultima: null, pagos: 0, soles: 0 };
+      return [
+        l.numero, l.nombre, l.edad, l.distrito, l.zona,
+        db.RELACIONES[db.relacionDe(m.visitas)].label, m.visitas, m.ultima, m.soles,
+        l.grupo_enviado_en, l.handoff, l.handoff_motivo, l.etiquetas, l.creado_en,
+      ].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',');
+    });
     res.set('Content-Type', 'text/csv; charset=utf-8');
     res.set('Content-Disposition', 'attachment; filename="pichangueros-leads.csv"');
-    res.send(['numero,nombre,edad,distrito,zona,estado,handoff,handoff_motivo,etiquetas,creado_en', ...filas].join('\n'));
+    res.send(['numero,nombre,edad,distrito,zona,relacion,visitas,ultima_vez,soles,grupo_enviado_en,handoff,handoff_motivo,etiquetas,creado_en', ...filas].join('\n'));
   });
 
   // Export Excel — bonito y de marca (vs. el CSV plano), mismos datos.
@@ -912,6 +947,11 @@ const ESTILOS = `
   .lsub{font-size:var(--t-s);color:var(--ink-2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
   .lmeta{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:0 0 auto;margin-left:10px}
   .ltime{font-size:var(--t-xs);color:var(--ink-3);white-space:nowrap}
+  /* Los dos badges de la fila van SIEMPRE en el mismo orden (relación, después
+     atención): antes era un if-else de seis ramas donde ganaba el que pegaba
+     primero, así que dos filas no se podían comparar de un vistazo. Envuelven
+     en 360px en vez de estirar la fila: el nombre no se puede comer. */
+  .lbadges{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
 
   /* Badges de estado. 12px (eran 10, ilegibles de noche) y con BORDE del color
      de su tinta: el borde da una segunda señal además del relleno, para que se
@@ -922,6 +962,9 @@ const ESTILOS = `
   .b-hand{background:var(--st-alerta-bg);color:var(--st-alerta-ink);border-color:var(--st-alerta-ink)}
   .b-done{background:var(--st-ok-bg);color:var(--st-ok-ink);border-color:var(--st-ok-ink)}
   .b-new{background:var(--st-off-bg);color:var(--st-off-ink);border-color:var(--st-off-ink)}
+  /* Escalón del medio de la relación (Vuelve): entre el gris del que recién
+     probó y el verde del casero, para que la rampa se lea como rampa. */
+  .b-mid{background:var(--st-lleno-bg);color:var(--st-lleno-ink);border-color:var(--st-lleno-ink)}
   .b-zona{color:#fff;border-color:transparent}
 
   /* Chip de estado con glifo puesto por CSS: para los estados que hoy se
@@ -963,20 +1006,20 @@ const ESTILOS = `
   .fhead h2{font-size:21px;font-weight:700;letter-spacing:-.01em}
   .fnum{font-size:var(--t-m);color:var(--ink-2);margin-top:2px}
   .fpills{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap;justify-content:center}
+  /* Línea de valor de la ficha: quién es este tipo para el negocio, en una
+     línea. Ocupa el lugar de los seis botones de etapa. */
+  .valor{display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:10px;
+    padding:10px 12px;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r2)}
+  .valor .vtxt{font-size:var(--t-s);color:var(--ink-2);font-weight:600}
   .pz{display:inline-flex;align-items:center;font-size:var(--t-xs);font-weight:700;padding:6px 12px;border-radius:var(--rp);color:#fff}
 
   .group{background:var(--surface);border:1px solid var(--line);border-radius:var(--r3);overflow:hidden;box-shadow:var(--sombra)}
   .grow{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:var(--tap);padding:12px 15px;border-bottom:1px solid var(--line);font-size:var(--t-m)}
   .grow:last-child{border-bottom:none}
   .grow .k{color:var(--ink-2)} .grow .v{font-weight:600;text-align:right}
-  /* Las 6 etapas del pipeline eran botones de 31px pegados con 6px de gap: un
-     toque de más y cambiabas la etapa equivocada. 44px y 8px de separación. */
-  .pipe{display:flex;gap:var(--s2);flex-wrap:wrap;padding:13px 14px}
-  .pstep{display:inline-flex;align-items:center;justify-content:center;min-height:var(--tap);
-    font-family:inherit;font-size:var(--t-s);font-weight:600;padding:0 14px;border-radius:var(--rp);
-    background:var(--surface-2);color:var(--ink-2);border:1.5px solid var(--line-strong);cursor:pointer}
-  .pstep.on{background:var(--navy-fill);color:#fff;border-color:var(--navy-fill);font-weight:700}
-  .pstep.on::before{content:"✓ ";font-weight:800}
+  /* Acá vivían .pipe/.pstep, los seis botones de etapa de la ficha. Se fueron
+     con la escalera (16/08): mantener el CRM a mano —quince toques por semana,
+     uno por contacto— no iba a pasar, y por eso la etapa mentía. */
 
   /* 16px y 44px de alto en todos los campos: por debajo de 16px iOS amplía la
      página al enfocar y la deja ampliada, con scroll horizontal — lo peor que
@@ -1252,17 +1295,6 @@ const sidebar = (key, activo) => `<aside class="sidebar">
   </div>
 </aside>`;
 
-function badges(l, sinResponder) {
-  const z = ZONAS[l.zona];
-  const tags = (l.etiquetas || '').split(',').filter(Boolean);
-  return `
-    ${l.handoff ? `<span class="badge b-hand">🔔 ${esc(l.handoff_motivo || 'derivado')}</span>` : ''}
-    ${sinResponder ? '<span class="badge b-wait">📥 sin responder</span>' : ''}
-    ${z ? `<span class="badge b-zona" style="background:${z.color}">${z.nombre}</span>` : ''}
-    <span class="badge b-new">${esc(ESTADOS[l.estado] || l.estado)}</span>
-    ${tags.map((t) => `<span class="badge b-new">${esc(t)}</span>`).join('')}`;
-}
-
 // ==============================================================================
 //  Vista 1 · RESUMEN (dashboard)
 // ==============================================================================
@@ -1287,6 +1319,10 @@ function paginaResumen(db, key, query = {}) {
   const roles = db.ultimosRoles();
   const sinResp = (l) => sinResponder(roles, l);
   const hoy = hoyLima();
+  // Las mismas dos consultas que usa el CRM: relación y frescura de todos.
+  const met = db.metricasPorNumero();
+  const um = db.umbralesFrescura();
+  const mDe = (l) => met[l.numero] || { visitas: 0, ultima: null, pagos: 0, soles: 0 };
 
   // Altas por día (últimos 14, terminando hoy Lima).
   const porDia = {};
@@ -1349,30 +1385,43 @@ function paginaResumen(db, key, query = {}) {
       : `<div class="zrow">${inner}</div>`;
   };
 
-  // Demanda por distrito (zona 'otra' = lista de espera): ¿dónde conviene abrir?
-  // Agrupa el distrito de texto libre normalizado (minúsculas, sin tildes).
-  const UMBRAL_PILOTO = 28; // ~2 pichangas llenas (14 c/u) → distrito candidato a piloto
+  /**
+   * ¿Dónde abrir? — demanda por distrito SIN sede, medida en PAGADORES.
+   *
+   * Antes contaba contactos: los 510 que dejaron sus datos y nunca pagaron le
+   * metían ruido a la única señal que importa acá. Un interesado dice "me
+   * gustaría"; alguien que ya viajó a otro distrito y yapeó dice "voy a ir".
+   * Un distrito con 6 que pagaron pesa más que uno con 60 que preguntaron.
+   *
+   * El interés se sigue mostrando al costado —es lo que da volumen a futuro—
+   * pero ordena y decide la plata.
+   */
+  const UMBRAL_PILOTO = 7; // media pichanga (14 cupos) de gente que YA pagó viajando
   const desde30 = fechaLima(-29);
   const dd = {};
   for (const l of todos) {
     if (l.zona !== 'otra' || !(l.distrito || '').trim()) continue;
     const k = normTexto(l.distrito);
-    if (!dd[k]) dd[k] = { k, nombre: l.distrito.trim().toLowerCase().replace(/(^|\s)\p{L}/gu, (c) => c.toUpperCase()), n: 0, mes: 0 };
+    if (!dd[k]) dd[k] = { k, nombre: l.distrito.trim().toLowerCase().replace(/(^|\s)\p{L}/gu, (c) => c.toUpperCase()), n: 0, pagadores: 0, mes: 0 };
     dd[k].n++;
+    if (mDe(l).pagos > 0) dd[k].pagadores++;
     if ((l.creado_en || '').slice(0, 10) >= desde30) dd[k].mes++;
   }
-  const distritos = Object.values(dd).sort((a, b) => b.n - a.n).slice(0, 8);
-  const maxD = Math.max(1, ...distritos.map((d) => d.n));
+  // Solo distritos con al menos un pagador: una lista de nombres con cero plata
+  // adentro no ayuda a decidir dónde alquilar una cancha.
+  const distritos = Object.values(dd).filter((d) => d.pagadores > 0)
+    .sort((a, b) => b.pagadores - a.pagadores || b.n - a.n).slice(0, 8);
+  const maxD = Math.max(1, ...distritos.map((d) => d.pagadores));
   const drow = (d) => {
-    const listo = d.n >= UMBRAL_PILOTO;
+    const listo = d.pagadores >= UMBRAL_PILOTO;
     // El lima puro sobre blanco da 1.97:1: como relleno de un punto de 11px y de
     // una barra de 8px, prácticamente no se ve. Va la versión --lime-fill (3.16:1),
     // que es el mismo verde con el peso justo para leerse.
     const color = listo ? 'var(--lime-fill)' : 'var(--st-off-solid)';
     return `<a class="zrow" href="/admin/leads?key=${key}&vista=crm&distrito=${encodeURIComponent(d.k)}"><span class="zdot" style="background:${color}"></span>
       <span class="zname">${esc(d.nombre)}${listo ? ' 🔥' : ''}</span>
-      <span class="ztrack"><i style="width:${Math.max(3, Math.round((d.n / maxD) * 100))}%;background:${color}"></i></span>
-      <span class="zval">${d.n}${d.mes ? ` <small style="color:var(--ink-3);font-weight:400">+${d.mes} este mes</small>` : ''}</span></a>`;
+      <span class="ztrack"><i style="width:${Math.max(3, Math.round((d.pagadores / maxD) * 100))}%;background:${color}"></i></span>
+      <span class="zval">${d.pagadores} <small style="color:var(--ink-3);font-weight:400">pagaron · ${d.n} interesados</small></span></a>`;
   };
 
   // Cada barra es un link: toca un día → CRM filtrado a los contactos de ese día.
@@ -1390,18 +1439,43 @@ function paginaResumen(db, key, query = {}) {
       <span class="bd${esHoy ? ' bhoy' : ''}">${etiqueta}</span></a>`;
   }).join('');
 
-  // Embudo: en qué paso del camino está cada contacto (primer mensaje → pago).
-  const conDatos = todos.filter((l) => l.estado && l.estado !== 'nuevo').length;
-  const invitados = todos.filter((l) => l.estado === 'invitado_grupo').length;
-  const enEspera = todos.filter((l) => l.estado === 'lista_espera').length;
-  const nPagadores = db.pagadores ? db.pagadores() : 0;
+  /**
+   * EMBUDO COMERCIAL — cuatro escalones, cada uno SUBCONJUNTO del anterior.
+   *
+   * El de antes no era un embudo: "dejaron sus datos" y "pagaron por Yape" se
+   * cruzan (hay quien paga sin registrarse y quien se registra sin pagar), así
+   * que las barras no se podían leer como una escalera — un escalón podía ser
+   * más ancho que el de arriba. Estos cuatro se miden todos con la MISMA
+   * métrica (visitas), y por construcción cada uno está adentro del anterior.
+   *
+   * "Cuánto sabemos de alguien" no va acá: es el otro eje. Vive en la ficha y
+   * en la columna Datos del Sheet.
+   */
+  const visitasDe = (l) => mDe(l).visitas;
+  const vinieron = todos.filter((l) => visitasDe(l) >= 1).length;
+  const volvieron = todos.filter((l) => visitasDe(l) >= 2).length;
+  const caseros = todos.filter((l) => visitasDe(l) >= db.RECURRENTE_DESDE).length;
+
+  // SALUD DE LA BASE — sobre los que ya vinieron alguna vez: son los únicos que
+  // se pueden perder. Meter acá a los 510 que nunca pagaron taparía la señal
+  // con gente que nunca fue cliente.
+  const clientes = todos.filter((l) => visitasDe(l) >= 1);
+  const salud = { al_dia: 0, enfriando: 0, perdido: 0 };
+  for (const l of clientes) {
+    const f = db.frescuraDe(db.diasDesde(mDe(l).ultima), um);
+    if (f) salud[f]++;
+  }
   const pct = (n) => (todos.length ? Math.round((n / todos.length) * 100) : 0);
-  // Cada escalón del embudo lleva al CRM con ESA gente filtrada.
-  const frow = (nombre, n, color, detalle, filtroUrl) =>
+  const pctCli = (n) => (clientes.length ? Math.round((n / clientes.length) * 100) : 0);
+  // Cada escalón del embudo lleva al CRM con ESA gente filtrada. El porcentaje
+  // es sobre el total del bloque (contactos en el embudo, clientes en salud):
+  // mezclar bases haría que dos barras del mismo largo signifiquen cosas
+  // distintas.
+  const frow = (nombre, n, color, detalle, filtroUrl, base = pct) =>
     `<a class="zrow" href="/admin/leads?key=${key}&vista=crm${filtroUrl || ''}"><span class="zdot" style="background:${color}"></span>
       <span class="zname">${nombre}${detalle ? ` <small style="color:var(--ink-2);font-weight:400">${detalle}</small>` : ''}</span>
-      <span class="ztrack"><i style="width:${Math.max(3, pct(n))}%;background:${color}"></i></span>
-      <span class="zval">${n} <small style="color:var(--ink-2);font-weight:400">${pct(n)}%</small></span></a>`;
+      <span class="ztrack"><i style="width:${Math.max(3, base(n))}%;background:${color}"></i></span>
+      <span class="zval">${n} <small style="color:var(--ink-2);font-weight:400">${base(n)}%</small></span></a>`;
 
   // El banner refleja el modo real del bot (misma lectura de env que index.js).
   const modoSeguro = (process.env.SAFE_MODE || 'true') !== 'false';
@@ -1536,9 +1610,10 @@ function paginaResumen(db, key, query = {}) {
       </div>
 
       ${distritos.length ? `
-      <div class="shdr">¿Dónde abrir? · demanda por distrito</div>
+      <div class="shdr">¿Dónde abrir? · distritos sin sede, por gente que YA pagó</div>
       <div class="zlist">${distritos.map(drow).join('')}</div>
-      <div class="foot" style="padding:8px 2px 0">Referencia: ${UMBRAL_PILOTO}+ interesados ≈ 2 pichangas llenas → 🔥 candidato a piloto.</div>` : ''}
+      <div class="foot" style="padding:8px 2px 0">Ordena la plata, no el interés: son personas de ese distrito que viajaron a otra zona y yaparon.
+        ${UMBRAL_PILOTO}+ (media cancha) → 🔥 candidato a piloto.</div>` : ''}
 
       </div>
       <div class="dcol">
@@ -1555,20 +1630,27 @@ function paginaResumen(db, key, query = {}) {
         <div class="mfoot"><span style="color:var(--on-navy-ok)">■ Nuevos</span> · <span style="color:var(--on-navy-rec)">■ Recurrentes</span> — toca una barra para ver ese día. Solo chats directos.</div>
       </div>
 
-      <div class="shdr">Pipeline · del primer mensaje al pago <small>· toca para ver quiénes</small></div>
+      <div class="shdr">Del primer mensaje al casero <small>· toca para ver quiénes</small></div>
       <div class="zlist">
-        ${/* El embudo usaba el azul y el violeta de iOS (#0a84ff, #5e5ce6) en un
-              panel lima/navy: cinco colores de tres sistemas distintos para una
-              sola escalera. Ahora es UNA rampa de marca, de navy (todos los que
-              escriben) a lima (los que pagan), y el ámbar marca el único escalón
-              que es una espera, no un avance. */ ''}
+        ${/* Una rampa de marca: de navy (todos los que escriben) a lima (los
+              caseros). Cada escalón está ADENTRO del anterior — se puede leer
+              como una escalera porque los cuatro se miden con lo mismo. */ ''}
         ${frow('Escribieron al número', todos.length, 'var(--navy-fill)', '', '')}
-        ${frow('Dejaron sus datos', conDatos, 'var(--navy-2)', 'nombre · edad · distrito', '&estado=con_datos')}
-        ${frow('Invitados al grupo', invitados, 'var(--ramp-mid)', 'Breña / Comas', '&estado=invitado_grupo')}
-        ${frow('Lista de espera', enEspera, 'var(--st-debe-solid)', 'otras zonas', '&estado=lista_espera')}
-        ${frow('Pagaron por Yape', nPagadores, 'var(--lime-fill)', '', '&estado=pago')}
+        ${frow('Vinieron alguna vez', vinieron, 'var(--navy-2)', '1+ visita', '&rel=probo')}
+        ${frow('Volvieron', volvieron, 'var(--ramp-mid)', '2+ visitas', '&rel=vuelve')}
+        ${frow('Caseros', caseros, 'var(--lime-fill)', `${db.RECURRENTE_DESDE}+ visitas`, '&rel=casero')}
       </div>
-      <div class="foot" style="padding:8px 2px 0">"Escribieron" cuenta a <b>todos</b> los que chatean al número (también conocidos y jugadores antiguos), no solo interesados nuevos.</div>
+      <div class="foot" style="padding:8px 2px 0">Una <b>visita</b> = un día con Yape confirmado o con partido jugado. Un Yape de S/30 por dos cupos es una visita con un amigo, no dos.
+        Ojo: los escalones 2 a 4 llevan al CRM filtrado por ESE tramo (solo los de 1 visita, solo los de 2 a 5…), no al acumulado.</div>
+
+      ${clientes.length ? `
+      <div class="shdr">Salud de la base <small>· de los ${clientes.length} que ya vinieron</small></div>
+      <div class="zlist">
+        ${frow('Al día', salud.al_dia, 'var(--lime-fill)', `vinieron hace ${um.frio} días o menos`, '&rel=al_dia', pctCli)}
+        ${frow('Enfriándose', salud.enfriando, 'var(--st-debe-solid)', `entre ${um.frio + 1} y ${um.perdido} días`, '&rel=enfriando', pctCli)}
+        ${frow('Perdidos', salud.perdido, 'var(--st-off-solid)', `más de ${um.perdido} días sin venir`, '&rel=perdido', pctCli)}
+      </div>
+      <div class="foot" style="padding:8px 2px 0">Los cortes se cambian en <a href="/admin/leads?key=${key}&vista=config#frescura" style="color:var(--lime-ink)">Ajustes</a>. El que se está enfriando todavía vuelve con un mensaje; el perdido ya se fue a otra pichanga.</div>` : ''}
 
 
       </div>
@@ -1759,7 +1841,18 @@ function paginaCRM(db, key, query) {
   const sinResp = (l) => sinResponder(roles, l);
   const hoy = hoyLima();
 
-  const jugadosPor = db.partidosJugadosPorNumero();
+  // UNA sola lectura de las métricas para toda la lista (dos consultas), no una
+  // por fila: acá se pintan cientos de contactos.
+  const met = db.metricasPorNumero();
+  const um = db.umbralesFrescura();
+  const mDe = (l) => met[l.numero] || { visitas: 0, ultima: null, pagos: 0, soles: 0 };
+  // Frescura: días desde la última visita; si nunca vino, desde su último
+  // mensaje (para un lead que nunca pagó, "hace cuánto no se sabe de él" es lo
+  // único que se puede medir). Sin ninguna de las dos, su alta.
+  const refDe = (l) => mDe(l).ultima || (roles[l.numero] || {}).en || l.actualizado_en || l.creado_en;
+  const diasDe = (l) => db.diasDesde(refDe(l));
+  const frescuraLead = (l) => db.frescuraDe(diasDe(l), um);
+
   const q = (query.q || '').trim().toLowerCase();
   // Las zonas se crean desde Ajustes: si el filtro solo aceptara las cinco
   // escritas a mano, un distrito nuevo (San Borja) se ignoraría en silencio y
@@ -1767,7 +1860,11 @@ function paginaCRM(db, key, query) {
   const zonasVivas = [...db.zonasOperativas(), 'otra'];
   const zona = zonasVivas.includes(query.zona) ? query.zona : '';
   const filtro = query.filtro || '';
-  const estadoF = Object.keys(ESTADOS).includes(query.estado) || ['pago', 'con_datos'].includes(query.estado) ? query.estado : '';
+  // El filtro de ETAPA (8 opciones, la mitad en cero por definición) pasó a ser
+  // el de RELACIÓN. Parámetro nuevo (`rel`) y no reciclado: `estado=activo` de
+  // un link viejo querría decir otra cosa, y es mejor ignorarlo que mentir.
+  const RELACION_FILTROS = ['nunca', 'probo', 'vuelve', 'casero', 'al_dia', 'enfriando', 'perdido', 'en_grupo', 'sin_grupo'];
+  const relF = RELACION_FILTROS.includes(query.rel) ? query.rel : '';
   const dia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
   const distritoF = normTexto(query.distrito || '');
   let leads = todos;
@@ -1775,9 +1872,10 @@ function paginaCRM(db, key, query) {
   if (zona) leads = leads.filter((l) => l.zona === zona);
   if (filtro === 'handoff') leads = leads.filter((l) => l.handoff);
   if (filtro === 'responder') leads = leads.filter(sinResp);
-  // Recurrente = más de 5 partidos jugados (definición de Clarck). Nuevo = llegó
-  // esta semana, la misma ventana que usa "Esta semana" en el Resumen.
-  if (filtro === 'recurrentes') leads = leads.filter((l) => (jugadosPor[l.numero] || 0) >= db.RECURRENTE_DESDE);
+  // Casero = 6+ visitas (el "más de 5 partidos" de Clarck, ahora medido con la
+  // métrica que sí tiene historia). Nuevo = llegó esta semana, la misma ventana
+  // que usa "Esta semana" en el Resumen.
+  if (filtro === 'recurrentes') leads = leads.filter((l) => db.relacionDe(mDe(l).visitas) === 'casero');
   if (filtro === 'nuevos') leads = leads.filter((l) => (l.creado_en || '').slice(0, 10) >= fechaLima(-6));
   // Filtro por día: TODOS los que escribieron ese día (no solo los nuevos),
   // distinguibles entre nuevos (se registraron ese día) y recurrentes.
@@ -1790,18 +1888,30 @@ function paginaCRM(db, key, query) {
     if (tipo === 'recurrentes') leads = leads.filter((l) => !esNuevoEse(l));
   }
   if (distritoF) leads = leads.filter((l) => normTexto(l.distrito) === distritoF);
-  // Se sube acá porque lo usan dos cosas: el filtro "pagaron" y el conteo del
-  // desplegable de etapa. Antes se consultaba dentro del if y había que
-  // repetir la query para poder contar.
-  const pagaronSet = new Set(db.numerosPagadores());
-  if (estadoF === 'pago') {
-    leads = leads.filter((l) => pagaronSet.has(l.numero));
-  } else if (estadoF === 'con_datos') {
-    leads = leads.filter((l) => l.estado && l.estado !== 'nuevo');
-  } else if (estadoF) {
-    leads = leads.filter((l) => l.estado === estadoF);
-  }
-  const hayFiltro = Boolean(q || zona || filtro || estadoF || dia || distritoF);
+  /**
+   * Las nueve opciones de RELACIÓN, que son EXACTAMENTE los dos bloques del
+   * Resumen: los cuatro escalones del embudo y los tres de salud de la base,
+   * más el hecho del grupo. Espejo a propósito: cada fila del Resumen lleva a
+   * su conjunto y a nada más — si "Perdidos: 120" abriera una lista de 200
+   * porque el filtro incluye a los que recién se enfrían, sería el mismo tipo
+   * de mentira que se vino a sacar de encima.
+   *
+   * Los tres de frescura son sobre CLIENTES (visitas ≥ 1): al que nunca vino
+   * no se lo puede perder.
+   */
+  const PRED_REL = {
+    nunca: (l) => mDe(l).visitas === 0,
+    probo: (l) => db.relacionDe(mDe(l).visitas) === 'probo',
+    vuelve: (l) => db.relacionDe(mDe(l).visitas) === 'vuelve',
+    casero: (l) => db.relacionDe(mDe(l).visitas) === 'casero',
+    al_dia: (l) => mDe(l).visitas >= 1 && db.frescuraDe(db.diasDesde(mDe(l).ultima), um) === 'al_dia',
+    enfriando: (l) => mDe(l).visitas >= 1 && db.frescuraDe(db.diasDesde(mDe(l).ultima), um) === 'enfriando',
+    perdido: (l) => mDe(l).visitas >= 1 && db.frescuraDe(db.diasDesde(mDe(l).ultima), um) === 'perdido',
+    en_grupo: (l) => Boolean(l.grupo_enviado_en),
+    sin_grupo: (l) => !l.grupo_enviado_en,
+  };
+  if (relF) leads = leads.filter(PRED_REL[relF]);
+  const hayFiltro = Boolean(q || zona || filtro || relF || dia || distritoF);
 
   // Distritos existentes (texto libre normalizado) para el selector.
   const ddCrm = {};
@@ -1828,7 +1938,7 @@ function paginaCRM(db, key, query) {
 
   // Los filtros COMBINAN (no se pisan): esto reconstruye la URL cambiando uno.
   const qsCrm = (over) => {
-    const p = { q: query.q || '', zona, filtro, estado: estadoF, dia, tipo, distrito: distritoF, ...over };
+    const p = { q: query.q || '', zona, filtro, rel: relF, dia, tipo, distrito: distritoF, ...over };
     return Object.entries(p).filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('');
   };
 
@@ -1856,7 +1966,7 @@ function paginaCRM(db, key, query) {
   // 1 · ATENCIÓN — por qué mirarías a alguien HOY. Es la familia más usada, va primera.
   const opcAtencion = [
     ['nuevos', '🌱 Solo nuevos (esta semana)', nPor((l) => (l.creado_en || '').slice(0, 10) >= fechaLima(-6))],
-    ['recurrentes', '⭐ Solo recurrentes', nPor((l) => (jugadosPor[l.numero] || 0) >= db.RECURRENTE_DESDE)],
+    ['recurrentes', '⭐ Solo caseros', nPor((l) => db.relacionDe(mDe(l).visitas) === 'casero')],
     ['responder', '📥 Sin responder', nPor(sinResp)],
     ['handoff', '🔔 Derivados a Clarck', nPor((l) => l.handoff)],
   ];
@@ -1870,60 +1980,75 @@ function paginaCRM(db, key, query) {
     z, `Zona: ${z === 'otra' ? 'sin sede cerca' : db.nombreDeZona(z)}`, cZona[z] || 0,
   ]);
 
-  // 3 · ETAPA — las OCHO que el filtro acepta (línea del estadoF), no las cinco
-  // que mostraban los chips. Con los chips, entrar desde el embudo del Resumen
-  // con estado=activo filtraba la lista pero ningún chip quedaba marcado: la
-  // pantalla mostraba 12 contactos "de 912" sin decir por qué.
-  const opcEtapa = [
-    ['nuevo', 'Etapa: sin datos aún', nPor((l) => l.estado === 'nuevo')],
-    ['con_datos', 'Etapa: dejaron sus datos', nPor((l) => l.estado && l.estado !== 'nuevo')],
-    ['datos_completos', 'Etapa: datos completos', nPor((l) => l.estado === 'datos_completos')],
-    ['invitado_grupo', 'Etapa: en el grupo', nPor((l) => l.estado === 'invitado_grupo')],
-    ['activo', 'Etapa: jugador activo', nPor((l) => l.estado === 'activo')],
-    ['lista_espera', 'Etapa: en lista de espera', nPor((l) => l.estado === 'lista_espera')],
-    ['inactivo', 'Etapa: inactivo', nPor((l) => l.estado === 'inactivo')],
-    ['pago', '💰 Etapa: pagaron alguna vez', nPor((l) => pagaronSet.has(l.numero))],
+  // 3 · RELACIÓN — reemplaza al desplegable de ETAPA, que ofrecía ocho opciones
+  // de las cuales la mitad daba cero por construcción ("lista_espera" e
+  // "inactivo" no los escribía ningún código). Estas salen de hechos, no de una
+  // columna que alguien tenía que mantener, y son las mismas que el Resumen.
+  const opcRelacion = [
+    ['nunca', 'Relación: nunca pagó', nPor(PRED_REL.nunca)],
+    ['probo', 'Relación: probó (1 visita)', nPor(PRED_REL.probo)],
+    ['vuelve', 'Relación: vuelve (2 a 5)', nPor(PRED_REL.vuelve)],
+    ['casero', `Relación: casero (${db.RECURRENTE_DESDE}+)`, nPor(PRED_REL.casero)],
+    ['al_dia', `✓ Al día (vinieron hace ≤${um.frio} d)`, nPor(PRED_REL.al_dia)],
+    ['enfriando', `❄ Se enfrió (${um.frio + 1} a ${um.perdido} d sin venir)`, nPor(PRED_REL.enfriando)],
+    ['perdido', `💤 Perdidos (+${um.perdido} d sin venir)`, nPor(PRED_REL.perdido)],
+    ['en_grupo', '👥 En el grupo', nPor(PRED_REL.en_grupo)],
+    ['sin_grupo', 'Sin grupo todavía', nPor(PRED_REL.sin_grupo)],
   ];
 
   const opcDistrito = distritosCrm.map(([k, d]) => [k, `📍 ${d.label}`, d.n]);
 
+  /**
+   * Fila del CRM: DOS badges de posición fija.
+   *
+   * 1. RELACIÓN, siempre ("Casero · 9"). Está en todas las filas, así que dos
+   *    filas se pueden comparar: eso es lo que hace útil una lista.
+   * 2. ATENCIÓN, solo si aplica (Clarck / Sin responder / Frío · 47 d).
+   *
+   * Antes era un if-else de seis ramas —handoff, sin responder, recurrente, en
+   * espera, etapa, zona— donde ganaba el que pegaba primero: una fila mostraba
+   * su etapa, la de al lado su zona, y nada se podía comparar con nada. La
+   * atención sigue siendo excluyente entre sí (si está derivado a Clarck, eso
+   * es lo que hay que saber), pero ya no compite con la relación.
+   */
   const fila = (l) => {
     const sr = sinResp(l);
-    const z = ZONAS[l.zona];
-    const ultima = db.getHistory(l.numero, 1)[0];
+    const m = mDe(l);
+    const ultimo = db.getHistory(l.numero, 1)[0];
     const sub = l.handoff ? esc(l.handoff_motivo || 'derivado a Clarck')
-      : ultima && ultima.rol === 'user' ? `"${esc((ultima.texto || '').slice(0, 40))}"`
+      : ultimo && ultimo.rol === 'user' ? `"${esc((ultimo.texto || '').slice(0, 40))}"`
       : [l.distrito ? esc(l.distrito) : null, l.edad ? `${l.edad} años` : null].filter(Boolean).join(' · ') || 'sin datos aún';
-    const nJug = jugadosPor[l.numero] || 0;
-    const badge = l.handoff ? '<span class="badge b-hand">🔔 Clarck</span>'
-      : sr ? '<span class="badge b-wait">sin responder</span>'
-      : nJug >= db.RECURRENTE_DESDE ? `<span class="badge b-done">⭐ ${nJug} partidos</span>`
-      : l.estado === 'lista_espera' ? '<span class="badge b-new">en espera</span>'
-      : l.estado && l.estado !== 'nuevo' ? `<span class="badge b-done">${esc(ESTADOS[l.estado] || l.estado)}</span>`
-      : z ? `<span class="badge b-zona" style="background:${z.color}">${z.nombre}</span>` : '';
+    const fresc = frescuraLead(l);
+    const dias = diasDe(l);
+    const atencion = l.handoff ? '<span class="badge b-hand">🔔 Clarck</span>'
+      : sr ? '<span class="badge b-wait">Sin responder</span>'
+      : fresc && fresc !== 'al_dia'
+        ? `<span class="badge ${COLOR_FRESCURA[fresc]}">${db.FRESCURAS[fresc].corto} · ${dias} d</span>`
+        : '';
     return `<a class="lrow" href="/admin/leads?key=${key}&numero=${esc(l.numero)}">
       ${(l.handoff || sr) ? '<span class="dotnew" style="background:' + (l.handoff ? 'var(--st-alerta-solid)' : 'var(--st-debe-solid)') + '"></span>' : ''}
       <span class="ava" style="background:${avatarColor(l.numero)}">${esc(iniciales(l.nombre, l.numero))}</span>
       <span class="lbody"><span class="lname">${esc(l.nombre || 'Sin nombre')}</span><span class="lsub">${sub}</span></span>
-      <span class="lmeta"><span class="ltime">${horaCorta(l.actualizado_en)}</span>${badge}</span>
+      <span class="lmeta"><span class="ltime">${horaCorta(l.actualizado_en)}</span>
+        <span class="lbadges">${badgeRelacion(db, m)}${atencion}</span></span>
       ${SVG.chev}</a>`;
   };
 
   const grupo = (titulo, arr) => arr.length
     ? `<div class="shdr">${titulo} · ${arr.length}</div><div class="llist">${arr.map(fila).join('')}</div>` : '';
 
-  // Seguimientos vencidos o de hoy, arriba de todo (propuesta v2). Estaban solo
-  // detrás de un chip: si nadie lo tocaba, la promesa de "llamar a este el
-  // jueves" se perdía. Es lo único de la pantalla con fecha de vencimiento.
-
-  // Con filtro de día, la agrupación útil es nuevos vs recurrentes de ese día.
+  // Con filtro de día, la agrupación útil es quién escribió por primera vez ese
+  // día y quién ya estaba. Ojo con la palabra: acá "ya estaban registrados" es
+  // sobre MENSAJES, no sobre visitas — el que vuelve a jugar es "Vuelve"/
+  // "Casero" y eso es el otro eje. Por eso el rótulo dice registrados y no
+  // recurrentes, aunque el parámetro de la URL siga llamándose así.
   const lista = dia
     ? (leads.length
-      ? grupo('🟢 Nuevos ese día', leads.filter(esNuevoEse)) + grupo('🔵 Recurrentes · ya estaban registrados', leads.filter((l) => !esNuevoEse(l)))
+      ? grupo('🟢 Nuevos ese día', leads.filter(esNuevoEse)) + grupo('🔵 Ya estaban registrados', leads.filter((l) => !esNuevoEse(l)))
       : '<p class="vacio">Nadie escribió ese día ⚽</p>')
     : ((urgentes.length || resto.length)
       ? grupo('Necesitan tu atención ahora', urgentes) + grupo('Todos los contactos', resto)
-      : `<p class="vacio">${Object.keys(query).some((k) => ['filtro', 'zona', 'estado', 'distrito', 'q'].includes(k))
+      : `<p class="vacio">${Object.keys(query).some((k) => ['filtro', 'zona', 'rel', 'distrito', 'q'].includes(k))
           ? 'Ningún pichanguero calza con este filtro ⚽<br><a style="color:var(--lime-ink);font-weight:600" href="/admin/leads?key=' + key + '&vista=crm">Ver todos</a>'
           : 'Todavía no hay pichangueros registrados ⚽<br>Cuando alguien escriba al número, aparece acá.'}</p>`);
 
@@ -1941,7 +2066,7 @@ function paginaCRM(db, key, query) {
              solo `q` y la zona/etapa elegidas se perdían en silencio. */ ''}
         ${filtro ? `<input type="hidden" name="filtro" value="${esc(filtro)}">` : ''}
         ${zona ? `<input type="hidden" name="zona" value="${esc(zona)}">` : ''}
-        ${estadoF ? `<input type="hidden" name="estado" value="${esc(estadoF)}">` : ''}
+        ${relF ? `<input type="hidden" name="rel" value="${esc(relF)}">` : ''}
         ${distritoF ? `<input type="hidden" name="distrito" value="${esc(distritoF)}">` : ''}
         ${dia ? `<input type="hidden" name="dia" value="${esc(dia)}">` : ''}
         <input name="q" value="${esc(query.q || '')}" placeholder="Buscar nombre, número, distrito…">
@@ -1957,7 +2082,7 @@ function paginaCRM(db, key, query) {
         ${dia && tipo ? `<input type="hidden" name="tipo" value="${esc(tipo)}">` : ''}
         ${selectorFiltro('filtro', filtro, 'Todos los contactos', opcAtencion)}
         ${selectorFiltro('zona', zona, 'Todas las zonas', opcZona)}
-        ${selectorFiltro('estado', estadoF, 'Todas las etapas', opcEtapa)}
+        ${selectorFiltro('rel', relF, 'Toda relación', opcRelacion)}
         ${distritosCrm.length ? selectorFiltro('distrito', distritoF, 'Todos los distritos', opcDistrito) : ''}
         <input type="date" name="dia" value="${dia}" max="${hoy}" aria-label="Filtrar por día">
         <button class="btn-toque btn-guardar">Filtrar</button>
@@ -1969,7 +2094,7 @@ function paginaCRM(db, key, query) {
       ${hayFiltro || dia ? `<div class="chips">
         <a class="fchip" href="/admin/leads?key=${key}&vista=crm">✕ Limpiar filtros</a>
         ${dia ? `<a class="fchip${tipo === 'nuevos' ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ tipo: tipo === 'nuevos' ? '' : 'nuevos' })}">🟢 Nuevos ese día</a>
-        <a class="fchip${tipo === 'recurrentes' ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ tipo: tipo === 'recurrentes' ? '' : 'recurrentes' })}">🔵 Recurrentes ese día</a>` : ''}
+        <a class="fchip${tipo === 'recurrentes' ? ' on' : ''}" href="/admin/leads?key=${key}&vista=crm${qsCrm({ tipo: tipo === 'recurrentes' ? '' : 'recurrentes' })}">🔵 Ya registrados</a>` : ''}
       </div>` : ''}
       ${lista}
       <div class="foot">Se actualiza solo cada 90 s · toca un lead para abrir su ficha</div>
@@ -1997,13 +2122,6 @@ function paginaFicha(db, key, numero, query = {}) {
   const sinResp = sinResponder(roles, lead);
   const z = ZONAS[lead.zona];
 
-  const botonesEtapa = Object.entries(ESTADOS).map(([v, label]) => `
-    <form method="post" action="/admin/lead/estado" style="display:inline">
-      <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
-      <input type="hidden" name="estado" value="${v}">
-      <button class="pstep ${lead.estado === v ? 'on' : ''}">${label}</button>
-    </form>`).join('');
-
   const hayBot = msgs.some((m) => m.rol !== 'user');
   const burbujas = msgs.map((m) => `
     <div class="bub ${m.rol === 'user' ? 'in' : 'out'}">${esc(m.texto)}<time>${horaCorta(m.creado_en)}</time></div>`).join('');
@@ -2020,15 +2138,35 @@ function paginaFicha(db, key, numero, query = {}) {
    */
   const hoyF = hoyLima();
   const inscripciones = db.asistenciasDe(numero) || [];
-  const jugados = inscripciones.filter((i) => i.fecha < hoyF).length;
   const proximaInsc = inscripciones.filter((i) => i.fecha >= hoyF).sort((a, b) => a.fecha.localeCompare(b.fecha))[0];
   const confirmados = pagosLead.filter((p) => p.estado === 'confirmado');
   const montoPagado = confirmados.reduce((a, p) => a + (Number(p.monto) || 0), 0);
+
+  /**
+   * LA LÍNEA DE VALOR: "Casero · 9 visitas · S/ 135 · última: 3 ago (hace 13 d)".
+   *
+   * Es lo que reemplaza a los seis botones de etapa. Antes la ficha te pedía
+   * que declararas en qué escalón estaba el contacto; ahora te dice quién es
+   * este tipo para el negocio, que es la pregunta que uno trae al abrirla.
+   */
+  const m = db.metricasDe(numero);
+  const um = db.umbralesFrescura();
+  const relClave = db.relacionDe(m.visitas);
+  const refFrescura = m.ultima || (roles[numero] || {}).en || lead.actualizado_en || lead.creado_en;
+  const diasSin = db.diasDesde(refFrescura);
+  const frescClave = db.frescuraDe(diasSin, um);
+  // La relación NO se repite en el texto: ya la lleva el badge de al lado, con
+  // su color. Escribirla dos veces le roba espacio a lo que sí falta saber.
+  const lineaValor = [
+    `${m.visitas} visita${m.visitas === 1 ? '' : 's'}`,
+    m.soles > 0 ? `S/ ${m.soles}` : null,
+    m.ultima
+      ? `última: ${fechaCompacta(m.ultima, false, false)} (hace ${diasSin} d)`
+      : `sin venir nunca${diasSin != null ? ` · escribió hace ${diasSin} d` : ''}`,
+  ].filter(Boolean).join(' · ');
+
   const historia = {
     primer: lead.creado_en ? `${fechaCompacta(lead.creado_en)} · lo captó el bot` : '—',
-    partidos: jugados
-      ? `${jugados} jugado${jugados === 1 ? '' : 's'}${jugados >= db.RECURRENTE_DESDE ? ' · ⭐ recurrente' : ''}`
-      : 'Ninguno todavía',
     hayProximo: Boolean(proximaInsc),
     proximo: proximaInsc
       ? `${fechaCompacta(proximaInsc.fecha, true)}${proximaInsc.hora ? ` · ${proximaInsc.hora}` : ''} · ${proximaInsc.estado === 'pagado' ? 'pagado' : proximaInsc.estado}`
@@ -2038,6 +2176,19 @@ function paginaFicha(db, key, numero, query = {}) {
       ? `S/ ${montoPagado} · ${confirmados.length} pago${confirmados.length === 1 ? '' : 's'} verificado${confirmados.length === 1 ? '' : 's'}`
       : 'Nunca pagó por acá',
   };
+
+  // "En el grupo": el único hecho que el sistema no puede deducir solo. El
+  // botón aparece SOLO si la zona tiene link cargado — sin link nadie pudo
+  // haber mandado nada, y un botón que no corresponde es una invitación a
+  // ensuciar el dato.
+  const linkZona = lead.zona ? (db.getConfigMap()[`grouplink_${lead.zona}`] || '').trim() : '';
+  const filaGrupo = lead.grupo_enviado_en
+    ? `<div class="grow"><span class="k">En el grupo</span><span class="v" style="color:var(--lime-ink)">Sí · ${esc(fechaCompacta(lead.grupo_enviado_en, false, false))}</span></div>`
+    : `<div class="grow"><span class="k">En el grupo</span><span class="v">No${linkZona ? '' : ' · su zona no tiene link cargado'}</span></div>
+       ${linkZona ? `<form method="post" action="/admin/lead/grupo" class="inline">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
+          <button class="btn-toque" style="width:100%;background:var(--surface-2);color:var(--ink);border:1.5px solid var(--line-strong)">👥 Le mandé el link</button>
+        </form>` : ''}`;
 
   return baseHtml(`Ficha · ${lead.nombre || numero}`, `
     <div class="px">
@@ -2056,6 +2207,13 @@ function paginaFicha(db, key, numero, query = {}) {
           ${lead.handoff ? `<span class="pz" style="background:var(--st-alerta-solid)">🔔 ${esc(lead.handoff_motivo || 'derivado')}</span>` : ''}
           ${sinResp ? '<span class="pz" style="background:var(--st-debe-solid)">📥 Sin responder</span>' : ''}
         </div>
+        ${/* Una línea, no seis botones. Todo lo de acá está calculado: no hay
+              nada que apretar ni que mantener al día. */ ''}
+        <div class="valor">
+          <span class="badge ${COLOR_RELACION[relClave]}">${relClave === 'casero' ? '⭐ ' : ''}${db.RELACIONES[relClave].label}</span>
+          <span class="vtxt">${esc(lineaValor)}</span>
+          ${frescClave && frescClave !== 'al_dia' ? `<span class="badge ${COLOR_FRESCURA[frescClave]}">${db.FRESCURAS[frescClave].label}</span>` : ''}
+        </div>
       </div>
 
         <div>
@@ -2064,17 +2222,16 @@ function paginaFicha(db, key, numero, query = {}) {
             ${dato('Edad', lead.edad)}
             ${dato('Distrito', lead.distrito)}
             ${dato('Zona', (z && z.nombre) || lead.zona, z && z.color)}
-            ${dato('Etapa', ESTADOS[lead.estado] || lead.estado)}
           </div>
         </div>
 
-        <div>
+        <div class="ancla" id="grupo">
           <div class="shdr">Historia <small>· lo que el sistema sabe de él</small></div>
           <div class="group">
             ${dato('Primer contacto', historia.primer)}
-            ${dato('Partidos', historia.partidos)}
             ${dato('Próximo partido', historia.proximo, historia.hayProximo ? 'var(--lime-ink)' : null)}
             ${dato('Total pagado', historia.pagado, historia.montoPagado > 0 ? 'var(--lime-ink)' : null)}
+            ${filaGrupo}
           </div>
         </div>
 
@@ -2082,11 +2239,6 @@ function paginaFicha(db, key, numero, query = {}) {
           <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="numero" value="${esc(numero)}">
           <button class="btn-toque btn-guardar" style="width:100%;min-height:var(--tap-lg);font-size:var(--t-l)">🔓 Reactivar el bot para este contacto</button>
         </form>` : ''}
-
-        <div class="ancla" id="etapa">
-          <div class="shdr">Etapa</div>
-          <div class="group"><div class="pipe">${botonesEtapa}</div></div>
-        </div>
 
         <div class="ancla" id="etiquetas">
           <div class="shdr">Etiquetas <small>(separadas por coma)</small></div>
@@ -2279,6 +2431,39 @@ function paginaConfig(db, key, conexion = null, query = {}) {
       </div>
     </div>`;
 
+  /**
+   * Cuándo se enfría un jugador. Los dos cortes que definen la frescura de toda
+   * la base viven acá y no en el código: el ritmo de una pichanga semanal no es
+   * el de una quincenal, y eso lo sabe Clarck. Se guardan por el mismo camino
+   * que los precios y los links (setConfig con lista blanca).
+   */
+  const umCfg = db.umbralesFrescura();
+  const bloqueFrescura = `
+    <div class="ancla" id="frescura">
+      <div class="shdr">❄ Cuándo se enfría un jugador <small>· los cortes de "Salud de la base"</small></div>
+      <div class="group">
+        <form method="post" action="/admin/config/general">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <p style="padding:13px 14px 0;font-size:13.5px;color:var(--ink-2);line-height:1.45">
+            Se cuentan los días <b>desde la última vez que vino</b> (Yape confirmado o partido jugado).
+            Hasta el primer corte está <b>al día</b>; entre los dos, <b>enfriándose</b>; pasado el segundo,
+            <b>perdido</b>. Nada se borra ni se avisa solo: cambia cómo se agrupa en el Resumen y en Jugadores.
+          </p>
+          <div class="campos">
+            ${campo('cfg-frio', 'Se está enfriando a los (días)',
+              `<input id="cfg-frio" name="dias_frio" type="number" min="1" max="365" inputmode="numeric" value="${umCfg.frio}">`,
+              'Vino hace más de esto y todavía se recupera con un mensaje.')}
+            ${campo('cfg-perdido', 'Se da por perdido a los (días)',
+              `<input id="cfg-perdido" name="dias_perdido" type="number" min="2" max="730" inputmode="numeric" value="${umCfg.perdido}">`,
+              'Tiene que ser mayor que el anterior; si no, se ajusta solo.')}
+          </div>
+          <div class="pie-form">
+            <button class="btn-toque btn-guardar">Guardar cortes</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+
   const nuevoDistrito = `
     <div class="ancla" id="nuevo-distrito">
       <div class="shdr">➕ Nuevo distrito <small>· al crearlo aparece en el bot, los partidos y esta página</small></div>
@@ -2387,6 +2572,7 @@ function paginaConfig(db, key, conexion = null, query = {}) {
       </div>
 
       ${bloqueCorte}
+      ${bloqueFrescura}
       ${zonasOp.map((z) => bloqueZona(z)).join('')}
       ${nuevoDistrito}
 
@@ -2546,6 +2732,65 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   const ocupados = inscripciones.filter((i) => ['pagado', 'reservado'].includes(i.estado)).length;
   const lista = db.textoLista(partidoId);
   const pagosSueltos = db.pagosSinPartido();
+  const libres = Math.max(0, p.cupo - ocupados);
+
+  /**
+   * CONVOCAR — "¿a quién le escribo para llenar el viernes en Breña?".
+   *
+   * Es la pregunta que ninguna pantalla contestaba: el CRM ordena por último
+   * mensaje, que no tiene nada que ver con quién viene a jugar. Acá salen los
+   * que YA vinieron alguna vez, de esta zona, que todavía no están en esta
+   * lista, con el más fresco arriba.
+   *
+   * GENERA LA LISTA, NO MANDA NADA. Cada uno con su link de WhatsApp y el
+   * mensaje ya escrito: Clarck toca, revisa y envía. Con SAFE_MODE encendido y
+   * la cuenta con alertas de salud de Meta, disparar 200 mensajes de una es
+   * pedir el baneo del número con el que vive el negocio.
+   *
+   * Se pinta solo si se pide (?convocar=1): son cientos de contactos y esta
+   * pantalla se abre sobre todo para pasar lista.
+   */
+  const verConvocar = query.convocar === '1';
+  const CONVOCAR_TOPE = 30; // lo que se puede recorrer a dedo de una sentada
+  const candidatos = verConvocar ? db.candidatosConvocatoria(partidoId) : [];
+  const umConv = verConvocar ? db.umbralesFrescura() : null;
+  const precioP = p.precio ?? neg.zonas[p.zona]?.precio;
+  const textoInvite = `Habla crack ⚽ Tenemos pichanga ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''}${p.sede ? ` en ${p.sede}` : ''}. Quedan ${libres} cupo${libres === 1 ? '' : 's'} a S/ ${precioP ?? '?'}. ¿Te separo uno?`;
+  const filaCand = (c) => {
+    const rel = db.relacionDe(c.visitas);
+    const dias = db.diasDesde(c.ultima);
+    const fresc = db.frescuraDe(dias, umConv);
+    return `<a class="lrow" href="https://wa.me/${esc(c.numero)}?text=${encodeURIComponent(textoInvite)}" target="_blank" rel="noopener">
+      <span class="ava" style="background:${avatarColor(c.numero)}">${esc(iniciales(c.nombre, c.numero))}</span>
+      <span class="lbody">
+        <span class="lname">${esc(c.nombre || `+${c.numero}`)}</span>
+        <span class="lsub">${esc(db.RELACIONES[rel].label)} · ${c.visitas} visita${c.visitas === 1 ? '' : 's'} · última ${esc(fechaCompacta(c.ultima, false, false))} (hace ${dias} d)</span>
+      </span>
+      <span class="lmeta"><span class="lbadges">
+        <span class="badge ${COLOR_RELACION[rel]}">${rel === 'casero' ? '⭐ ' : ''}${db.RELACIONES[rel].label} · ${c.visitas}</span>
+        ${fresc && fresc !== 'al_dia' ? `<span class="badge ${COLOR_FRESCURA[fresc]}">${db.FRESCURAS[fresc].corto} · ${dias} d</span>` : ''}
+      </span></span>
+      ${SVG.wa}</a>`;
+  };
+  const bloqueConvocar = `
+    <div class="shdr ancla" id="convocar">Convocar <small>· a quién escribirle para llenar este partido</small></div>
+    ${verConvocar ? `
+    <div class="group" style="padding:12px 14px">
+      <div style="font-size:var(--t-s);color:var(--ink-2);line-height:1.45">
+        ${candidatos.length
+          ? `<b>${candidatos.length} jugador${candidatos.length === 1 ? '' : 'es'} de ${esc(z ? z.nombre : p.zona)}</b> que ya vinieron alguna vez y no están en esta lista${candidatos.length > CONVOCAR_TOPE ? ` — se muestran los ${CONVOCAR_TOPE} más frescos` : ''}.
+             Toca a uno y se abre su chat con el mensaje escrito: <b>lo mandas tú</b>, uno por uno.`
+          : `Todavía no hay a quién convocar en ${esc(z ? z.nombre : p.zona)}: hacen falta jugadores que ya hayan venido alguna vez y que no estén ya en esta lista.`}
+      </div>
+    </div>
+    ${candidatos.length ? `<div class="llist" style="margin-top:10px">${candidatos.slice(0, CONVOCAR_TOPE).map(filaCand).join('')}</div>` : ''}`
+    : `<div class="group" style="padding:14px">
+        <a class="btn-toque btn-guardar" style="display:flex;align-items:center;justify-content:center;width:100%;min-height:var(--tap-lg);font-size:var(--t-l);text-decoration:none"
+           href="/admin/leads?key=${key}&vista=partidos&partido=${partidoId}&convocar=1#convocar">📣 Ver a quién convocar${libres ? ` (${libres} cupo${libres === 1 ? '' : 's'} libre${libres === 1 ? '' : 's'})` : ''}</a>
+        <div style="font-size:var(--t-s);color:var(--ink-2);margin-top:9px;text-align:center">
+          Jugadores de ${esc(z ? z.nombre : p.zona)} que ya vinieron y no están en esta lista, del que vino hace menos al que vino hace más. No manda mensajes: te arma la lista.
+        </div>
+      </div>`}`;
 
   // Texto seguro para meter dentro de un confirm('…') que vive en un atributo
   // HTML: primero se escapan las comillas simples para JS, después esc() para
@@ -2778,6 +3023,8 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
           <button>+ Inscribir a mano</button>
         </form>
       </div>
+
+      ${bloqueConvocar}
 
       ${pagosSueltos.length ? `
       <div class="shdr ancla" id="pagos-sueltos">Pagos confirmados sin partido <small>(asignar a este partido)</small></div>

@@ -138,6 +138,10 @@ function antiguedad(creadoEn) {
   return dias === 1 ? 'ayer' : `hace ${dias} días`;
 }
 
+// Ojo: al prompt NO se le pasa la vieja columna `estado` (se quitó el 16/08).
+// Quedó congelada y le entregaba al modelo una etiqueta desactualizada
+// ("nuevo" para alguien con tres pagos encima). Lo que el cerebro necesita para
+// responder son los DATOS del contacto; qué tan cliente es se mira en el panel.
 function buildSystemPrompt(lead) {
   const negocio = db.getNegocio(); // se lee fresco en cada mensaje: precios/sedes se editan sin redesplegar
   const faltantes = [];
@@ -221,7 +225,7 @@ En esos casos responde corto y cálido: que Clarck le escribe personalmente en u
 ## Extracción de datos
 Además de responder, extrae a los campos del JSON cualquier dato que el jugador haya dado (nombre, edad, distrito, zona). Si no dio nada nuevo, déjalos en null.
 
-Datos ya registrados de este contacto: nombre=${lead.nombre || '—'}, edad=${lead.edad || '—'}, distrito=${lead.distrito || '—'}, zona=${lead.zona || '—'}, estado=${lead.estado}.`;
+Datos ya registrados de este contacto: nombre=${lead.nombre || '—'}, edad=${lead.edad || '—'}, distrito=${lead.distrito || '—'}, zona=${lead.zona || '—'}.`;
 }
 
 /**
