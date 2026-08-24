@@ -2708,7 +2708,7 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'turnos_inferidos_2026_0
 /** Historial de asistencia de un contacto (para la ficha del CRM). */
 function asistenciasDe(numero) {
   return db.prepare(`
-    SELECT i.estado, i.asistencia, p.fecha, p.zona, p.hora
+    SELECT i.estado, i.asistencia, i.pago_id, p.fecha, p.zona, p.hora
     FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
     WHERE i.numero = ? AND i.estado != 'baja' ORDER BY p.fecha DESC LIMIT 20
   `).all(numero);

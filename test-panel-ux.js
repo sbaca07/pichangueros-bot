@@ -823,6 +823,31 @@ const srv = app.listen(0, async () => {
       !new RegExp(`name="pago_id" value="${idPago}"`).test(despues));
   }
 
+  console.log('== 4l6 · Desde la ficha se resuelve el pago del jugador ==');
+  {
+    // El pago ya estaba atado al jugador (llega desde su número), pero decir a
+    // QUÉ PARTIDO corresponde solo se podía entrando al partido y buscándolo
+    // entre los sueltos — al revés de como uno lo piensa cuando está mirando
+    // a la persona.
+    const N = '51990000051';
+    db.getOrCreateLead(N);
+    db.updateLead(N, { zona: 'comas', nombre: 'Suelto Ramírez' });
+    const pg = db.registrarPago({ numero: N, monto: 10, numero_operacion: 'UX-SUELTO-1', estado: 'confirmado' });
+    const part = db.crearPartido({ zona: 'comas', fecha: enDias(1), hora: '8-9pm', cupo: 12 });
+
+    const ficha = (await GET(`/admin/leads?key=ux&numero=${N}`)).html;
+    check('la ficha dice que ese pago no está en ninguna pichanga', /no está en ninguna pichanga/.test(ficha));
+    check('…y ofrece los partidos abiertos para anotarlo', new RegExp(`name="partido_id"[\\s\\S]{0,400}value="${part}"`).test(ficha));
+
+    const r = await POST('/admin/pago/asignar', { key: 'ux', pago_id: String(pg), partido_id: String(part) });
+    check('anotarlo desde la ficha funciona', r.status === 302, `HTTP ${r.status}`);
+    check('…y el jugador queda pagado en ese partido',
+      db.inscripcionesDe(part).some((i) => i.numero === N && i.estado === 'pagado'));
+
+    const ficha2 = (await GET(`/admin/leads?key=ux&numero=${N}`)).html;
+    check('…y la ficha ya lo muestra anotado, sin volver a ofrecerlo', /anotado en la pichanga del/.test(ficha2) && !/no está en ninguna pichanga/.test(ficha2));
+  }
+
   console.log('== 4m · Pagos: "limpiar" solo si hay algo que limpiar ==');
   {
     // El período arranca en '7d', así que hayFiltro daba true SIEMPRE: el botón

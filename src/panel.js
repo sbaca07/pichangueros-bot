@@ -2811,6 +2811,44 @@ function paginaFicha(db, key, numero, query = {}) {
   // botón aparece SOLO si la zona tiene link cargado — sin link nadie pudo
   // haber mandado nada, y un botón que no corresponde es una invitación a
   // ensuciar el dato.
+  /**
+   * QUÉ HACER CON UN PAGO, DESDE LA FICHA (24/08).
+   *
+   * El pago ya estaba atado al jugador —llega desde su número, esa parte nunca
+   * se pierde— pero desde acá no se podía decir A QUÉ PARTIDO corresponde: eso
+   * solo existía entrando al partido y buscándolo entre los sueltos. Al revés
+   * de como uno lo piensa: uno está mirando a la persona, ve su Yape del
+   * viernes sin partido, y quiere resolverlo ahí mismo.
+   *
+   * Se ofrecen los partidos que todavía admiten gente, el más próximo primero.
+   */
+  const inscritoDe = {};
+  for (const i of db.asistenciasDe(numero) || []) if (i.pago_id) inscritoDe[i.pago_id] = i;
+  const partidosParaAsignar = db.partidosAbiertos(null, {}).filter((p) => !db.motivoCierre(p));
+  const accionesDelPago = (p) => {
+    if (p.estado === 'revisar') {
+      return `<form method="post" action="/admin/pago/confirmar" class="pago-ok"
+        onsubmit="return confirm('${jsTxt(`¿Dar por bueno este Yape de S/ ${p.monto}? Queda confirmado.`)}')">
+        <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="pago_id" value="${p.id}">
+        <button class="btn-toque">✅ Está bien — dalo por bueno</button></form>`;
+    }
+    const i = inscritoDe[p.id];
+    if (i) {
+      return `<div class="pago-ok" style="font-size:var(--t-s);color:var(--ink-2);padding-bottom:12px">
+        ↳ anotado en la pichanga del <b>${esc(fechaCompacta(i.fecha, true, false))}${i.hora ? ` · ${esc(i.hora)}` : ''}</b> en ${esc(db.nombreDeZona(i.zona))}</div>`;
+    }
+    if (!partidosParaAsignar.length) return '';
+    return `<form method="post" action="/admin/pago/asignar" class="pago-ok">
+      <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="pago_id" value="${p.id}">
+      <div style="font-size:var(--t-s);color:var(--st-debe-ink);font-weight:600;margin-bottom:6px">Este pago no está en ninguna pichanga.</div>
+      <div style="display:flex;gap:7px;flex-wrap:wrap">
+        <select name="partido_id" style="flex:1;min-width:180px">
+          ${partidosParaAsignar.map((x) => `<option value="${x.id}">${esc(fechaCompacta(x.fecha, true, false))}${x.hora ? ` · ${esc(x.hora)}` : ''} · ${esc(db.nombreDeZona(x.zona))} (${x.ocupados}/${x.cupo})</option>`).join('')}
+        </select>
+        <button class="btn-toque" style="flex:0 0 auto;padding:0 16px">Anotarlo ahí</button>
+      </div></form>`;
+  };
+
   const linkZona = lead.zona ? (db.getConfigMap()[`grouplink_${lead.zona}`] || '').trim() : '';
   const filaGrupo = lead.grupo_enviado_en
     ? `<div class="grow"><span class="k">En el grupo</span><span class="v" style="color:var(--lime-ink)">Sí · ${esc(fechaCompacta(lead.grupo_enviado_en, false, false))}</span></div>`
@@ -2894,7 +2932,8 @@ ${/* "Próxima acción" (fecha + nota) se retiró el 16/08: era un recordatorio 
                   ${originalDe[p.id] ? `<br><small style="color:var(--st-alerta-ink)">↩ mismo nº de operación que el pago CONFIRMADO de <a href="/admin/leads?key=${key}&numero=${esc(originalDe[p.id].numero)}" style="text-decoration:underline">+${esc(originalDe[p.id].numero)}</a> · ${esc((originalDe[p.id].creado_en || '').slice(0, 16))} · S/${esc(originalDe[p.id].monto)}</small>` : ''}
                 </span>
                 <span class="v" style="color:${p.estado === 'confirmado' ? 'var(--lime-ink)' : 'var(--st-alerta-ink)'}">${p.estado === 'confirmado' ? '✅ Confirmado' : '⚠ Revisar'}</span>
-              </div>`).join('')}
+              </div>
+              ${accionesDelPago(p)}`).join('')}
           </div>
         </div>` : ''}
 
