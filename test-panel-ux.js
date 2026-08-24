@@ -296,13 +296,22 @@ const srv = app.listen(0, async () => {
     const ficha = (await GET(`/admin/leads?key=ux&numero=${L.completo}`)).html;
     check('la ficha trae la historia del jugador', /Historia/.test(ficha));
     check('…primer contacto', /Primer contacto/.test(ficha) && /lo captó el bot/.test(ficha));
-    check('…próximo partido con su estado', /Próximo partido/.test(ficha) && !/Sin reserva/.test(ficha));
-    check('…y cuánto pagó en total', /S\/ 45/.test(ficha) && /verificado/.test(ficha));
+    // Los cuatro números viven arriba, en los cuadros destacados — no repetidos
+    // como filas de "Historia", que era el estado anterior.
+    check('…los cuatro destacados arriba', /class="hl"/.test(ficha)
+      && /Visitas/.test(ficha) && /Pagado/.test(ficha) && /Última vez/.test(ficha) && /Próxima/.test(ficha));
+    // Tiene reserva futura: el cuadro trae la fecha (no un guion) y debajo la
+    // hora con el estado. No se fija QUÉ partido: otros bloques del test le
+    // crean más de uno y el que sale es el más próximo, no el último inscrito.
+    check('…su próxima pichanga sale con fecha, hora y estado',
+      /Próxima<\/div>\s*<div class="hlv"[^>]*>(?!—)[^<]+<\/div>\s*<div class="hls">\d{1,2}-\d{1,2}[ap]m · (reservado|pagado)/.test(ficha));
+    check('…y cuánto pagó, con cuántos Yapes', /S\/ 45/.test(ficha) && /1 Yape/.test(ficha));
+    check('…sin repetir esos datos como filas de Historia', !/>Total pagado</.test(ficha) && !/>Próximo partido</.test(ficha));
 
     // Contacto propio: L.nuevo ya tiene pagos de bloques anteriores.
     db.getOrCreateLead('51990000009');
     const virgen = (await GET('/admin/leads?key=ux&numero=51990000009')).html;
-    check('un contacto sin historia lo dice, no muestra ceros sueltos', /Nunca pagó por acá/.test(virgen) && /Sin reserva/.test(virgen));
+    check('un contacto sin historia lo dice, no muestra ceros sueltos', /nunca pagó/.test(virgen) && /sin reserva/.test(virgen));
   }
 
   console.log('== 4f · Casero = 6+ visitas, contadas con TODA su historia ==');
@@ -353,8 +362,9 @@ const srv = app.listen(0, async () => {
     const fichaHab = (await GET(`/admin/leads?key=ux&numero=${habitual}`)).html;
     // El badge dice la relación y el texto de al lado el detalle: sin repetir
     // la palabra "Casero" dos veces en la misma línea.
-    check('la ficha del habitual lo dice en la línea de valor',
-      /class="valor"[\s\S]*?⭐ Casero[\s\S]*?6 visitas/.test(fichaHab));
+    check('la ficha del habitual lo dice: badge Casero y 6 visitas en los destacados',
+      /class="valor"[\s\S]*?⭐ Casero/.test(fichaHab)
+      && /class="hl"[\s\S]*?Visitas<\/div>\s*<div class="hlv"[^>]*>6</.test(fichaHab));
 
     const nuevos = (await GET('/admin/leads?key=ux&vista=crm&filtro=nuevos')).html;
     check('el chip Nuevos filtra por los de esta semana', /Hugo Habitual/.test(nuevos));
@@ -366,7 +376,8 @@ const srv = app.listen(0, async () => {
     const ficha = (await GET(`/admin/leads?key=ux&numero=${L.completo}`)).html;
     check('la ficha NO tiene botones de etapa', !/action="\/admin\/lead\/estado"/.test(ficha) && !/class="pstep/.test(ficha));
     check('…ni la fila "Etapa" del perfil', !/>Etapa</.test(ficha));
-    check('en su lugar hay una línea de valor con visitas', /class="valor"/.test(ficha) && /visitas?/.test(ficha));
+    check('en su lugar hay badge de relación y los cuatro destacados',
+      /class="valor"/.test(ficha) && /class="hl"/.test(ficha) && /Visitas/.test(ficha));
     check('y la fila "En el grupo"', /En el grupo/.test(ficha));
 
     // El POST viejo tiene que estar MUERTO, no solo escondido de la pantalla.
@@ -704,6 +715,60 @@ const srv = app.listen(0, async () => {
     // Buscar no puede borrar los filtros puestos.
     const buscador = (soloComas.match(/<form class="search"[\s\S]*?<\/form>/) || [''])[0];
     check('el buscador conserva la zona elegida', /name="zona" value="comas"/.test(buscador));
+  }
+
+  console.log('== 4l2 · Vistas rápidas: las seis listas que se abren de verdad ==');
+  {
+    // Los desplegables dan ~30 combinaciones; en el día a día se usan seis, y
+    // armarlas cuesta dos toques cada vez. Van arriba, con su cuenta al lado.
+    const crm = (await GET('/admin/leads?key=ux&vista=crm')).html;
+    const bloque = (crm.match(/<div class="vistas">[\s\S]*?<\/div>\s*\n/) || [''])[0];
+    check('la fila de vistas existe', /class="vistas"/.test(crm));
+    for (const txt of ['Esperando respuesta', 'Para Clarck', 'Falta meterlos al grupo', 'Se están enfriando', 'Caseros', 'Nuevos de la semana']) {
+      check(`…con la vista "${txt}"`, bloque.includes(txt));
+    }
+    check('cada vista trae su cuenta al lado', /class="vn">\d+<\/span>/.test(bloque));
+
+    // El número del chip y la lista que abre TIENEN que ser el mismo conjunto:
+    // el error clásico es que el contador diga 120 y la lista muestre 80.
+    const nCaseros = Number((bloque.match(/Caseros<\/span><span class="vn">(\d+)</) || [, '-1'])[1]);
+    const listaCaseros = (await GET('/admin/leads?key=ux&vista=crm&rel=casero')).html;
+    const enLista = (listaCaseros.match(/class="lrow"/g) || []).length;
+    check('la cuenta de la vista coincide con lo que abre', nCaseros === enLista, `chip=${nCaseros} lista=${enLista}`);
+
+    // Encendida solo si los filtros son EXACTAMENTE los suyos.
+    check('al abrirla, esa vista queda encendida', /class="vista on"[^>]*>\s*<span class="vt">⭐ Caseros/.test(listaCaseros));
+    check('…y las demás no', (listaCaseros.match(/class="vista on"/g) || []).length === 1);
+    check('volver a tocarla la apaga', /class="vista on" href="\/admin\/leads\?key=ux&vista=crm"/.test(listaCaseros));
+    const conOtro = (await GET('/admin/leads?key=ux&vista=crm&rel=casero&zona=comas')).html;
+    check('con otro filtro encima ninguna vista miente que está encendida',
+      (conOtro.match(/class="vista on"/g) || []).length === 0);
+  }
+
+  console.log('== 4l3 · El recorrido del partido: de dónde viene y qué falta ==');
+  {
+    // La fase salía como un badge suelto: decía dónde está, no qué falta.
+    const pAbierto = db.crearPartido({ zona: 'brena', fecha: enDias(2), hora: '8-9pm', cupo: 10 });
+    const abierto = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${pAbierto}`)).html;
+    const via = (abierto.match(/<div class="via">[\s\S]*?<\/div>\s*\n/) || [''])[0];
+    check('el partido dibuja su recorrido', /class="via"/.test(abierto));
+    check('…con los cuatro escalones', ['Jugándose', 'Terminó', 'Liquidado'].every((t) => via.includes(t)));
+    check('…y el actual marcado', /class="vp aqui">Abierto/.test(via));
+    check('…sin ninguno pintado como hecho todavía', !/class="vp hecho"/.test(via));
+
+    // Uno que ya se jugó y se liquidó: todo el camino recorrido.
+    const pViejo = db.crearPartido({ zona: 'brena', fecha: enDias(-3), hora: '8-9pm', cupo: 10 });
+    db.liquidarPartido(pViejo);
+    const viejo = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${pViejo}`)).html;
+    const viaV = (viejo.match(/<div class="via">[\s\S]*?<\/div>\s*\n/) || [''])[0];
+    check('el liquidado tiene los tres primeros escalones hechos', (viaV.match(/class="vp hecho"/g) || []).length === 3);
+    check('…y está parado en el último', /class="vp aqui">Liquidado/.test(viaV));
+
+    // Cancelar no es un escalón del camino: es salirse de él.
+    const pCanc = db.crearPartido({ zona: 'brena', fecha: enDias(2), hora: '9-10pm', cupo: 10 });
+    db.cancelarPartido(pCanc);
+    const canc = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${pCanc}`)).html;
+    check('el cancelado no finge estar en el camino', /class="vp corte"/.test(canc) && /cancelado/i.test(canc));
   }
 
   console.log('== 4m · Pagos: "limpiar" solo si hay algo que limpiar ==');

@@ -1211,6 +1211,21 @@ const ESTILOS = `
      navy y uno blanco se parecen más de lo que uno cree. */
   .fchip.on{background:var(--navy-fill);color:#fff;border-color:var(--navy-fill);font-weight:700}
   .fchip.on::before{content:"✓ ";font-weight:800}
+  /* Vistas rápidas del CRM: las seis listas que se abren de verdad, con su
+     cuenta al lado. Dos columnas en celular — seis chips en fila se convierten
+     en un scroll horizontal que nadie descubre. */
+  .vistas{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;padding:var(--s2) 2px var(--s1)}
+  .vista{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:var(--tap);
+    padding:0 12px;border-radius:var(--r2);background:var(--surface);border:1.5px solid var(--line-strong);
+    color:var(--ink);font-size:var(--t-s);font-weight:600;text-decoration:none}
+  .vista .vt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vista .vn{flex:0 0 auto;font-weight:800;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+  .vista.on{background:var(--navy-fill);border-color:var(--navy-fill);color:#fff;font-weight:700}
+  .vista.on .vn{color:#fff}
+  /* En cero no se apaga ni se esconde: se atenúa. Que la vista exista y diga 0
+     es la información — esconderla haría pensar que el filtro no está. */
+  .vista.cero{opacity:.55}
+  @media (min-width:760px){ .vistas{grid-template-columns:repeat(3,1fr)} }
   .fchip.amber.on{background:var(--st-debe-solid);border-color:var(--st-debe-solid);color:#fff}
   .fchip.red.on{background:var(--st-alerta-solid);border-color:var(--st-alerta-solid);color:#fff}
 
@@ -1298,6 +1313,29 @@ const ESTILOS = `
   .valor{display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:10px;
     padding:10px 12px;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r2)}
   .valor .vtxt{font-size:var(--t-s);color:var(--ink-2);font-weight:600}
+  /* Los cuatro números que uno viene a buscar cuando abre una ficha, fijos
+     arriba: cuántas veces vino, cuánto dejó, hace cuánto y si tiene reserva.
+     Antes iban como texto corrido dentro de la línea de valor y repetidos como
+     filas de "Historia" más abajo — dos lugares, ninguno mirable de un vistazo
+     en un celular. */
+  .hl{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;width:100%;margin-top:11px}
+  .hl .hlc{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r2);
+    padding:9px 8px;text-align:center;min-width:0}
+  .hl .hlk{font-size:var(--t-xs);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-2);font-weight:700}
+  .hl .hlv{font-size:var(--t-l);font-weight:800;letter-spacing:-.02em;margin-top:3px;
+    overflow-wrap:anywhere;line-height:1.15;font-variant-numeric:tabular-nums}
+  .hl .hls{font-size:var(--t-xs);color:var(--ink-2);font-weight:600;margin-top:1px;line-height:1.25}
+  @media (max-width:400px){ .hl{grid-template-columns:repeat(2,1fr)} }
+  /* El recorrido del partido: en qué escalón está esta pichanga. Los pasos que
+     ya pasaron van llenos, el actual marcado, los que faltan en gris. Es la
+     misma fase que ya calcula db.fasePartido — acá solo se dibuja. */
+  .via{display:flex;gap:3px;margin:2px 0 13px}
+  .via .vp{flex:1;min-width:0;text-align:center;padding:7px 3px 6px;border-radius:var(--r2);
+    background:var(--surface-2);border:1px solid var(--line);
+    font-size:var(--t-xs);font-weight:700;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .via .vp.hecho{background:var(--st-ok-bg);border-color:var(--st-ok-ink);color:var(--st-ok-ink)}
+  .via .vp.aqui{background:var(--navy-fill);border-color:var(--navy-fill);color:#fff}
+  .via .vp.corte{background:var(--st-alerta-bg);border-color:var(--st-alerta-ink);color:var(--st-alerta-ink)}
   .pz{display:inline-flex;align-items:center;font-size:var(--t-xs);font-weight:700;padding:6px 12px;border-radius:var(--rp);color:#fff}
 
   .group{background:var(--surface);border:1px solid var(--line);border-radius:var(--r3);overflow:hidden;box-shadow:var(--sombra)}
@@ -2406,6 +2444,48 @@ function paginaCRM(db, key, query) {
   const opcDistrito = distritosCrm.map(([k, d]) => [k, `📍 ${d.label}`, d.n]);
 
   /**
+   * VISTAS RÁPIDAS — las seis listas que Clarck abre de verdad.
+   *
+   * No agregan lógica: cada una es una combinación de los filtros que ya
+   * existen, puesta a un toque. Se pintan con su cuenta al lado porque una
+   * vista en cero no hay que abrirla — y esa es justo la información que uno
+   * quiere antes de tocar, no después.
+   *
+   * `pred` es el mismo predicado con el que se cuenta, para que el número del
+   * chip y la lista que se abre no puedan discrepar (el error clásico: el
+   * contador dice 120 y la lista muestra 80).
+   */
+  const VISTAS = [
+    { id: 'esperando', etiqueta: '📥 Esperando respuesta', qs: { filtro: 'esperando' },
+      pred: (l) => numerosEsperando.has(l.numero) },
+    { id: 'handoff', etiqueta: '🔔 Para Clarck', qs: { filtro: 'handoff' },
+      pred: (l) => Boolean(l.handoff) },
+    { id: 'sin_grupo', etiqueta: '👥 Falta meterlos al grupo', qs: { rel: 'sin_grupo' },
+      pred: PRED_REL.sin_grupo },
+    { id: 'enfriando', etiqueta: '❄ Se están enfriando', qs: { rel: 'enfriando' },
+      pred: PRED_REL.enfriando },
+    { id: 'casero', etiqueta: '⭐ Caseros', qs: { rel: 'casero' },
+      pred: PRED_REL.casero },
+    { id: 'nuevos', etiqueta: '🟢 Nuevos de la semana', qs: { filtro: 'nuevos' },
+      pred: (l) => (l.creado_en || '').slice(0, 10) >= fechaLima(-6) },
+  ];
+  // Encendida solo si lo que está puesto es EXACTAMENTE la vista: sus dos
+  // filtros y nada más. Con un "incluye" alcanzaba agregarle una zona para que
+  // el chip siguiera encendido mostrando un subconjunto — el chip diría
+  // "Caseros" y la lista serían los caseros de Comas.
+  const sinOtrosFiltros = !zona && !distritoF && !dia && !q;
+  const vistaActiva = (v) => sinOtrosFiltros && (v.qs.filtro || '') === filtro && (v.qs.rel || '') === relF;
+  const vistasRapidas = VISTAS.map((v) => {
+    const n = todos.filter(v.pred).length;
+    const on = vistaActiva(v);
+    const destino = on
+      ? `/admin/leads?key=${key}&vista=crm`
+      : `/admin/leads?key=${key}&vista=crm${v.qs.filtro ? `&filtro=${v.qs.filtro}` : ''}${v.qs.rel ? `&rel=${v.qs.rel}` : ''}`;
+    return `<a class="vista${on ? ' on' : ''}${n === 0 ? ' cero' : ''}" href="${destino}">
+      <span class="vt">${v.etiqueta}</span><span class="vn">${n}</span></a>`;
+  }).join('');
+
+  /**
    * Fila del CRM: DOS badges de posición fija.
    *
    * 1. RELACIÓN, siempre ("Casero · 9"). Está en todas las filas, así que dos
@@ -2480,6 +2560,14 @@ function paginaCRM(db, key, query) {
         ${q ? '<button>Buscar</button>' : ''}
       </form>
 
+      ${/* LAS SEIS LISTAS QUE SE ABREN DE VERDAD.
+           Los filtros de abajo tienen 30 combinaciones posibles; en el día a
+           día se usan seis, y armarlas cuesta dos desplegables cada vez. Acá
+           van de un toque, con su cuenta al lado: si dice 0 no hace falta ni
+           entrar. El orden es el de urgencia, no el alfabético — lo primero es
+           gente esperando respuesta, lo último la foto de la base. */ ''}
+      <div class="vistas">${vistasRapidas}</div>
+
       ${/* UNA barra con todo. El botón Filtrar va SIEMPRE visible: el
            onchange de cada select es mejora progresiva, y sin JS este botón
            es la única forma de aplicar lo elegido. */ ''}
@@ -2546,8 +2634,6 @@ function paginaFicha(db, key, numero, query = {}) {
   const hoyF = hoyLima();
   const inscripciones = db.asistenciasDe(numero) || [];
   const proximaInsc = inscripciones.filter((i) => i.fecha >= hoyF).sort((a, b) => a.fecha.localeCompare(b.fecha))[0];
-  const confirmados = pagosLead.filter((p) => p.estado === 'confirmado');
-  const montoPagado = confirmados.reduce((a, p) => a + (Number(p.monto) || 0), 0);
 
   /**
    * LA LÍNEA DE VALOR: "Casero · 9 visitas · S/ 135 · última: 3 ago (hace 13 d)".
@@ -2562,26 +2648,42 @@ function paginaFicha(db, key, numero, query = {}) {
   const refFrescura = m.ultima || (roles[numero] || {}).en || lead.actualizado_en || lead.creado_en;
   const diasSin = db.diasDesde(refFrescura);
   const frescClave = db.frescuraDe(diasSin, um);
-  // La relación NO se repite en el texto: ya la lleva el badge de al lado, con
-  // su color. Escribirla dos veces le roba espacio a lo que sí falta saber.
-  const lineaValor = [
-    `${m.visitas} visita${m.visitas === 1 ? '' : 's'}`,
-    m.soles > 0 ? `S/ ${m.soles}` : null,
-    m.ultima
-      ? `última: ${fechaCompacta(m.ultima, false, false)} (hace ${diasSin} d)`
-      : `sin venir nunca${diasSin != null ? ` · escribió hace ${diasSin} d` : ''}`,
-  ].filter(Boolean).join(' · ');
+  /**
+   * LOS CUATRO NÚMEROS, FIJOS ARRIBA.
+   *
+   * Antes esto era una línea de texto corrido ("9 visitas · S/135 · última: 3
+   * ago (hace 13 d)") y además se repetía como filas de "Historia" 300 px más
+   * abajo. Dos lugares para el mismo dato, y ninguno de los dos se lee de un
+   * vistazo con el pulgar. Ahora son cuatro cuadros de tamaño fijo: la fila se
+   * puede comparar entre una ficha y otra, que es lo que uno hace de verdad.
+   *
+   * La relación y la frescura NO están acá: van como badges arriba, con su
+   * color. Escribirlas dos veces le roba espacio a lo que sí falta saber.
+   */
+  const tile = (k, v, sub = '', color = '') => `
+    <div class="hlc"><div class="hlk">${k}</div>
+      <div class="hlv"${color ? ` style="color:${color}"` : ''}>${v}</div>
+      ${sub ? `<div class="hls">${sub}</div>` : ''}</div>`;
+  const destacados = `<div class="hl">
+    ${tile('Visitas', m.visitas, m.visitas === 1 ? 'vino 1 vez' : 'veces que vino')}
+    ${tile('Pagado', m.soles > 0 ? `S/ ${m.soles}` : '—',
+      m.pagos > 0 ? `${m.pagos} Yape${m.pagos === 1 ? '' : 's'}` : 'nunca pagó',
+      m.soles > 0 ? 'var(--lime-ink)' : '')}
+    ${tile('Última vez', m.ultima ? esc(fechaCompacta(m.ultima, false, false)) : '—',
+      m.ultima ? `hace ${diasSin} d` : (diasSin != null ? `escribió hace ${diasSin} d` : 'sin registro'),
+      frescClave && frescClave !== 'al_dia' ? 'var(--st-alerta-ink)' : '')}
+    ${tile('Próxima', proximaInsc ? esc(fechaCompacta(proximaInsc.fecha, true, false)) : '—',
+      proximaInsc
+        ? `${esc(proximaInsc.hora || '')}${proximaInsc.estado === 'pagado' ? ' · pagado' : ` · ${esc(proximaInsc.estado)}`}`
+        : 'sin reserva',
+      proximaInsc ? 'var(--lime-ink)' : '')}
+  </div>`;
 
+  // "Próximo partido" y "Total pagado" ya no viven acá: subieron a los cuatro
+  // cuadros de arriba. Lo que queda es lo que ellos no dicen — desde cuándo
+  // existe este contacto y si ya está en el grupo.
   const historia = {
     primer: lead.creado_en ? `${fechaCompacta(lead.creado_en)} · lo captó el bot` : '—',
-    hayProximo: Boolean(proximaInsc),
-    proximo: proximaInsc
-      ? `${fechaCompacta(proximaInsc.fecha, true)}${proximaInsc.hora ? ` · ${proximaInsc.hora}` : ''} · ${proximaInsc.estado === 'pagado' ? 'pagado' : proximaInsc.estado}`
-      : 'Sin reserva',
-    montoPagado,
-    pagado: montoPagado > 0
-      ? `S/ ${montoPagado} · ${confirmados.length} pago${confirmados.length === 1 ? '' : 's'} verificado${confirmados.length === 1 ? '' : 's'}`
-      : 'Nunca pagó por acá',
   };
 
   // "En el grupo": el único hecho que el sistema no puede deducir solo. El
@@ -2618,9 +2720,9 @@ function paginaFicha(db, key, numero, query = {}) {
               nada que apretar ni que mantener al día. */ ''}
         <div class="valor">
           <span class="badge ${COLOR_RELACION[relClave]}">${relClave === 'casero' ? '⭐ ' : ''}${db.RELACIONES[relClave].label}</span>
-          <span class="vtxt">${esc(lineaValor)}</span>
           ${frescClave && frescClave !== 'al_dia' ? `<span class="badge ${COLOR_FRESCURA[frescClave]}">${db.FRESCURAS[frescClave].label}</span>` : ''}
         </div>
+        ${destacados}
       </div>
 
         <div>
@@ -2636,8 +2738,6 @@ function paginaFicha(db, key, numero, query = {}) {
           <div class="shdr">Historia <small>· lo que el sistema sabe de él</small></div>
           <div class="group">
             ${dato('Primer contacto', historia.primer)}
-            ${dato('Próximo partido', historia.proximo, historia.hayProximo ? 'var(--lime-ink)' : null)}
-            ${dato('Total pagado', historia.pagado, historia.montoPagado > 0 ? 'var(--lime-ink)' : null)}
             ${filaGrupo}
           </div>
         </div>
@@ -3570,6 +3670,40 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   const termino = db.yaPaso(p);
 
   /**
+   * EL RECORRIDO DEL PARTIDO.
+   *
+   * La fase salía como un badge suelto ("Por liquidar") arriba a la derecha:
+   * decía dónde está, pero no de dónde viene ni qué falta. Un partido tiene un
+   * camino de cuatro escalones y la pregunta que uno trae al abrir la pantalla
+   * es "¿esto ya se cobró o todavía no?".
+   *
+   * No agrega estado: dibuja el que `db.fasePartido` ya calcula. Cancelado se
+   * dibuja aparte porque no es un escalón del camino, es salirse de él.
+   */
+  const CAMINO = [
+    { id: 'proximo', label: 'Abierto' },
+    { id: 'en_curso', label: 'Jugándose' },
+    { id: 'gracia', label: 'Terminó' },
+    { id: 'liquidado', label: 'Liquidado' },
+  ];
+  const recorrido = (() => {
+    if (fase === 'cancelado') {
+      return '<div class="via"><span class="vp corte" style="flex:1">✕ Partido cancelado — no cuenta para la caja</span></div>';
+    }
+    // 'por_liquidar' y 'cerrado' viven en el mismo escalón que 'gracia': el
+    // partido ya pasó y la plata todavía no se dio por contada.
+    const indiceDe = { proximo: 0, en_curso: 1, gracia: 2, por_liquidar: 2, cerrado: 2, liquidado: 3 };
+    const aqui = indiceDe[fase] ?? 0;
+    return `<div class="via">${CAMINO.map((paso, i) => {
+      const clase = i < aqui ? 'hecho' : i === aqui ? 'aqui' : '';
+      // El escalón donde uno está dice la etiqueta larga (la que ya usaba el
+      // badge); los demás, la corta.
+      const texto = i === aqui ? db.FASES[fase].corto : paso.label;
+      return `<span class="vp ${clase}">${esc(texto)}</span>`;
+    }).join('')}</div>`;
+  })();
+
+  /**
    * CONVOCAR — "¿a quién le escribo para llenar el viernes en Breña?".
    *
    * Es la pregunta que ninguna pantalla contestaba: el CRM ordena por último
@@ -3899,6 +4033,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
           <span class="badge b-zona" style="background:${db.FASES[fase].ok ? 'var(--st-ok-solid)' : 'var(--st-off-solid)'}">${esc(db.FASES[fase].label)}</span>
         </span>
       </div>
+      ${recorrido}
       ${caja}
 
       ${bloqueAvisar}
