@@ -220,6 +220,29 @@ Reglas:
  * @param {object} lectura   lo que devuelve leerVoucher()
  * @returns {{estado: string, motivo: string|null, respuesta: string, handoff: boolean, monto: number|null, titular: string|null, numeroOperacion: string|null}}
  */
+/**
+ * ¿El destinatario del voucher es el dueño del negocio?
+ *
+ * Yape muestra el nombre recortado ("Clarck Val*", "Clarck S Valentin T -
+ * Yape"), así que no se puede comparar por igualdad. Se pide que al menos DOS
+ * palabras del titular configurado aparezcan en el destinatario, aceptando que
+ * vengan cortadas: "val" cuenta como "valentin", pero "Amaretti Import Sac" no
+ * se parece a nada y sigue cayendo a revisión.
+ *
+ * Con un titular de una sola palabra se exige esa palabra completa: con menos
+ * evidencia que eso, mejor que lo mire una persona.
+ */
+function mismoTitular(destinatario, titular) {
+  const palabras = (s) => String(s || '').toLowerCase().normalize('NFD')
+    .replace(/[̀-ͯ]/g, '').replace(/[^a-z ]+/g, ' ')
+    .split(/\s+/).filter((w) => w.length >= 3);
+  const dest = palabras(destinatario);
+  const duenio = palabras(titular);
+  if (!dest.length || !duenio.length) return false;
+  const calzan = duenio.filter((p) => dest.some((d) => p.startsWith(d) || d.startsWith(p))).length;
+  return duenio.length === 1 ? calzan === 1 : calzan >= 2;
+}
+
 function evaluarVoucher(numero, zona, lectura) {
   const monto = lectura.monto;
   const titular = lectura.nombre_remitente;
@@ -239,9 +262,17 @@ function evaluarVoucher(numero, zona, lectura) {
   // negocio por los últimos dígitos del destino — la señal más confiable.
   // Solo se rechaza con evidencia clara: si el voucher no muestra destino,
   // se sigue como antes (mejor pasar uno dudoso que frenar uno legítimo).
+  //
+  // DOS SEÑALES, NO UNA (24/08): los números (puede haber más de uno, ver
+  // db.yapesDelNegocio) y EL NOMBRE del destinatario. El voucher recorta el
+  // nombre —"Clarck Val*"— pero eso sigue siendo Clarck: rechazar por el
+  // número cuando el nombre es claramente el del dueño trabó 19 pagos suyos.
+  const yapes = db.yapesDelNegocio();
   const yapeNegocio = (db.getNegocio().yape.numero || '').replace(/\D/g, '');
   const digitosDestino = String(lectura.destino_ultimos_digitos || '').replace(/\D/g, '');
-  if (yapeNegocio.length >= 3 && digitosDestino.length >= 3 && !yapeNegocio.endsWith(digitosDestino.slice(-3))) {
+  const numeroCalza = yapes.some((y) => y.endsWith(digitosDestino.slice(-3)));
+  const nombreCalza = mismoTitular(lectura.destinatario, db.getNegocio().yape.titular);
+  if (yapes.length && digitosDestino.length >= 3 && !numeroCalza && !nombreCalza) {
     return {
       estado: 'revisar',
       motivo: `Pago a OTRO destinatario: ${lectura.destinatario || '¿?'} (…${digitosDestino}), no al Yape del negocio (…${yapeNegocio.slice(-3)})`,
@@ -424,6 +455,6 @@ function nombreCorto(numero) {
 }
 
 module.exports = {
-  leerVoucher, evaluarVoucher, procesarVoucher, interpretarPago, mimeDeImagen,
+  leerVoucher, evaluarVoucher, procesarVoucher, interpretarPago, mimeDeImagen, mismoTitular,
   cerebroActivo: () => Boolean(process.env.OPENAI_API_KEY),
 };

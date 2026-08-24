@@ -3283,6 +3283,9 @@ function paginaConfig(db, key, conexion = null, query = {}) {
               ${campo('g-yape-titular', 'Yape — titular',
                 `<input id="g-yape-titular" name="yape_titular" value="${esc(c.yape_titular)}">`,
                 'El nombre que le aparece al jugador al yapear.')}
+              ${campo('g-yape-otros', 'Tus otros Yapes',
+                `<input id="g-yape-otros" name="yape_otros" value="${esc(c.yape_otros || '')}" inputmode="tel" placeholder="987654321, 050">`,
+                'Separados por coma. Si cobras por más de un número, ponlos acá: el pago a cualquiera de ellos se confirma igual, en vez de quedar "por revisar". Vale con los últimos dígitos.', true)}
             </div>
 
             <div class="campos-tit">Identidad</div>

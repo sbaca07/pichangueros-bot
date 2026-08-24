@@ -499,6 +499,9 @@ const CAMPOS_CONFIG = [
   // Cuántos minutos le guarda el bot el cupo a alguien que dijo "anótame" y
   // todavía no yapeó (ver reservaMinutos).
   'reserva_minutos',
+  // Los OTROS Yapes de Clarck: un negocio de una persona no tiene por qué
+  // cobrar siempre al mismo número (ver yapesDelNegocio).
+  'yape_otros',
 ];
 
 // Nombres bonitos de las zonas conocidas; una zona nueva sin entrada acá sale
@@ -1193,6 +1196,29 @@ function graciaHoras() {
  *
  * 0 = nunca vence (vuelve al comportamiento viejo, por si hace falta).
  */
+/**
+ * TODOS LOS YAPES QUE SON DE LA CASA (2026-08-24).
+ *
+ * El validador comparaba el destino del voucher contra UN solo número y
+ * mandaba a revisar todo lo demás. Pero Clarck cobra por más de un Yape: 19
+ * pagos (S/ 287) entre el 17 y el 24 de agosto quedaron trabados con "Pago a
+ * OTRO destinatario: Clarck Val* (…050)" — o sea, plata suya, a un número
+ * suyo, que el sistema le contaba como no pagada y al jugador le decía que
+ * mandara la captura de nuevo.
+ *
+ * Se cargan en Ajustes, separados por coma. Se guarda lo que haya: número
+ * completo o solo los últimos dígitos, que es lo único que muestra el voucher.
+ *
+ * @returns {string[]} solo dígitos, el principal primero.
+ */
+function yapesDelNegocio() {
+  const c = getConfigMap();
+  const extras = String(c.yape_otros || '').split(/[,;\s]+/);
+  return [c.yape_numero, ...extras]
+    .map((v) => String(v || '').replace(/\D/g, ''))
+    .filter((v) => v.length >= 3);
+}
+
 const RESERVA_MIN_DEFAULT = 60;
 function reservaMinutos() {
   const r = db.prepare("SELECT valor FROM config WHERE clave = 'reserva_minutos'").get();
@@ -2619,6 +2645,7 @@ module.exports = {
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
+  yapesDelNegocio,
   // El precio, en un solo lugar (zona → partido → cuántos cupos cubre un monto).
   precioDeZona, precioDePartido, cuposPorMonto, partidosQueCalzan,
   // Ajustes operativos: lo que antes vivía en Render y ahora edita Clarck.
