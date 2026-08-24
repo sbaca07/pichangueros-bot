@@ -299,7 +299,7 @@ const srv = app.listen(0, async () => {
     // Los cuatro números viven arriba, en los cuadros destacados — no repetidos
     // como filas de "Historia", que era el estado anterior.
     check('…los cuatro destacados arriba', /class="hl"/.test(ficha)
-      && /Visitas/.test(ficha) && /Pagado/.test(ficha) && /Última vez/.test(ficha) && /Próxima/.test(ficha));
+      && /Visitas/.test(ficha) && /Pagado/.test(ficha) && /Última/.test(ficha) && /Próxima/.test(ficha));
     // Tiene reserva futura: el cuadro trae la fecha (no un guion) y debajo la
     // hora con el estado. No se fija QUÉ partido: otros bloques del test le
     // crean más de uno y el que sale es el más próximo, no el último inscrito.
@@ -724,10 +724,20 @@ const srv = app.listen(0, async () => {
     const crm = (await GET('/admin/leads?key=ux&vista=crm')).html;
     const bloque = (crm.match(/<div class="vistas">[\s\S]*?<\/div>\s*\n/) || [''])[0];
     check('la fila de vistas existe', /class="vistas"/.test(crm));
-    for (const txt of ['Esperando respuesta', 'Para Clarck', 'Falta meterlos al grupo', 'Se están enfriando', 'Caseros', 'Nuevos de la semana']) {
+    for (const txt of ['Sin responder', 'Para Clarck', 'Mandar el link', 'Enfriándose', 'Caseros', 'Nuevos']) {
       check(`…con la vista "${txt}"`, bloque.includes(txt));
     }
     check('cada vista trae su cuenta al lado', /class="vn">\d+<\/span>/.test(bloque));
+
+    // "Listos para el grupo" NO es "sin grupo": ese último son casi todos los
+    // contactos (el que escribió una vez y nunca dijo su nombre también). La
+    // lista de trabajo son los que ya se pueden meter: con nombre y con zona.
+    const nListos = Number((bloque.match(/Mandar el link<\/span><span class="vn">(\d+)</) || [, '-1'])[1]);
+    const nSinGrupo = (await GET('/admin/leads?key=ux&vista=crm&rel=sin_grupo')).html.match(/class="lrow"/g) || [];
+    check('"listos para el grupo" es un subconjunto real de "sin grupo"',
+      nListos >= 0 && nListos < nSinGrupo.length, `listos=${nListos} sinGrupo=${nSinGrupo.length}`);
+    const listos = (await GET('/admin/leads?key=ux&vista=crm&rel=listo_grupo')).html;
+    check('…y todos los que abre tienen nombre y zona', !/Sin nombre/.test(listos.replace(/<title>[\s\S]*?<\/title>/, '')));
 
     // El número del chip y la lista que abre TIENEN que ser el mismo conjunto:
     // el error clásico es que el contador diga 120 y la lista muestre 80.

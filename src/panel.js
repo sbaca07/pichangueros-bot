@@ -1214,8 +1214,11 @@ const ESTILOS = `
   /* Vistas rápidas del CRM: las seis listas que se abren de verdad, con su
      cuenta al lado. Dos columnas en celular — seis chips en fila se convierten
      en un scroll horizontal que nadie descubre. */
-  .vistas{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;padding:var(--s2) 2px var(--s1)}
-  .vista{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:var(--tap);
+  /* minmax(0,1fr) y no 1fr: con 1fr el ancho mínimo de cada celda es su
+     contenido, así que "Falta meterlos al grupo" empujaba la grilla más ancha
+     que la pantalla y la columna derecha quedaba cortada. */
+  .vistas{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;padding:var(--s2) 2px var(--s1)}
+  .vista{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:var(--tap);min-width:0;
     padding:0 12px;border-radius:var(--r2);background:var(--surface);border:1.5px solid var(--line-strong);
     color:var(--ink);font-size:var(--t-s);font-weight:600;text-decoration:none}
   .vista .vt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1225,7 +1228,7 @@ const ESTILOS = `
   /* En cero no se apaga ni se esconde: se atenúa. Que la vista exista y diga 0
      es la información — esconderla haría pensar que el filtro no está. */
   .vista.cero{opacity:.55}
-  @media (min-width:760px){ .vistas{grid-template-columns:repeat(3,1fr)} }
+  @media (min-width:760px){ .vistas{grid-template-columns:repeat(3,minmax(0,1fr))} }
   .fchip.amber.on{background:var(--st-debe-solid);border-color:var(--st-debe-solid);color:#fff}
   .fchip.red.on{background:var(--st-alerta-solid);border-color:var(--st-alerta-solid);color:#fff}
 
@@ -2294,7 +2297,7 @@ function paginaCRM(db, key, query) {
   // lista contando cosas distintas, que es justo lo que se vino a arreglar.
   // `pagaron` es el conjunto que ordena "¿Dónde abrir?" (dejó plata alguna vez).
   const RELACION_FILTROS = ['nunca', 'probo', 'vuelve', 'casero', 'vinieron', 'volvieron', 'pagaron',
-    'al_dia', 'enfriando', 'perdido', 'en_grupo', 'sin_grupo'];
+    'al_dia', 'enfriando', 'perdido', 'en_grupo', 'sin_grupo', 'listo_grupo'];
   const relF = RELACION_FILTROS.includes(query.rel) ? query.rel : '';
   const dia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
   const distritoF = normTexto(query.distrito || '');
@@ -2350,6 +2353,16 @@ function paginaCRM(db, key, query) {
     perdido: (l) => mDe(l).visitas >= 1 && db.frescuraDe(db.diasDesde(mDe(l).ultima), um) === 'perdido',
     en_grupo: (l) => Boolean(l.grupo_enviado_en),
     sin_grupo: (l) => !l.grupo_enviado_en,
+    /**
+     * LISTOS PARA ENTRAR AL GRUPO — el único paso del embudo que sigue siendo
+     * a mano.
+     *
+     * "Sin grupo" a secas son 1048 de 1049: incluye a todo el que escribió una
+     * vez y nunca dijo ni su nombre. Como lista de trabajo no sirve. Estos son
+     * los que YA se pueden meter: dieron su nombre, tienen una zona con cancha
+     * nuestra, y nadie les mandó el link todavía.
+     */
+    listo_grupo: (l) => !l.grupo_enviado_en && l.nombre && l.zona && l.zona !== 'otra',
   };
   if (relF) leads = leads.filter(PRED_REL[relF]);
   const hayFiltro = Boolean(q || zona || filtro || relF || dia || distritoF);
@@ -2438,6 +2451,7 @@ function paginaCRM(db, key, query) {
     ['enfriando', `❄ Se enfrió (${um.frio + 1} a ${um.perdido} d sin venir)`, nPor(PRED_REL.enfriando)],
     ['perdido', `💤 Perdidos (+${um.perdido} d sin venir)`, nPor(PRED_REL.perdido)],
     ['en_grupo', '👥 En el grupo', nPor(PRED_REL.en_grupo)],
+    ['listo_grupo', '👉 Listos para el grupo', nPor(PRED_REL.listo_grupo)],
     ['sin_grupo', 'Sin grupo todavía', nPor(PRED_REL.sin_grupo)],
   ];
 
@@ -2455,18 +2469,21 @@ function paginaCRM(db, key, query) {
    * chip y la lista que se abre no puedan discrepar (el error clásico: el
    * contador dice 120 y la lista muestra 80).
    */
+  // Etiquetas cortas a propósito: en un celular de 360 px, "Esperando
+  // respuesta" ya se corta con puntos suspensivos y el chip deja de decir qué
+  // abre. Las largas viven en el desplegable de Relación, que tiene el ancho.
   const VISTAS = [
-    { id: 'esperando', etiqueta: '📥 Esperando respuesta', qs: { filtro: 'esperando' },
+    { id: 'esperando', etiqueta: '📥 Sin responder', qs: { filtro: 'esperando' },
       pred: (l) => numerosEsperando.has(l.numero) },
     { id: 'handoff', etiqueta: '🔔 Para Clarck', qs: { filtro: 'handoff' },
       pred: (l) => Boolean(l.handoff) },
-    { id: 'sin_grupo', etiqueta: '👥 Falta meterlos al grupo', qs: { rel: 'sin_grupo' },
-      pred: PRED_REL.sin_grupo },
-    { id: 'enfriando', etiqueta: '❄ Se están enfriando', qs: { rel: 'enfriando' },
+    { id: 'listo_grupo', etiqueta: '👉 Mandar el link', qs: { rel: 'listo_grupo' },
+      pred: PRED_REL.listo_grupo },
+    { id: 'enfriando', etiqueta: '❄ Enfriándose', qs: { rel: 'enfriando' },
       pred: PRED_REL.enfriando },
     { id: 'casero', etiqueta: '⭐ Caseros', qs: { rel: 'casero' },
       pred: PRED_REL.casero },
-    { id: 'nuevos', etiqueta: '🟢 Nuevos de la semana', qs: { filtro: 'nuevos' },
+    { id: 'nuevos', etiqueta: '🟢 Nuevos', qs: { filtro: 'nuevos' },
       pred: (l) => (l.creado_en || '').slice(0, 10) >= fechaLima(-6) },
   ];
   // Encendida solo si lo que está puesto es EXACTAMENTE la vista: sus dos
@@ -2669,7 +2686,7 @@ function paginaFicha(db, key, numero, query = {}) {
     ${tile('Pagado', m.soles > 0 ? `S/ ${m.soles}` : '—',
       m.pagos > 0 ? `${m.pagos} Yape${m.pagos === 1 ? '' : 's'}` : 'nunca pagó',
       m.soles > 0 ? 'var(--lime-ink)' : '')}
-    ${tile('Última vez', m.ultima ? esc(fechaCompacta(m.ultima, false, false)) : '—',
+    ${tile('Última', m.ultima ? esc(fechaCompacta(m.ultima, false, false)) : '—',
       m.ultima ? `hace ${diasSin} d` : (diasSin != null ? `escribió hace ${diasSin} d` : 'sin registro'),
       frescClave && frescClave !== 'al_dia' ? 'var(--st-alerta-ink)' : '')}
     ${tile('Próxima', proximaInsc ? esc(fechaCompacta(proximaInsc.fecha, true, false)) : '—',
