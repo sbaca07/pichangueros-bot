@@ -149,6 +149,12 @@ function antiguedad(creadoEn) {
 // Quedó congelada y le entregaba al modelo una etiqueta desactualizada
 // ("nuevo" para alguien con tres pagos encima). Lo que el cerebro necesita para
 // responder son los DATOS del contacto; qué tan cliente es se mira en el panel.
+// El paso 4 del filtro decía "Zona brena/comas" desde que esas eran las dos
+// únicas zonas. Rímac y Chorrillos existen desde el 12/08 y tienen su link de
+// grupo cargado desde el 24/08: dejar la lista escrita a mano ahí adentro le
+// pedía al modelo que no mandara el link justo a las dos zonas nuevas, que es
+// el paso donde un interesado se vuelve jugador. Las zonas ya salen del
+// negocio (paso 3); el paso 4 ahora las respeta.
 function buildSystemPrompt(lead) {
   const negocio = db.getNegocio(); // se lee fresco en cada mensaje: precios/sedes se editan sin redesplegar
   const faltantes = [];
@@ -184,7 +190,7 @@ Datos que aún nos faltan de ESTE contacto: ${faltantes.length ? faltantes.join(
 ${negocio.bienvenida}
 2. Si ya saludamos y faltan datos, pídelos con naturalidad (no repitas la bienvenida completa).
 3. Cuando dé su distrito, clasifícalo en la zona operativa que calce o quede cerca. Zonas actuales: ${Object.entries(negocio.zonas).map(([k, z]) => `"${k}" (${z.nombre})`).join(', ')}. Referencias de cercanía: Breña o cerca → brena; Comas, Collique, Carabayllo, Los Olivos norte → comas; Rímac o cerca → rimac; Chorrillos, Barranco, Surco sur → chorrillos. Cualquier otro distrito → zona "otra".
-4. Zona brena/comas: explícale la mecánica y pásale el link del grupo (o dile que se lo envías en un momento si no está configurado).
+4. Zona operativa (CUALQUIERA de las listadas arriba, no solo Breña y Comas): explícale la mecánica y pásale el link del grupo de SU zona (o dile que se lo envías en un momento si esa zona no tiene link configurado).
 5. Zona "otra": respuesta CORTA (3-4 líneas máximo). Dile con buena onda que aún no tenemos sede en su distrito, que ya lo anotaste para avisarle apenas abramos por ahí, y ofrécele UNA o DOS sedes concretas (las más cercanas a su distrito, no todas) preguntándole si le queda cómodo llegar. **NO le vuelques la parrilla completa de la semana**: eso abruma. Si dice que sí, ahí recién le das los partidos de esa sede.
 
 ## Hoy es ${db.fechaBonita(db.hoyLima(), { relativa: false })} (hora de Lima)
