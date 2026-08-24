@@ -2203,6 +2203,28 @@ const despuesDelCorte = (ts) => { const c = getCorte(); return !c || (ts || '').
  * hasta que se asigne; para darla por saldada está el punto de arranque
  * (corte_operativo), que es el "empezar en limpio" explícito de Clarck.
  */
+/**
+ * "ESTÁ BIEN, DALO POR BUENO" — lo que faltaba para cerrar un pago en revisión.
+ *
+ * El panel sabía mandar un Yape a revisión y sabía mostrarlo, pero no había
+ * ningún botón para resolverlo: 123 pagos (S/ 2,124) esperando a alguien que
+ * no tenía cómo decir que sí. El jugador figuraba debiendo y la caja del
+ * partido contaba de menos.
+ *
+ * Deja constancia de quién lo destrabó y de por qué había caído, porque el
+ * motivo original es la única pista si mañana aparece un reclamo.
+ *
+ * @returns {{ok: boolean, motivo?: string}}
+ */
+function confirmarPagoManual(id, quien = 'panel') {
+  const p = db.prepare('SELECT * FROM pagos WHERE id = ?').get(Number(id));
+  if (!p) return { ok: false, motivo: 'no_existe' };
+  if (p.estado === 'confirmado') return { ok: true, motivo: 'ya_estaba' };
+  db.prepare("UPDATE pagos SET estado = 'confirmado', motivo = ? WHERE id = ?")
+    .run(`Aprobado a mano desde el ${quien}. Antes decía: ${p.motivo || 'sin motivo'}`, p.id);
+  return { ok: true };
+}
+
 function pagosSinPartido(limite = 30) {
   const corte = getCorte() || '0000-00-00';
   return db.prepare(`
@@ -2723,7 +2745,7 @@ module.exports = {
   get RECURRENTE_DESDE() { return recurrenteDesde(); },
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, promoverSiguiente, vencerReservas, reservaMinutos, setAsistencia, vincularPago, candidatosDePago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita, candidatosConvocatoria,
-  pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
+  pagoSueltoDe, pagarInscripcion, confirmarPagoManual, getCorte, setCorte, despuesDelCorte,
   hoyLima: hoyLimaDb, fechaLima: fechaLimaDb, ahoraLima, ordenHora, horaInput, normalizarHora, parseHora, textoHora,
   getMarca, setMarca, handoffsDesde, handoffsActivos,
 };

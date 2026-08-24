@@ -98,6 +98,11 @@ const iniciales = (nombre, numero) => {
   return ((p[0]?.[0] || '') + (p[1]?.[0] || '')).toUpperCase() || String(numero).slice(-2);
 };
 
+// Texto seguro para meter dentro de un confirm('…') que vive en un atributo
+// HTML: primero se escapan las comillas simples para JS, después esc() para
+// el atributo (el &#39; resultante se decodifica a \' antes de evaluarse).
+const jsTxt = (t) => esc(String(t ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+
 const MS_DIA = 86400e3;
 // Normaliza texto libre para agrupar/filtrar: minúsculas y sin tildes.
 const normTexto = (t) => (t || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
@@ -815,6 +820,39 @@ function registrarPanel(app, db, conexion = null) {
   const volverATurnos = (req, res, aviso, err = false) =>
     volver(res, { key: req.body.key, vista: 'partidos', aviso, ancla: 'turnos', err });
 
+  /**
+   * Dar por bueno un Yape que quedó en revisión.
+   *
+   * Faltaba: el panel sabía mandarlos a revisar y mostrarlos, pero no había
+   * botón para cerrarlos. Se acumularon 123 (S/ 2,124) esperando a alguien
+   * que no tenía cómo decir que sí — con el jugador figurando en deuda.
+   *
+   * Después de confirmarlo se intenta engancharlo a un partido con la misma
+   * maquinaria de siempre: si calza uno solo, entra; si no, queda suelto y
+   * aparece en "pagos sin partido", que es donde se asigna a dedo.
+   */
+  app.post('/admin/pago/confirmar', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const id = Number(req.body.pago_id);
+    const pago = db.listPagosTodos().find((p) => p.id === id);
+    const aPagos = (aviso, err) => volver(res, { key: req.body.key, vista: 'pagos', aviso, err });
+    if (!pago) return aPagos('Ese pago ya no existe.', true);
+    const r = db.confirmarPagoManual(id, `panel (${req.ip || 'sin IP'})`);
+    if (!r.ok) return aPagos('No se pudo confirmar ese pago.', true);
+    const quien = pago.nombre || pago.titular || `+${pago.numero}`;
+    let enganchado = null;
+    if (pago.numero) {
+      const lead = db.getLead(pago.numero) || {};
+      try {
+        const v = db.vincularPago(pago.numero, id, pago.cupos || 1, lead.zona || null, pago.monto);
+        enganchado = v && v.partido ? v.partido : null;
+      } catch { /* si no calza ninguno, queda suelto: es el caso normal */ }
+    }
+    aPagos(enganchado
+      ? `Pago de ${quien} confirmado y anotado en el partido del ${db.fechaBonita(enganchado.fecha)}${enganchado.hora ? ` ${enganchado.hora}` : ''}.`
+      : `Pago de ${quien} confirmado. No calzaba con un solo partido, así que quedó suelto: asígnalo desde la pantalla del partido.`);
+  });
+
   app.post('/admin/turno', (req, res) => {
     if (!autorizado(req, res)) return;
     const id = db.crearTurno({
@@ -1289,6 +1327,12 @@ const ESTILOS = `
   .est-lleno::before{content:"●"}
   .est-off{background:var(--st-off-bg);color:var(--st-off-ink);border-color:var(--st-off-ink)}
   .est-off::before{content:"–"}
+  /* El botón de "dalo por bueno" cuelga de la fila del pago, no adentro: un
+     <form> no puede vivir dentro del <a> que lleva a la ficha. */
+  .pago-ok{margin:-1px 0 8px;padding:0 13px 10px;background:var(--surface);border:1px solid var(--line);
+    border-top:0;border-radius:0 0 var(--r3) var(--r3)}
+  .pago-ok button{width:100%;min-height:var(--tap);font-size:var(--t-s);font-weight:700;
+    background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink);border-radius:var(--r2)}
   /* La pichanga cancelada se queda a la vista, tachada: si desaparece, uno no
      sabe si se canceló, si nunca se abrió o si el sistema se la comió. El
      tachado va sobre el NOMBRE, no sobre los chips, que tienen que seguir
@@ -2153,6 +2197,7 @@ const MEDIOS = {
 };
 
 function paginaPagos(db, key, query = {}) {
+  const keyRaw = decodeURIComponent(key);
   const todosPagos = db.listPagosTodos();
   const hoy = hoyLima();
   const soles = (n) => `S/ ${Number(n || 0) % 1 === 0 ? Number(n || 0) : Number(n || 0).toFixed(2)}`;
@@ -2254,7 +2299,17 @@ function paginaPagos(db, key, query = {}) {
         <span class="badge ${ok ? 'b-done' : 'b-wait'}">${ok ? 'confirmado' : 'por revisar'}</span>
         <span class="ltime">${esc(m.nombre)}</span>
       </div>
-    </a>`;
+    </a>
+    ${/* LA SALIDA QUE FALTABA. El panel sabía mandar un pago a revisión y
+          mostrarlo, pero no había forma de cerrarlo: se juntaron 123 esperando
+          a alguien que no tenía cómo decir que sí, con el jugador figurando en
+          deuda. El botón va FUERA del <a> (un form dentro de un link no se
+          puede) y solo en los que están por revisar. */ ''}
+    ${ok ? '' : `<form method="post" action="/admin/pago/confirmar" class="pago-ok"
+      onsubmit="return confirm('${jsTxt(`¿Dar por bueno el pago de ${quien} por ${soles(p.monto)}? Queda confirmado y, si calza con un solo partido, se anota ahí.`)}')">
+      <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="pago_id" value="${p.id}">
+      <button class="btn-toque">✅ Está bien — dalo por bueno</button>
+    </form>`}`;
   };
 
   return baseHtml('Pichangueros — Pagos', `
@@ -3858,11 +3913,6 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
           Jugadores de ${esc(z ? z.nombre : p.zona)} que ya vinieron y no están en esta lista, del que vino hace menos al que vino hace más. No manda mensajes: te arma la lista.
         </div>
       </div>`}`;
-
-  // Texto seguro para meter dentro de un confirm('…') que vive en un atributo
-  // HTML: primero se escapan las comillas simples para JS, después esc() para
-  // el atributo (el &#39; resultante se decodifica a \' antes de evaluarse).
-  const jsTxt = (t) => esc(String(t ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
 
   const accion = (i, estado, etiqueta, estilo = '', confirmar = '') => `
     <form method="post" action="/admin/inscripcion/estado" style="display:inline"${confirmar ? ` onsubmit="return confirm('${jsTxt(confirmar)}')"` : ''}>

@@ -801,6 +801,28 @@ const srv = app.listen(0, async () => {
     check('la cancelada CON gente avisa que hay a quién escribirle', /avísales/.test(semana2));
   }
 
+  console.log('== 4l5 · Un pago en revisión se puede cerrar ==');
+  {
+    // El panel sabía mandar un Yape a revisión y mostrarlo, pero no había
+    // botón para decir que sí: se juntaron 123 esperando a alguien que no
+    // tenía cómo resolverlos, con el jugador figurando en deuda.
+    db.getOrCreateLead('51990000041');
+    db.updateLead('51990000041', { zona: 'brena', nombre: 'Trabado Pérez' });
+    const idPago = db.registrarPago({ numero: '51990000041', monto: 15, numero_operacion: 'UX-REV-9', estado: 'revisar', motivo: 'Pago a OTRO destinatario' });
+    const antes = (await GET('/admin/leads?key=ux&vista=pagos')).html;
+    check('el pago en revisión ofrece cerrarlo', /pago\/confirmar/.test(antes) && /dalo por bueno/i.test(antes));
+
+    const r = await POST('/admin/pago/confirmar', { key: 'ux', pago_id: String(idPago) });
+    check('confirmarlo responde (302)', r.status === 302, `HTTP ${r.status}`);
+    const p = db.listPagosTodos().find((x) => x.id === idPago);
+    check('…y el pago queda confirmado', p && p.estado === 'confirmado');
+    check('…dejando anotado por qué había caído', /Antes decía/.test(p.motivo || ''));
+
+    const despues = (await GET('/admin/leads?key=ux&vista=pagos&estado=conf')).html;
+    check('un pago ya confirmado no ofrece confirmarse de nuevo',
+      !new RegExp(`name="pago_id" value="${idPago}"`).test(despues));
+  }
+
   console.log('== 4m · Pagos: "limpiar" solo si hay algo que limpiar ==');
   {
     // El período arranca en '7d', así que hayFiltro daba true SIEMPRE: el botón
