@@ -1492,9 +1492,31 @@ const ESTILOS = `
   .snav a:hover{background:var(--surface-2)}
   .sbottom{margin-top:22px;padding-top:16px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:2px}
   .sbottom::before{content:'Herramientas';font-size:var(--t-eyebrow);font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2);padding:0 13px 8px}
-  .scsv{display:inline-flex;align-items:center;gap:7px;min-height:var(--tap);font-size:var(--t-s);color:var(--ink-2);padding:0 13px;border-radius:var(--r2)}
+  /* Cada herramienta dice QUÉ HACE debajo del nombre. "Respaldar a Sheet" y
+     "Descargar backup BD" son cinco palabras que no le dicen nada a quien no
+     las escribió: una decía "copio los contactos a tu Google Sheet" y la otra
+     "me bajo TODA la base"; parecían lo mismo. */
+  .scsv{display:flex;flex-direction:column;justify-content:center;gap:1px;min-height:var(--tap);
+    font-size:var(--t-s);color:var(--ink);padding:8px 13px;border-radius:var(--r2)}
+  .scsv b{font-weight:600;display:flex;align-items:center;gap:7px}
+  .scsv small{font-size:var(--t-xs);color:var(--ink-2);line-height:1.3;padding-left:22px}
   .scsv:hover{background:var(--surface-2)}
   .fcol-right .group{margin-bottom:0}
+
+  /* El bloque de números del Resumen, plegado. El <summary> ya adelanta las
+     tres cifras que uno querría de un vistazo: si eso alcanza, no hace falta
+     abrirlo. */
+  .analitica{border:1px solid var(--line);border-radius:var(--r3);background:var(--surface);overflow:hidden}
+  .analitica>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;
+    gap:10px;padding:13px 15px;min-height:var(--tap);font-size:var(--t-m)}
+  .analitica>summary::-webkit-details-marker{display:none}
+  .analitica>summary b{display:block;font-weight:700;color:var(--ink)}
+  .analitica>summary small{display:block;font-size:var(--t-s);color:var(--ink-2);margin-top:2px;line-height:1.35}
+  .analitica>summary .chev{flex:0 0 auto;font-size:var(--t-s);font-weight:700;color:var(--lime-ink);white-space:nowrap}
+  .analitica[open]>summary{border-bottom:1px solid var(--line)}
+  .analitica[open]>summary .chev::after{content:' (ocultar)';color:var(--ink-2);font-weight:600}
+  .analitica>*:not(summary){padding-left:13px;padding-right:13px}
+  .analitica>*:last-child{padding-bottom:12px}
 
   /* RESPONSIVE: a partir de 980px, layout de escritorio */
   @media (min-width:980px){
@@ -1615,11 +1637,16 @@ const sidebar = (key, activo) => `<aside class="sidebar">
     <a class="${activo === 'config' || activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig} Ajustes</a>
   </nav>
   <div class="sbottom">
-    ${sheetsync.activo() ? `<a class="scsv" href="/admin/sync-sheet?key=${key}">☁ Respaldar a Sheet</a>` : ''}
-    <a class="scsv" href="/admin/leads.csv?key=${key}">⬇ Exportar CSV</a>
-    <a class="scsv" href="/admin/leads.xlsx?key=${key}">📊 Exportar Excel</a>
-    <a class="scsv" href="/admin/backup-db?key=${key}">💾 Descargar backup BD</a>
-    ${backup.activo() ? `<a class="scsv" href="/admin/backup-email?key=${key}">✉ Enviar backup por correo</a>` : ''}
+    ${sheetsync.activo() ? `<a class="scsv" href="/admin/sync-sheet?key=${key}" title="Copia la lista de contactos a tu Google Sheet. Solo los contactos: no incluye pagos ni conversaciones.">
+      <b>☁ Copiar a mi Google Sheet</b><small>Los contactos, para verlos en Excel/Sheets</small></a>` : ''}
+    <a class="scsv" href="/admin/leads.csv?key=${key}" title="Baja los contactos como archivo CSV, para abrirlo en Excel o Google Sheets.">
+      <b>⬇ Bajar contactos (CSV)</b><small>Archivo simple, se abre en cualquier lado</small></a>
+    <a class="scsv" href="/admin/leads.xlsx?key=${key}" title="Lo mismo que el CSV pero como archivo de Excel, con las columnas ya formateadas.">
+      <b>📊 Bajar contactos (Excel)</b><small>Igual que el CSV, pero ya con formato</small></a>
+    <a class="scsv" href="/admin/backup-db?key=${key}" title="Baja una copia COMPLETA del sistema: contactos, conversaciones, pagos y partidos. Es el respaldo de verdad.">
+      <b>💾 Bajar copia de todo</b><small>Contactos, chats, pagos y partidos: el respaldo</small></a>
+    ${backup.activo() ? `<a class="scsv" href="/admin/backup-email?key=${key}" title="Manda esa misma copia completa a tu correo, por si quieres guardarla fuera de acá.">
+      <b>✉ Mandarme esa copia al correo</b><small>La misma copia, a tu mail</small></a>` : ''}
   </div>
 </aside>`;
 
@@ -2021,15 +2048,21 @@ function paginaResumen(db, key, query = {}) {
         ${sinClasificar ? zrow('Por clasificar', sinClasificar, 'var(--ink-3)', null) : ''}
       </div>
 
-      ${distritos.length ? `
-      <div class="shdr">¿Dónde abrir? · distritos sin sede, por gente que YA pagó</div>
-      <div class="zlist">${distritos.map(drow).join('')}</div>
-      <div class="foot" style="padding:8px 2px 0">Ordena la plata, no el interés: son personas de ese distrito que viajaron a otra zona y yaparon.
-        ${UMBRAL_PILOTO}+ (media cancha) → 🔥 candidato a piloto.</div>` : ''}
-
       </div>
       <div class="dcol">
-      <div class="shdr">La comunidad <small>· ${todos.length} contactos</small></div>
+      ${/* PLEGADO POR DEFECTO (24/08). Estos tres bloques no se miran a diario:
+            son la foto del negocio, no la cola de trabajo de hoy. Abiertos
+            competían por la misma pantalla con las alertas y los pendientes, y
+            lo que hay que hacer HOY quedaba compitiendo con un gráfico de
+            barras. No se borran —dicen cosas que ningún otro lado dice— pero
+            se abren cuando uno viene a mirarlos. El navegador recuerda si lo
+            dejaste abierto. */ ''}
+      <details class="analitica"${query.numeros === '1' ? ' open' : ''}>
+      <summary>
+        <span><b>Cómo va la comunidad</b><small>${todos.length} contactos · ${vinieron} vinieron alguna vez · ${caseros} caseros</small></span>
+        <span class="chev">ver números ›</span>
+      </summary>
+      <div class="shdr" style="margin-top:4px">La comunidad <small>· ${todos.length} contactos</small></div>
       <div class="marcador">
         <div class="mtop"><span class="mlabel">Contactos captados</span>
           <span class="mdelta">▲ +${semana} esta semana</span></div>
@@ -2066,8 +2099,16 @@ function paginaResumen(db, key, query = {}) {
         ${frow('Perdidos', salud.perdido, 'var(--st-off-solid)', `más de ${um.perdido} días sin venir`, '&rel=perdido', pctCli)}
       </div>
       <div class="foot" style="padding:8px 2px 0">Los cortes se cambian en <a href="/admin/leads?key=${key}&vista=config#frescura" style="color:var(--lime-ink)">Ajustes</a>. El que se está enfriando todavía vuelve con un mensaje; el perdido ya se fue a otra pichanga.</div>` : ''}
+      </details>
 
-
+      ${/* "¿Dónde abrir?" pasó a esta columna: no es cola de trabajo de hoy,
+            es la decisión de dónde crecer. Y deja la columna izquierda —la
+            accionable— corta y de un vistazo. */ ''}
+      ${distritos.length ? `
+      <div class="shdr" style="margin-top:14px">¿Dónde abrir? · distritos sin sede, por gente que YA pagó</div>
+      <div class="zlist">${distritos.map(drow).join('')}</div>
+      <div class="foot" style="padding:8px 2px 0">Ordena la plata, no el interés: son personas de ese distrito que viajaron a otra zona y yaparon.
+        ${UMBRAL_PILOTO}+ (media cancha) → 🔥 candidato a piloto.</div>` : ''}
       </div>
       </div>
       <div class="foot">Se actualiza solo cada 90 s · <a href="/admin/leads.csv?key=${key}" style="color:var(--lime-ink)">⬇ exportar CSV</a></div>
@@ -2871,9 +2912,20 @@ function paginaConfig(db, key, conexion = null, query = {}) {
             s && s.costo == null
               ? '<span class="falta">Falta cargarlo.</span> Es lo que te cuesta alquilarla por turno: sin esto el panel muestra lo que entra, no lo que queda.'
               : 'Lo que te cuesta alquilarla por turno. Con esto el partido te dice cuánto queda.')}
-          ${campo(`${uid}-horario`, 'Horario',
-            `<input id="${uid}-horario" name="horario" value="${v('horario')}" placeholder="Ej. Lun a Vie 7-11pm">`,
-            'El bot responde con esto cuando preguntan a qué hora se juega.')}
+          ${/* El horario dejó de escribirse a mano: sale de los turnos fijos,
+                que ya tienen el día y la hora como datos. Un texto libre acá
+                envejece —decía "Lunes a viernes 8pm — POR CONFIRMAR" mientras
+                se jugaban dos turnos por noche y sábados— y el bot lo repetía
+                tal cual. El campo sigue existiendo para las canchas que aún no
+                tienen turnos cargados. */ ''}
+          ${(s && db.horarioDeSede(s.id))
+            ? campo(`${uid}-horario`, 'Horario',
+              `<div style="min-height:var(--tap);display:flex;align-items:center;padding:0 2px;font-weight:600">${esc(db.horarioDeSede(s.id))}</div>
+               <input type="hidden" name="horario" value="${v('horario')}">`,
+              `Sale solo de los turnos fijos de esta cancha — no se escribe acá. Es lo que el bot contesta cuando preguntan a qué hora se juega. <a href="/admin/leads?key=${key}&vista=partidos#turnos" style="color:var(--lime-ink);font-weight:700">Cambiar los días y horas ›</a>`)
+            : campo(`${uid}-horario`, 'Horario',
+              `<input id="${uid}-horario" name="horario" value="${v('horario')}" placeholder="Ej. Lun a Vie 7-11pm">`,
+              `Esta cancha todavía no tiene turnos fijos, así que el horario se escribe a mano. <a href="/admin/leads?key=${key}&vista=partidos#turnos" style="color:var(--lime-ink);font-weight:700">Cargar sus turnos ›</a> y se arma solo.`)}
           ${campo(`${uid}-estacionamiento`, 'Estacionamiento',
             `<input id="${uid}-estacionamiento" name="estacionamiento" value="${v('estacionamiento')}" placeholder="Ej. Sí, gratis">`,
             'Opcional.')}
@@ -3399,9 +3451,14 @@ function paginaPartidos(db, key, query = {}) {
     // "Lleno" se decía SOLO pintando el "12/14" de ámbar en vez de verde: con
     // daltonismo rojo-verde los dos son el mismo marrón, y a contraluz tampoco
     // se distinguen. Ahora la palabra está escrita y el chip trae su glifo.
+    // Vacío NO es "ok": un partido en 0/12 con el chip verde y su palomita
+    // decía "todo en orden" cuando lo que pasa es que no hay nadie anotado y
+    // faltan horas para jugar. Verde solo cuando ya hay gente adentro.
     const chipCupos = lleno
       ? `<span class="est est-lleno">${p.ocupados}/${p.cupo} lleno</span>`
-      : `<span class="est est-ok">${p.ocupados}/${p.cupo} · ${p.cupo - p.ocupados} libre${p.cupo - p.ocupados === 1 ? '' : 's'}</span>`;
+      : p.ocupados === 0
+        ? `<span class="est est-debe">${p.ocupados}/${p.cupo} · nadie anotado</span>`
+        : `<span class="est est-ok">${p.ocupados}/${p.cupo} · ${p.cupo - p.ocupados} libre${p.cupo - p.ocupados === 1 ? '' : 's'}</span>`;
     return `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}">
       <span class="pfecha"><b>${esc(p.hora ? p.hora.split('-')[0] : '—')}</b><small>${esc(p.hora ? (/am/i.test(p.hora) ? 'am' : 'pm') : 'sin hora')}</small></span>
       <span class="lbody">

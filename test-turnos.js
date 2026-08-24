@@ -77,7 +77,11 @@ console.log('== 2 · La fase se calcula: nadie la guarda ==');
 
   // Las TRES decisiones humanas, y solo esas, se guardan.
   db.cerrarInscripcion(id);
-  check('cerrar a mano corta la inscripción al toque', db.motivoCierre(db.getPartido(id), alas(hoy, '17:00')) === 'cerrado');
+  // SIN pasarle una hora inventada: "al toque" es AHORA, y ese es justo el
+  // caso. Preguntando por las 17:00 el check dependía de la hora del reloj —
+  // pasaba en la mañana y fallaba de tarde, porque `cierra_en` se escribe con
+  // la hora real y a las 17:00 el cierre "todavía no había ocurrido".
+  check('cerrar a mano corta la inscripción al toque', db.motivoCierre(db.getPartido(id)) === 'cerrado');
   check('…y se escribe en paralelo el estado viejo (rollback del deploy)', db.getPartido(id).estado === 'cerrado');
   db.reabrirPartido(id);
   check('reabrir la devuelve', db.admiteInscripcion(db.getPartido(id), alas(hoy, '17:00')));

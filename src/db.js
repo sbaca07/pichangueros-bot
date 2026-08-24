@@ -775,12 +775,65 @@ function cuposPorMonto(monto, precio) {
   return n >= 1 && n <= 10 && Math.abs(Number(monto) - n * Number(precio)) <= 0.5 ? n : null;
 }
 
+/**
+ * EL HORARIO DE UNA CANCHA SE CALCULA DE SUS TURNOS (2026-08-24).
+ *
+ * Era un campo de texto libre, y como todo texto libre envejeció: decía
+ * "Lunes a viernes 8pm a 9pm — POR CONFIRMAR" mientras la cancha jugaba dos
+ * turnos por noche y sábados por la mañana. El bot lo repetía tal cual al
+ * jugador durante dos meses.
+ *
+ * Los turnos fijos ya tienen el día y la hora como DATOS. Así que el horario
+ * deja de escribirse: se arma. Se toma lo encendido; si no hay nada encendido
+ * todavía (los turnos nacen en pausa), se usa la plantilla igual, que es lo
+ * que Clarck efectivamente juega.
+ *
+ * @returns {string|null} "Lun, mar y mié 8-9pm · jue 9-10pm", o null si esa
+ *   cancha no tiene turnos cargados (ahí manda el texto que haya escrito).
+ */
+const DIA_CORTO = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+function horarioDeSede(sedeId) {
+  if (!sedeId) return null;
+  // `turnos` se crea más abajo en este mismo archivo, y getNegocio() corre
+  // durante la carga del módulo: en ese primer instante la tabla todavía no
+  // existe. Sin esto, arrancar con una BD nueva revienta.
+  let todos;
+  try {
+    todos = db.prepare('SELECT dia_semana, inicio_min, duracion_min, activo FROM turnos WHERE sede_id = ?').all(sedeId);
+  } catch { return null; }
+  if (!todos.length) return null;
+  const encendidos = todos.filter((t) => t.activo);
+  const turnos = encendidos.length ? encendidos : todos;
+  // Agrupado por hora: se lee mejor "lun, mar y mié 8-9pm" que repetir la hora
+  // tres veces. El orden es el de la semana, empezando el lunes.
+  const porHora = new Map();
+  for (const t of turnos) {
+    const h = textoHora(t.inicio_min, t.duracion_min);
+    if (!porHora.has(h)) porHora.set(h, new Set());
+    porHora.get(h).add(t.dia_semana);
+  }
+  const orden = (d) => (d === 0 ? 7 : d); // domingo al final
+  const partes = [...porHora.entries()]
+    .sort((a, b) => Math.min(...[...a[1]].map(orden)) - Math.min(...[...b[1]].map(orden)))
+    .map(([hora, dias]) => {
+      const lista = [...dias].sort((a, b) => orden(a) - orden(b)).map((d) => DIA_CORTO[d]);
+      const nombres = lista.length > 1
+        ? `${lista.slice(0, -1).join(', ')} y ${lista[lista.length - 1]}`
+        : lista[0];
+      return `${nombres} ${hora}`;
+    });
+  return partes.join(' · ');
+}
+
 /** Arma el mismo shape que antes exportaba config/negocio.js, ahora desde la BD.
  *  Las ZONAS son dinámicas: una por cada zona con sedes (ver zonasOperativas). */
 function getNegocio() {
   const c = getConfigMap();
   const sedesDe = (zona) => listSedes(zona).map((s) => ({
-    nombre: s.nombre, cancha: s.cancha, cupo: s.cupo, ubicacion: s.ubicacion, horario: s.horario, estacionamiento: s.estacionamiento,
+    // El horario calculado MANDA sobre el texto: si hay turnos cargados, eso
+    // es lo que se juega, y es lo que el bot le dice al jugador.
+    nombre: s.nombre, cancha: s.cancha, cupo: s.cupo, ubicacion: s.ubicacion,
+    horario: horarioDeSede(s.id) || s.horario, estacionamiento: s.estacionamiento,
   }));
   return {
     marca: c.marca || 'Pichangueros',
@@ -2645,7 +2698,7 @@ module.exports = {
   checkpoint, snapshot, resumenPagos, dbPath: DB_PATH,
   registrarPago, buscarPagoConfirmado, listPagos, pagosPorRevisar, listPagosTodos,
   getConfigMap, setConfig, listSedes, addSede, updateSede, deleteSede, getNegocio, zonasOperativas, nombreDeZona,
-  yapesDelNegocio,
+  yapesDelNegocio, horarioDeSede,
   // El precio, en un solo lugar (zona → partido → cuántos cupos cubre un monto).
   precioDeZona, precioDePartido, cuposPorMonto, partidosQueCalzan,
   // Ajustes operativos: lo que antes vivía en Render y ahora edita Clarck.
