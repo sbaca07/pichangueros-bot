@@ -712,7 +712,10 @@ function registrarPanel(app, db, conexion = null) {
     if (!numero && !nombre) return fin('Escribe el número de WhatsApp o el nombre del invitado.', true);
     const p = db.getPartido(partidoId);
     if (!p) return fin('Ese partido ya no existe.', true);
-    const { resultado, motivo } = db.inscribir(partidoId, numero, { nombre });
+    // `vence: false`: lo que anota Clarck a mano NO caduca. El plazo de la
+    // reserva existe para las promesas de chat ("ya te yapeo"), no para el
+    // casero que él mismo metió en la lista mirando la cancha.
+    const { resultado, motivo } = db.inscribir(partidoId, numero, { nombre, vence: false });
     const quien = nombre || `+${numero}`;
     if (resultado === 'espera') return fin(`${quien} entró a la LISTA DE ESPERA: el partido ya está lleno.`);
     if (resultado === 'ya_inscrito') return fin(`${quien} ya estaba en la lista.`, true);
@@ -3062,6 +3065,35 @@ function paginaConfig(db, key, conexion = null, query = {}) {
       </div>
     </div>`;
 
+  /**
+   * El plazo de la reserva sin pagar. Va pegado al bloque de Yapes tardíos
+   * porque son las dos mitades de la misma pregunta: cuánto esperamos la plata
+   * antes, y cuánto después.
+   */
+  const bloqueReserva = `
+    <div class="ancla" id="reserva">
+      <div class="shdr">🔒 Cupos guardados <small>· cuánto se guarda un cupo sin Yape</small></div>
+      <div class="group">
+        <form method="post" action="/admin/config/general">
+          <input type="hidden" name="key" value="${esc(keyRaw)}">
+          <p style="padding:13px 14px 0;font-size:13.5px;color:var(--ink-2);line-height:1.45">
+            Cuando alguien le dice al bot "anótame", el cupo le queda <b>guardado</b> estos minutos.
+            Si no llega el Yape, el lugar se libera solo y entra el primero de la lista de espera.
+            Lo que anotas <b>tú</b> desde el panel no vence nunca. Con <b>0</b> los cupos se guardan
+            para siempre, como antes.
+          </p>
+          <div class="campos">
+            ${campo('cfg-reserva', 'Minutos que se guarda el cupo',
+              `<input id="cfg-reserva" name="reserva_minutos" type="number" min="0" max="10080" inputmode="numeric" value="${db.reservaMinutos()}">`,
+              'Por defecto 60 min. Es el rato que tarda alguien en abrir el Yape y mandar la captura.')}
+          </div>
+          <div class="pie-form">
+            <button class="btn-toque btn-guardar">Guardar</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+
   const nuevoDistrito = `
     <div class="ancla" id="nuevo-distrito">
       <div class="shdr">➕ Nuevo distrito <small>· al crearlo aparece en el bot, los partidos y esta página</small></div>
@@ -3178,6 +3210,7 @@ function paginaConfig(db, key, conexion = null, query = {}) {
       ${bloqueCasero}
       ${bloqueFrescura}
       ${bloqueGracia}
+      ${bloqueReserva}
       ${zonasOp.map((z) => bloqueZona(z)).join('')}
       ${nuevoDistrito}
 
@@ -3627,6 +3660,22 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   // gris tenue (2.94:1) — siendo el dato principal de esta pantalla. Ahora es un
   // badge con relleno, borde y tinta que pasan 4.5:1.
   const chipInsc = { pagado: 'b-done', reservado: 'b-new', espera: 'b-wait', baja: 'b-new' };
+  /**
+   * Cuánto le queda al cupo guardado sin Yape. Se pinta al lado del estado
+   * porque "Reservado" a secas no dice lo único que importa mirando la lista:
+   * si ese lugar es de alguien o está a punto de volver a estar libre.
+   * Una baja con vencimiento cumplido es una reserva que caducó sola, no una
+   * que dio de baja una persona: se dicen distinto.
+   */
+  const cuentaRegresiva = (i) => {
+    if (!i.reserva_vence_en) return '';
+    const faltan = Math.round((Date.parse(`${String(i.reserva_vence_en).replace(' ', 'T')}-05:00`) - Date.now()) / 60000);
+    if (i.estado === 'baja') return '<span class="badge b-wait">reserva vencida</span>';
+    if (i.estado !== 'reservado') return '';
+    return faltan > 0
+      ? `<span class="badge b-wait">se libera en ${faltan} min</span>`
+      : '<span class="badge b-wait">por liberarse</span>';
+  };
   const filaInsc = (i) => {
     const nombre = i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : '¿?');
     // Pasar lista se habilita cuando el partido ya arrancó, no cuando alguien
@@ -3639,6 +3688,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
         <div style="margin-top:5px">
           <span class="badge ${chipInsc[i.estado] || 'b-new'}">${esc(ESTADOS_INSC[i.estado] || i.estado)}</span>
           ${i.pago_id ? `<span class="badge b-new">pago #${i.pago_id}</span>` : ''}
+          ${cuentaRegresiva(i)}
         </div>
       </div>
       ${i.estado !== 'baja' ? `

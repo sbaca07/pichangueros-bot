@@ -496,6 +496,9 @@ const CAMPOS_CONFIG = [
   // Cuántas horas después del pitazo final un partido sigue aceptando un Yape
   // tardío o una inscripción a mano (ver graciaHoras).
   'gracia_horas',
+  // Cuántos minutos le guarda el bot el cupo a alguien que dijo "anótame" y
+  // todavía no yapeó (ver reservaMinutos).
+  'reserva_minutos',
 ];
 
 // Nombres bonitos de las zonas conocidas; una zona nueva sin entrada acá sale
@@ -896,6 +899,15 @@ db.exec(`
   );
 `);
 
+// Vencimiento de la reserva sin pagar (2026-08-24): hasta hoy un "anótame"
+// ocupaba un lugar de la cancha PARA SIEMPRE. La regla de Clarck es
+// "la inscripción es previa reserva por Yape": el cupo se guarda un rato, no
+// se regala. Sin esta columna, las 4 reservas sin pago que quedaron en agosto
+// habrían bloqueado 4 lugares que alguien más iba a pagar.
+// NULL = no vence (lo que anota Clarck a mano y todo lo que ya está pagado).
+const colsInsc = db.prepare('PRAGMA table_info(inscripciones)').all().map((c) => c.name);
+if (!colsInsc.includes('reserva_vence_en')) db.exec('ALTER TABLE inscripciones ADD COLUMN reserva_vence_en TEXT');
+
 /**
  * LA FASE DEL PARTIDO SE CALCULA, NO SE GUARDA (2026-08-17).
  *
@@ -956,6 +968,11 @@ function ahoraLima() {
   };
 }
 const hoyLimaDb = () => ahoraLima().fecha;
+/** Hora de Lima dentro de N minutos, en el mismo formato que guarda la BD. */
+const enMinutosLima = (min) => {
+  const iso = new Date(Date.now() - 5 * 3600e3 + min * 60e3).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 19)}`;
+};
 /** La fecha de Lima corrida N días (negativo = hacia atrás). */
 const fechaLimaDb = (dias = 0) => new Date(Date.now() - 5 * 3600e3 + dias * 86400e3).toISOString().slice(0, 10);
 
@@ -1158,6 +1175,32 @@ function graciaHoras() {
   const r = db.prepare("SELECT valor FROM config WHERE clave = 'gracia_horas'").get();
   const v = Number(r && r.valor);
   return v > 0 ? Math.min(v, 24 * 14) : GRACIA_H_DEFAULT;
+}
+
+/**
+ * CUÁNTO SE GUARDA UN CUPO SIN PAGAR (2026-08-24).
+ *
+ * El bot reserva cuando alguien dice "anótame", pero la regla del negocio la
+ * escribió Clarck y es otra: "la inscripción es previa reserva por Yape".
+ * Entre las dos había un agujero: la reserva sin plata ocupaba un lugar de la
+ * cancha sin fecha de caducidad, así que un "ya te yapeo" que nunca llegaba
+ * dejaba a la lista mintiendo —llena para el bot, incompleta en la cancha— y
+ * al que sí iba a pagar le decía "no hay cupo".
+ *
+ * Ahora se guarda por un rato: cumplido el plazo el lugar se libera solo y
+ * entra el primero de la lista de espera. Editable en Ajustes porque el que
+ * sabe cuánto tarda su gente en yapear es Clarck.
+ *
+ * 0 = nunca vence (vuelve al comportamiento viejo, por si hace falta).
+ */
+const RESERVA_MIN_DEFAULT = 60;
+function reservaMinutos() {
+  const r = db.prepare("SELECT valor FROM config WHERE clave = 'reserva_minutos'").get();
+  if (r && String(r.valor).trim() !== '') {
+    const v = Number(r.valor);
+    if (Number.isFinite(v) && v >= 0) return Math.min(v, 60 * 24 * 7);
+  }
+  return RESERVA_MIN_DEFAULT;
 }
 
 /** Un instante como "minutos absolutos" — permite comparar fecha+hora de un tiro. */
@@ -1760,7 +1803,7 @@ function inscripcionActiva(partidoId, numero) {
  *
  * @returns {{inscripcion: object|null, resultado: 'reservado'|'espera'|'pagado'|'ya_inscrito'|null, motivo: string|null}}
  */
-function inscribir(partidoId, numero, { nombre = null, estado = null, pagoId = null } = {}) {
+function inscribir(partidoId, numero, { nombre = null, estado = null, pagoId = null, vence = true } = {}) {
   const p = getPartido(partidoId);
   if (!p) return { inscripcion: null, resultado: null, motivo: 'no_existe' };
   const cerrado = motivoCierre(p);
@@ -1778,9 +1821,17 @@ function inscribir(partidoId, numero, { nombre = null, estado = null, pagoId = n
   // se saltaba el cupo y metía 15 jugadores en 14. La misma regla que ya
   // cuidaban setEstadoInscripcion y pagarInscripcion.
   const estadoFinal = lleno && ['reservado', 'pagado'].includes(final) ? 'espera' : final;
+  // El cupo guardado sin plata caduca (ver reservaMinutos). Solo el 'reservado'
+  // sin pago: el que ya pagó tiene su lugar, el de la espera no ocupa ninguno,
+  // y lo que anota Clarck a mano no vence (`vence: false`) porque atrás hay una
+  // decisión de una persona, no una promesa de un chat.
+  const minutos = reservaMinutos();
+  const venceEn = vence && estadoFinal === 'reservado' && !pagoId && minutos > 0
+    ? enMinutosLima(minutos)
+    : null;
   const r = db.prepare(
-    "INSERT INTO inscripciones (partido_id, numero, nombre, estado, pago_id, creado_en) VALUES (?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
-  ).run(partidoId, numero || null, nombre || null, estadoFinal, pagoId ?? null);
+    "INSERT INTO inscripciones (partido_id, numero, nombre, estado, pago_id, reserva_vence_en, creado_en) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
+  ).run(partidoId, numero || null, nombre || null, estadoFinal, pagoId ?? null, venceEn);
   const insc = db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(Number(r.lastInsertRowid));
   return { inscripcion: insc, resultado: insc.estado, motivo: lleno ? 'lleno' : null };
 }
@@ -1811,8 +1862,34 @@ function setEstadoInscripcion(id, estado) {
     const p = getPartido(actual.partido_id);
     if (p && ocupadosDe(actual.partido_id) >= p.cupo) return { inscripcion: actual, motivo: 'lleno' };
   }
-  db.prepare('UPDATE inscripciones SET estado = ? WHERE id = ?').run(estado, id);
+  // Este camino es el botón del panel: atrás hay una persona mirando la lista,
+  // así que el cupo deja de tener fecha de vencimiento (lo puso Clarck, no una
+  // promesa de chat). Vale también al bajar o mandar a espera: ahí ya no
+  // ocupa nada que haya que liberar.
+  db.prepare('UPDATE inscripciones SET estado = ?, reserva_vence_en = NULL WHERE id = ?').run(estado, id);
   return { inscripcion: db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(id), motivo: null };
+}
+
+/**
+ * Sube al primero de la lista de espera al lugar que se acaba de liberar.
+ * @returns {object|null} la inscripción promovida (para avisarle), o null.
+ */
+function promoverSiguiente(partidoId) {
+  // Prioridad al promover: primero los de la espera que YA pagaron, luego por orden de llegada.
+  const siguiente = db.prepare(
+    "SELECT * FROM inscripciones WHERE partido_id = ? AND estado = 'espera' ORDER BY (pago_id IS NULL), id LIMIT 1"
+  ).get(partidoId);
+  if (!siguiente) return null;
+  // Al que sube SIN haber pagado se le da el mismo plazo que a cualquier
+  // reserva: si no, un lugar liberado se vuelve a bloquear para siempre en
+  // manos de alguien que ni sabe que entró.
+  const minutos = reservaMinutos();
+  db.prepare('UPDATE inscripciones SET estado = ?, reserva_vence_en = ? WHERE id = ?').run(
+    siguiente.pago_id ? 'pagado' : 'reservado',
+    siguiente.pago_id || minutos <= 0 ? null : enMinutosLima(minutos),
+    siguiente.id,
+  );
+  return db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(siguiente.id);
 }
 
 /**
@@ -1822,15 +1899,55 @@ function setEstadoInscripcion(id, estado) {
 function darDeBaja(id) {
   const insc = db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(id);
   if (!insc || insc.estado === 'baja') return null;
-  db.prepare("UPDATE inscripciones SET estado = 'baja' WHERE id = ?").run(id);
+  // Se limpia el vencimiento: una baja hecha por una persona no es una reserva
+  // que caducó, y en el panel tienen que poder distinguirse.
+  db.prepare("UPDATE inscripciones SET estado = 'baja', reserva_vence_en = NULL WHERE id = ?").run(id);
   if (!['reservado', 'pagado'].includes(insc.estado)) return null; // una espera que se baja no libera cancha
-  // Prioridad al promover: primero los de la espera que YA pagaron, luego por orden de llegada.
-  const siguiente = db.prepare(
-    "SELECT * FROM inscripciones WHERE partido_id = ? AND estado = 'espera' ORDER BY (pago_id IS NULL), id LIMIT 1"
-  ).get(insc.partido_id);
-  if (!siguiente) return null;
-  db.prepare('UPDATE inscripciones SET estado = ? WHERE id = ?').run(siguiente.pago_id ? 'pagado' : 'reservado', siguiente.id);
-  return db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(siguiente.id);
+  return promoverSiguiente(insc.partido_id);
+}
+
+/**
+ * LIBERA LOS CUPOS GUARDADOS QUE NUNCA SE PAGARON.
+ *
+ * Lo corre el reloj (index.js) cada pocos minutos. Toca SOLO reservas sin pago
+ * y de partidos que todavía no empezaron: pasado el pitazo inicial el cupo ya
+ * no se revende y el que decide es Clarck, no un temporizador.
+ *
+ * Un pago en "revisar" cuenta como pagado para esto —el voucher está, lo que
+ * falta es que alguien lo mire—: vencerle la reserva a quien ya yapeó sería el
+ * peor error posible de los dos.
+ *
+ * @returns {Array<{inscripcion, partido, promovida}>} para avisarle a cada uno.
+ */
+function vencerReservas() {
+  const ahora = ahoraLima();
+  const candidatas = db.prepare(`
+    SELECT i.* FROM inscripciones i
+    JOIN partidos p ON p.id = i.partido_id
+    WHERE i.estado = 'reservado'
+      AND i.pago_id IS NULL
+      AND i.reserva_vence_en IS NOT NULL
+      AND i.reserva_vence_en <= ?
+      AND p.cancelado_en IS NULL AND p.liquidado_en IS NULL
+    ORDER BY i.id
+  `).all(ahora.ts);
+  const vencidas = [];
+  for (const insc of candidatas) {
+    const p = getPartido(insc.partido_id);
+    if (!p || !ofrecible(p, ahora)) continue; // ya empezó o ya no admite gente: no se toca
+    // Yapeó y su comprobante está esperando revisión: NO se le quita el cupo.
+    if (insc.numero && db.prepare(
+      "SELECT 1 FROM pagos WHERE numero = ? AND estado = 'revisar' AND creado_en >= ? LIMIT 1"
+    ).get(insc.numero, insc.creado_en)) continue;
+    db.prepare("UPDATE inscripciones SET estado = 'baja' WHERE id = ?").run(insc.id);
+    vencidas.push({
+      inscripcion: db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(insc.id),
+      partido: p,
+      promovida: promoverSiguiente(insc.partido_id),
+    });
+  }
+  if (vencidas.length) console.log(`[reservas] ${vencidas.length} reserva(s) sin pago vencidas y liberadas.`);
+  return vencidas;
 }
 
 function setAsistencia(id, valor) {
@@ -1920,7 +2037,8 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null, { pa
       const ocupados = db.prepare(`SELECT COUNT(*) AS n FROM inscripciones WHERE partido_id = ? AND estado IN ${OCUPAN}`).get(partido.id).n;
       if (ocupados >= partido.cupo) nuevoEstado = 'espera';
     }
-    db.prepare('UPDATE inscripciones SET estado = ?, pago_id = ? WHERE id = ?').run(nuevoEstado, pagoId, activaEnAbierto.id);
+    // Llegó el Yape: el cupo ya no es una promesa, deja de caducar.
+    db.prepare('UPDATE inscripciones SET estado = ?, pago_id = ?, reserva_vence_en = NULL WHERE id = ?').run(nuevoEstado, pagoId, activaEnAbierto.id);
     hechas.push(db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(activaEnAbierto.id));
   } else {
     // Sin reserva previa (el flujo de siempre: yapean directo). Si la
@@ -2050,10 +2168,10 @@ function pagarInscripcion(inscripcionId, pagoId) {
   const p = getPartido(insc.partido_id);
   const ocupaAhora = ['reservado', 'pagado'].includes(insc.estado);
   if (!ocupaAhora && p && ocupadosDe(insc.partido_id) >= p.cupo) {
-    db.prepare('UPDATE inscripciones SET pago_id = ? WHERE id = ?').run(pagoId, inscripcionId);
+    db.prepare('UPDATE inscripciones SET pago_id = ?, reserva_vence_en = NULL WHERE id = ?').run(pagoId, inscripcionId);
     return { ok: true, motivo: 'lleno_queda_en_espera' };
   }
-  db.prepare("UPDATE inscripciones SET estado = 'pagado', pago_id = ? WHERE id = ?").run(pagoId, inscripcionId);
+  db.prepare("UPDATE inscripciones SET estado = 'pagado', pago_id = ?, reserva_vence_en = NULL WHERE id = ?").run(pagoId, inscripcionId);
   return { ok: true, motivo: null };
 }
 
@@ -2523,7 +2641,7 @@ module.exports = {
   // ahora se LEE de Config en cada acceso: es una regla de Clarck, no una
   // constante nuestra.
   get RECURRENTE_DESDE() { return recurrenteDesde(); },
-  inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, setAsistencia, vincularPago, candidatosDePago,
+  inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, promoverSiguiente, vencerReservas, reservaMinutos, setAsistencia, vincularPago, candidatosDePago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita, candidatosConvocatoria,
   pagoSueltoDe, pagarInscripcion, getCorte, setCorte, despuesDelCorte,
   hoyLima: hoyLimaDb, fechaLima: fechaLimaDb, ahoraLima, ordenHora, horaInput, normalizarHora, parseHora, textoHora,

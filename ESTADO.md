@@ -5,7 +5,9 @@ sin tener que releer 20 commits.
 
 > **24/08**: entraron los datos que faltaban de Clarck — los cuatro links de
 > grupo y el costo de las cuatro canchas — cargados en producción desde el
-> panel (Config), no en código. Ver "Lo que falta" acá abajo.
+> panel (Config), no en código. Ver "Lo que falta" acá abajo. Ese mismo día el
+> cupo guardado sin pagar dejó de ser eterno: ver "El cupo se guarda, no se
+> regala".
 
 ## Producción ahora mismo
 
@@ -49,6 +51,34 @@ Rímac S/ 104, Breña S/ 60, Comas S/ 50. Comas es la zona que menos deja y la
 - `META_APP_SECRET` sin setear: el webhook no valida firma. Hoy lo protege una
   ruta secreta, que no es lo mismo.
 - El CRM renderiza los 953 leads de una (≈650 KB por carga).
+
+## El cupo se guarda, no se regala (24/08)
+
+Cuando alguien le dice "anótame" al bot, el lugar queda **guardado 60 minutos**
+(editable en Ajustes → Cupos guardados; con 0 vuelve a ser eterno). Si no llega
+el Yape, un reloj cada 5 minutos lo libera y sube al primero de la lista de
+espera.
+
+Lo que motivó el cambio: la regla que escribió Clarck es "la inscripción es
+previa reserva por Yape", pero el bot reservaba sin plata y ese lugar no
+caducaba nunca. En agosto quedaron 4 reservas sin pago ocupando cancha. Para el
+sistema la lista estaba llena; en la cancha faltaba gente, y al que sí iba a
+pagar el bot le decía que no había cupo.
+
+Detalles que conviene no perder:
+
+- **Lo que anota Clarck a mano no vence** (`inscribir(..., { vence: false })`).
+  Atrás hay una persona mirando la lista, no una promesa de chat.
+- **Un Yape en "revisar" protege el cupo.** El comprobante llegó; lo que falta
+  es que alguien lo mire. Vencerle la reserva a quien ya pagó es el peor de los
+  dos errores posibles.
+- **Un partido que ya empezó no se toca.** A esa altura el lugar no se revende
+  y quien decide es Clarck en la cancha.
+- **Al que sube de la espera sin haber pagado le arranca su propio plazo**; si
+  no, un lugar liberado se vuelve a bloquear para siempre.
+- **Liberar el cupo pasa aunque el bot esté apagado** (es un cambio en la base:
+  si no, la lista miente igual). Los mensajes al jugador NO salen con el bot
+  apagado; el aviso a Clarck sí, como todo lo suyo.
 
 ## Decisiones de diseño que conviene NO revertir
 

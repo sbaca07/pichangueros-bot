@@ -562,6 +562,16 @@ async function manejarMensaje(sock, msg) {
     if (inscripcion && resultado === 'espera' && decision.reply && !/lista de espera/i.test(decision.reply)) {
       decision.reply += '\n\n⚠️ Ojo: el cupo se acaba de llenar, así que te dejé en la lista de espera — si se libera un lugar te avisamos al toque 🙏';
     }
+    // El cupo guardado tiene reloj (ver db.reservaMinutos) y eso el jugador
+    // TIENE que saberlo antes, no cuando se lo sacaron. Se pega acá y no se
+    // deja librado al modelo: si la respuesta no nombra el Yape, el jugador se
+    // queda creyendo que ya está adentro y el lugar se le libera "sin razón".
+    if (inscripcion && resultado === 'reservado' && decision.reply && !/yape/i.test(decision.reply)) {
+      const min = db.reservaMinutos();
+      decision.reply += min > 0
+        ? `\n\n⏳ Te guardo el cupo ${min} min: mándame tu Yape para que quede confirmado en la lista 🙏`
+        : '\n\n⏳ Mándame tu Yape para que el cupo quede confirmado en la lista 🙏';
+    }
     if (inscripcion && resultado !== 'ya_inscrito') {
       const p = db.getPartido(inscripcion.partido_id);
       console.log(`[partido] ${numero} → partido ${inscripcion.partido_id} (${resultado}).`);
@@ -875,6 +885,53 @@ sheet.programarSync(db);
 // Respaldo REAL de la BD (leads + mensajes + pagos) por correo, cada 24 h.
 backup.programarBackup(db);
 backup.programarResumen(db);
+
+/**
+ * EL RELOJ DE LOS CUPOS GUARDADOS (2026-08-24).
+ *
+ * Un "anótame" reserva el lugar, pero la regla de Clarck es que la inscripción
+ * es previa reserva por Yape. Sin este reloj, el que decía "ya te yapeo" y no
+ * yapeaba se quedaba con el cupo hasta el día del partido, y el bot le decía
+ * "no hay lugar" al que sí iba a pagar.
+ *
+ * Liberar el cupo es un cambio en la BASE y pasa siempre — también con el bot
+ * apagado, porque si no la lista miente igual. Lo que NO sale con el bot
+ * apagado son los mensajes al jugador: esa es la regla de la casa (lo del
+ * jugador se calla, lo de Clarck sale). El aviso a Clarck sale siempre.
+ */
+function programarVencimientoReservas() {
+  const revisar = async () => {
+    let vencidas = [];
+    try { vencidas = db.vencerReservas(); } catch (e) { return console.error('[reservas] Falló el barrido:', e.message); }
+    if (!vencidas.length) return;
+    const sock = oficial ? oficial.sockAdapter : currentSock;
+    const puedeHablarle = !enModoSeguro() && connectionState === 'ready';
+    for (const { inscripcion, partido, promovida } of vencidas) {
+      const cuando = `${db.fechaBonita(partido.fecha)}${partido.hora ? ` ${partido.hora}` : ''} en ${db.nombreDeZona(partido.zona)}`;
+      if (puedeHablarle && inscripcion.numero) {
+        await conexion.enviar(inscripcion.numero,
+          `Pichanguero, solté tu cupo del ${cuando} porque no llegó el Yape 🙏 Si todavía quieres jugar, escríbeme y lo vemos ⚽`);
+      }
+      if (puedeHablarle && promovida && promovida.numero) {
+        await conexion.enviar(promovida.numero,
+          `¡Buenas noticias! Se liberó un lugar para el ${cuando} y te subí de la lista de espera ⚽ Confírmalo con tu Yape para quedar en la lista 🙌`);
+      }
+    }
+    // Para Clarck: en una línea, qué lugares volvieron a estar libres. Es la
+    // señal de "hay que convocar", y no depende de que abra el panel.
+    const resumen = vencidas
+      .map(({ inscripcion, partido, promovida }) => `· ${inscripcion.nombre || `+${inscripcion.numero}`} — ${db.fechaBonita(partido.fecha)}${partido.hora ? ` ${partido.hora}` : ''} ${db.nombreDeZona(partido.zona)}${promovida ? ` (entró ${promovida.nombre || `+${promovida.numero}`} de la espera)` : ''}`)
+      .join('\n');
+    await notificarControl(sock,
+      `⏳ ${vencidas.length} cupo${vencidas.length === 1 ? '' : 's'} guardado${vencidas.length === 1 ? '' : 's'} sin Yape se liberó${vencidas.length === 1 ? '' : 'n'}:
+${resumen}`,
+      'Cupos liberados por falta de pago');
+  };
+  setTimeout(revisar, 120_000);        // no compite con el arranque
+  setInterval(revisar, 5 * 60_000);
+  console.log(`[tick] Reservas sin pagar: se revisan cada 5 min (plazo actual: ${db.reservaMinutos()} min).`);
+}
+programarVencimientoReservas();
 
 app.get('/qr', (_req, res) => {
   if (connectionState === 'ready') {
