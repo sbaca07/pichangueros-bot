@@ -8,11 +8,15 @@
  * referencia histórica del brief original.
  * Los precios suben en ~1 mes: Breña 15→18, Comas 10→13.
  *
- * PENDIENTE CONFIRMAR CON CLARCK (el brief llegó con la tabla corrupta):
- *   - Horarios exactos por día de cada sede.
- *   - Que Mariano Melgar es Breña (la tabla del brief decía Comas, pero el
- *     resto del brief y sus mensajes fijos dicen Breña).
- *   - Links de invitación a los grupos de WhatsApp (groupLink).
+ * CERRADO EL 24/08/2026 — nada de esto sigue pendiente:
+ *   - Los horarios exactos salieron de las conversaciones (los flyers que manda
+ *     Clarck) y están cargados en la BD. Ver investigacion/horarios-reales-2026-08.md.
+ *   - Mariano Melgar es Breña, confirmado por sus propios flyers.
+ *   - Los cuatro links de grupo llegaron el 20/08 y están cargados.
+ *   - Breña es 8vs8: 16 cupos, no 14. Acá abajo quedó el 14 del brief; la BD
+ *     tiene el bueno.
+ *   - Faltan dos zonas en este archivo (Rímac y Chorrillos, abiertas el 12/08):
+ *     otra razón para no leer de acá. La fuente viva es la tabla `sedes`.
  */
 module.exports = {
   marca: 'Pichangueros',
