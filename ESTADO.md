@@ -3,6 +3,10 @@
 Foto del proyecto al cierre de la sesión del 13 al 18 de agosto. Para retomar
 sin tener que releer 20 commits.
 
+> **24/08**: entraron los datos que faltaban de Clarck — los cuatro links de
+> grupo y el costo de las cuatro canchas — cargados en producción desde el
+> panel (Config), no en código. Ver "Lo que falta" acá abajo.
+
 ## Producción ahora mismo
 
 | | |
@@ -25,12 +29,19 @@ quién (IP) y cuándo — el 17/08 a las 21:04 alguien lo encendió desde
 ## Lo que falta, y de quién depende
 
 **De Clarck (no es código):**
-1. **Los cuatro links de grupo.** Ninguna zona los tiene. Es el paso donde un
-   interesado se vuelve jugador y hoy convierte 1 de cada 230. El panel se los
-   pide en la primera pantalla, con link al campo exacto.
-2. **El costo de alquiler de 4 canchas.** Sin eso la caja no puede decir cuánto
-   queda, solo cuánto entró.
-3. **Encender el bot.** El interruptor ya es suyo.
+1. ~~Los cuatro links de grupo.~~ **Cargados el 24/08** (Clarck los pasó por
+   WhatsApp el 20/08). Los cuatro se verificaron uno por uno contra
+   `chat.whatsapp.com` antes de guardarlos: los cuatro responden 200 y el
+   título del grupo coincide con su zona. Desde ahora el guion del bot los
+   dicta y la ficha del lead muestra el botón de mandar el link.
+2. ~~El costo de alquiler de 4 canchas.~~ **Cargado el 24/08**: Breña 150,
+   Rímac 120, Chorrillos 100, Comas 70 por partido. La caja ya dice cuánto
+   queda, no solo cuánto entró.
+3. **Encender el bot.** El interruptor ya es suyo. Es lo único que falta.
+
+Con eso, el margen por partido a cupo lleno queda así: Chorrillos S/ 110,
+Rímac S/ 104, Breña S/ 60, Comas S/ 50. Comas es la zona que menos deja y la
+única con 12 cupos en vez de 14.
 
 **Decisiones abiertas:**
 - El umbral de "Casero" está en 6 visitas y el jugador que más vino tiene 5, así
