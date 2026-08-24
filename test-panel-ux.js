@@ -781,6 +781,26 @@ const srv = app.listen(0, async () => {
     check('el cancelado no finge estar en el camino', /class="vp corte"/.test(canc) && /cancelado/i.test(canc));
   }
 
+  console.log('== 4l4 · Una pichanga cancelada NO se esconde ==');
+  {
+    // Se ocultaba salvo que tuviera gente adentro: cancelar la de hoy la
+    // borraba de la pantalla, y uno se queda sin saber si se canceló, si nunca
+    // se abrió, o si el sistema se la comió.
+    const pCanc = db.crearPartido({ zona: 'brena', fecha: enDias(0), hora: '11-12pm', cupo: 10 });
+    db.cancelarPartido(pCanc);
+    const semana = (await GET('/admin/leads?key=ux&vista=partidos')).html;
+    check('la cancelada de hoy sigue en la lista de la semana', semana.includes(`partido=${pCanc}`));
+    check('…y se ve tachada', /class="lrow cancelada"/.test(semana));
+    check('…sin fingir cupos libres', !/class="lrow cancelada"[\s\S]{0,300}libres<\/span>/.test(semana));
+
+    // Con gente adentro, lo que importa es que hay a quién avisarle.
+    const pConGente = db.crearPartido({ zona: 'brena', fecha: enDias(0), hora: '10-11pm', cupo: 10 });
+    db.inscribir(pConGente, '51990000031');
+    db.cancelarPartido(pConGente);
+    const semana2 = (await GET('/admin/leads?key=ux&vista=partidos')).html;
+    check('la cancelada CON gente avisa que hay a quién escribirle', /avísales/.test(semana2));
+  }
+
   console.log('== 4m · Pagos: "limpiar" solo si hay algo que limpiar ==');
   {
     // El período arranca en '7d', así que hayFiltro daba true SIEMPRE: el botón

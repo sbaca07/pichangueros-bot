@@ -1289,6 +1289,14 @@ const ESTILOS = `
   .est-lleno::before{content:"●"}
   .est-off{background:var(--st-off-bg);color:var(--st-off-ink);border-color:var(--st-off-ink)}
   .est-off::before{content:"–"}
+  /* La pichanga cancelada se queda a la vista, tachada: si desaparece, uno no
+     sabe si se canceló, si nunca se abrió o si el sistema se la comió. El
+     tachado va sobre el NOMBRE, no sobre los chips, que tienen que seguir
+     leyéndose (sobre todo el de "quedan N anotados, avísales"). */
+  .lrow.cancelada .lname{text-decoration:line-through;text-decoration-thickness:2px}
+  .lrow.cancelada .lname,
+  .lrow.cancelada .lsub,
+  .lrow.cancelada .pfecha{opacity:.55}
 
   /* Era #c7d0cb = 1.58:1. Es la ÚNICA señal de "esto se toca" en cada fila. */
   .chev{color:var(--ink-3);flex:0 0 auto}
@@ -3454,12 +3462,19 @@ function paginaPartidos(db, key, query = {}) {
     // Vacío NO es "ok": un partido en 0/12 con el chip verde y su palomita
     // decía "todo en orden" cuando lo que pasa es que no hay nadie anotado y
     // faltan horas para jugar. Verde solo cuando ya hay gente adentro.
-    const chipCupos = lleno
-      ? `<span class="est est-lleno">${p.ocupados}/${p.cupo} lleno</span>`
-      : p.ocupados === 0
-        ? `<span class="est est-debe">${p.ocupados}/${p.cupo} · nadie anotado</span>`
-        : `<span class="est est-ok">${p.ocupados}/${p.cupo} · ${p.cupo - p.ocupados} libre${p.cupo - p.ocupados === 1 ? '' : 's'}</span>`;
-    return `<a class="lrow" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}">
+    const chipCupos = p.fase === 'cancelado'
+      // En un partido cancelado los cupos no significan nada: lo que hay que
+      // ver es que NO SE JUEGA, y si quedó gente adentro a la que avisarle.
+      ? (p.ocupados
+        ? `<span class="est est-alerta">${p.ocupados} anotado${p.ocupados === 1 ? '' : 's'} — avísales</span>`
+        : '')
+      : lleno
+        ? `<span class="est est-lleno">${p.ocupados}/${p.cupo} lleno</span>`
+        : p.ocupados === 0
+          ? `<span class="est est-debe">${p.ocupados}/${p.cupo} · nadie anotado</span>`
+          : `<span class="est est-ok">${p.ocupados}/${p.cupo} · ${p.cupo - p.ocupados} libre${p.cupo - p.ocupados === 1 ? '' : 's'}</span>`;
+    const cancelado = p.fase === 'cancelado';
+    return `<a class="lrow${cancelado ? ' cancelada' : ''}" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}">
       <span class="pfecha"><b>${esc(p.hora ? p.hora.split('-')[0] : '—')}</b><small>${esc(p.hora ? (/am/i.test(p.hora) ? 'am' : 'pm') : 'sin hora')}</small></span>
       <span class="lbody">
         <span class="lname">${esc(zonaNombre)}${p.turno_id ? ' <small style="font-weight:600;color:var(--ink-3)">· turno fijo</small>' : ''}</span>
@@ -3477,7 +3492,13 @@ function paginaPartidos(db, key, query = {}) {
 
   /** Un día de la grilla: sus partidos, o el hueco con el aviso de costumbre. */
   const bloqueDia = (fecha) => {
-    const delDia = (porFecha[fecha] || []).filter((p) => p.fase !== 'cancelado' || p.ocupados || p.en_espera);
+    // UN PARTIDO CANCELADO NO SE ESCONDE (24/08). Se ocultaba salvo que tuviera
+    // gente adentro, así que cancelar el de hoy lo borraba de la pantalla: uno
+    // se queda sin saber si se canceló, si nunca se abrió, o si el sistema se
+    // lo comió. De hoy en adelante se muestra siempre, tachado; los de días
+    // pasados sí se esconden cuando estaban vacíos, para no arrastrar ruido.
+    const delDia = (porFecha[fecha] || []).filter((p) => p.fase !== 'cancelado'
+      || fecha >= hoy || p.ocupados || p.en_espera);
     const huecosDia = huecos.filter((h) => h.fecha === fecha);
     const esHoy = fecha === hoy;
     const nombreDia = db.DIAS_NOMBRE[db.diaSemanaDe(fecha)];
