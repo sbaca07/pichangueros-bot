@@ -209,7 +209,8 @@ function aMensajeBaileys(m, fromMe = false, contactos = '') {
   // lo único que falta para arreglar el origen.
   if (!numero) {
     console.error('[meta] Mensaje SIN número de contacto — descartado para no ensuciar el CRM.'
-      + ` id=${m.id || '?'} type=${m.type || '?'} fromMe=${fromMe} campos=[${Object.keys(m).join(',')}]`);
+      + ` id=${m.id || '?'} type=${m.type || '?'} fromMe=${fromMe} campos=[${Object.keys(m).join(',')}]`
+      + ` user_id=${m.from_user_id || m.to_user_id || m.user_id || '—'}`);
     return null;
   }
   const msg = {
@@ -390,6 +391,28 @@ function registrarWebhook(app, { onMensaje, onEcho, onAlerta = null }) {
           // `contacts` trae el wa_id del cliente del change: sirve de respaldo
           // cuando el mensaje viene sin `from`/`to`.
           const contactos = (v.contacts && v.contacts[0] && v.contacts[0].wa_id) || '';
+
+          /**
+           * QUÉ NOS MANDA META CUANDO NO MANDA EL TELÉFONO (25/08).
+           *
+           * Desde abril de 2026 Meta identifica a algunos usuarios con un
+           * "business-scoped user ID" (BSUID, tipo `PE.187019082`) en vez del
+           * número: pasa cuando esa persona activó su nombre de usuario en
+           * WhatsApp y además no la tenemos en la agenda ni hablamos con ella
+           * en los últimos 30 días. Meta dice que soportarlo es obligatorio —
+           * no se puede elegir que los usuarios no adopten usernames.
+           *
+           * Antes de escribir el soporte hay que VER el payload real: qué trae
+           * `contacts`, si viene `username`, si viene `wa_id` a veces. Se
+           * vuelca entero, una vez por change, y solo cuando falta el número:
+           * en el camino normal no se loguea nada.
+           */
+          const sinNumero = [...(v.messages || []), ...(v.message_echoes || [])]
+            .some((m) => !numeroDelPayload(m, Boolean(m.to_user_id || m.from), contactos));
+          if (sinNumero) {
+            console.error('[meta] PAYLOAD SIN NÚMERO — volcado completo para entender qué manda Meta:\n'
+              + JSON.stringify(v).slice(0, 4000));
+          }
 
           // Mensajes entrantes de clientes.
           for (const m of v.messages || []) {
