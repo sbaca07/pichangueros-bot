@@ -688,13 +688,13 @@ const srv = app.listen(0, async () => {
     check('el conteo de contactos sigue a la vista', /contactos<\/div>/.test(crm));
 
     // El texto del elegido tiene que leerse solo: cerrado es lo único visible.
-    check('los option de zona dicen de qué familia son', /<option value="brena"[^>]*>Zona: Breña/.test(crm));
+    check('los option de zona dicen de qué familia son', /<option value="brena"[^>]*>Juega en: Breña/.test(crm));
     check('los de relación también', /Relación: casero/.test(crm));
     check('y traen el conteo para no tener que abrirlos', /Sin responder \(\d+\)/.test(crm));
 
     // Las zonas salen de zonasOperativas, no de una lista escrita a mano.
-    check('un distrito creado desde Ajustes aparece en el desplegable', /<option value="sanborja"[^>]*>Zona: San Borja/.test(crm), 'zona nueva ausente');
-    check('…y "otra" se lee como lo que es', /Zona: sin sede cerca/.test(crm));
+    check('un distrito creado desde Ajustes aparece en el desplegable', /<option value="sanborja"[^>]*>Juega en: San Borja/.test(crm), 'zona nueva ausente');
+    check('…y "otra" se lee como lo que es', /Juega en: ninguna sede cerca/.test(crm));
 
     // Llegar por URL tiene que dejar el desplegable marcado. Con los chips,
     // entrar desde el embudo del Resumen filtraba la lista pero ningún chip
@@ -918,6 +918,47 @@ const srv = app.listen(0, async () => {
     const fichaB = (await GET(`/admin/leads?key=ux&numero=${encodeURIComponent(B)}`)).html;
     check('al contacto sin teléfono NO se le ofrece wa.me', !new RegExp(`wa\\.me/${B.replace('.', '\\.')}`).test(fichaB));
     check('…pero sí la caja para contestarle', /lead\/responder/.test(fichaB));
+  }
+
+  console.log('== 4l9 · Dónde vive ≠ dónde juega, y la lista no es infinita ==');
+  {
+    // El distrito es texto libre: en producción dio 108 formas de escribir 40
+    // distritos. El desplegable listaba las 108 y ninguna encontraba a las otras.
+    const { distritosDe, viveEn } = require('./src/distritos');
+    check('"Rimac", "Rímac", "RIMAC" y "ricma" son el mismo distrito',
+      ['Rimac', 'Rímac', 'RIMAC', 'ricma'].every((v) => distritosDe(v)[0] === 'Rímac'));
+    check('"smp" es San Martín de Porres', distritosDe('smp')[0] === 'San Martín de Porres');
+    check('un texto con varios los devuelve todos',
+      distritosDe('Rimac/breña').join() === 'Breña,Rímac');
+    check('"San Juan de Miraflores" no deja un "Miraflores" fantasma',
+      distritosDe('San Juan de Miraflores').join() === 'San Juan de Miraflores');
+    check('lo que no es un distrito de Lima no se inventa',
+      distritosDe('Trujillo').length === 0 && distritosDe('—').length === 0);
+    check('viveEn encuentra a los que lo nombran entre varios',
+      viveEn('sjl, rimac, los olivos, callao', 'Los Olivos'));
+
+    db.getOrCreateLead('51990000071');
+    db.updateLead('51990000071', { nombre: 'Multi Distrito', distrito: 'Rimac/breña', zona: 'brena' });
+    const crm = (await GET('/admin/leads?key=ux&vista=crm')).html;
+    check('el desplegable distingue dónde VIVE de dónde JUEGA',
+      /Vive en: cualquier distrito/.test(crm) && /Juega en: cualquier sede/.test(crm));
+    const enRimac = (await GET('/admin/leads?key=ux&vista=crm&distrito=R%C3%ADmac')).html;
+    const enBrena = (await GET('/admin/leads?key=ux&vista=crm&distrito=Bre%C3%B1a')).html;
+    check('quien puso "Rimac/breña" aparece en las DOS listas',
+      /Multi Distrito/.test(enRimac) && /Multi Distrito/.test(enBrena));
+
+    // La lista se pintaba entera: 1,099 contactos y ~650 KB por carga.
+    for (let i = 0; i < 60; i++) {
+      const n = `5198800${String(i).padStart(4, '0')}`;
+      db.getOrCreateLead(n);
+      db.updateLead(n, { nombre: `Relleno ${i}`, zona: 'comas' });
+    }
+    const largo = (await GET('/admin/leads?key=ux&vista=crm')).html;
+    const filas = (largo.match(/class="lrow"/g) || []).length;
+    check('la lista se corta y ofrece ver más', /class="vermas"/.test(largo) && /Ver \d+ más/.test(largo));
+    check('…mostrando bastante menos que todo', filas < db.listLeads().length, `${filas} filas`);
+    const masLargo = (await GET('/admin/leads?key=ux&vista=crm&ver=500')).html;
+    check('…y "ver más" trae más', (masLargo.match(/class="lrow"/g) || []).length > filas);
   }
 
   console.log('== 4m · Pagos: "limpiar" solo si hay algo que limpiar ==');

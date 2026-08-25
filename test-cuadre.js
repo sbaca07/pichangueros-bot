@@ -190,7 +190,7 @@ const srv = app.listen(0, async () => {
     db.getOrCreateLead('51900070011');
     db.updateLead('51900070011', { nombre: 'De Ate Preguntó', zona: 'otra', distrito: 'Ate' });
     const resumen2 = (await GET('/admin/leads?key=cu')).html;
-    const filaAte = resumen2.match(/href="([^"]*distrito=ate[^"]*)"[\s\S]{0,400}?<span class="zval">(\d+) <small[^>]*>pagaron · (\d+) interesados/);
+    const filaAte = resumen2.match(/href="([^"]*distrito=Ate[^"]*)"[\s\S]{0,400}?<span class="zval">(\d+) <small[^>]*>pagaron · (\d+) interesados/);
     check('la fila del distrito distingue pagadores de interesados', Boolean(filaAte) && filaAte[2] === '1' && filaAte[3] === '2', filaAte && filaAte.slice(2).join('/'));
     const listaAte = (await GET(filaAte[1].replace(/&amp;/g, '&'))).html;
     check('…y el link abre a los que PAGARON, que es el número que ordena',

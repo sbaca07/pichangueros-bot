@@ -28,6 +28,8 @@ const backup = require('./backup');
 const { buildLeadsWorkbook } = require('./excel');
 // Identidades sin teléfono (BSUID de Meta): no se les puede armar un wa.me.
 const { esBsuid } = require('./mensajes');
+// Dónde VIVE (texto libre, 108 formas de escribirlo) ≠ dónde JUEGA (la zona).
+const { distritosDe, viveEn } = require('./distritos');
 const listas = require('./listas');
 
 const esc = (v) =>
@@ -1338,6 +1340,13 @@ const ESTILOS = `
   /* En cero no se apaga ni se esconde: se atenúa. Que la vista exista y diga 0
      es la información — esconderla haría pensar que el filtro no está. */
   .vista.cero{opacity:.55}
+  /* "Ver más": la lista ya no se pinta entera (eran 1,099 contactos y ~650 KB
+     por carga). Se ve como un botón porque es una acción, no un enlace suelto. */
+  .vermas{display:flex;align-items:center;justify-content:center;gap:8px;min-height:var(--tap);
+    margin-top:10px;border-radius:var(--r2);background:var(--surface);border:1.5px solid var(--line-strong);
+    color:var(--ink);font-size:var(--t-m);font-weight:700;text-decoration:none}
+  .vermas small{font-weight:600;color:var(--ink-2);font-size:var(--t-s)}
+  .vermas:hover{background:var(--surface-2)}
   @media (min-width:760px){ .vistas{grid-template-columns:repeat(3,minmax(0,1fr))} }
   .fchip.amber.on{background:var(--st-debe-solid);border-color:var(--st-debe-solid);color:#fff}
   .fchip.red.on{background:var(--st-alerta-solid);border-color:var(--st-alerta-solid);color:#fff}
@@ -1892,14 +1901,19 @@ function paginaResumen(db, key, query = {}) {
    */
   const UMBRAL_PILOTO = 7; // media pichanga (14 cupos) de gente que YA pagó viajando
   const desde30 = fechaLima(-29);
+  // Se agrupa por distrito NORMALIZADO, no por lo que cada uno escribió: si no,
+  // "Rimac", "Rímac" y "ricma" eran tres candidatos distintos a abrir sede, y
+  // ninguno llegaba al umbral por separado. Quien nombró varios cuenta en
+  // todos: vive cerca de todos ellos.
   const dd = {};
   for (const l of todos) {
-    if (l.zona !== 'otra' || !(l.distrito || '').trim()) continue;
-    const k = normTexto(l.distrito);
-    if (!dd[k]) dd[k] = { k, nombre: l.distrito.trim().toLowerCase().replace(/(^|\s)\p{L}/gu, (c) => c.toUpperCase()), n: 0, pagadores: 0, mes: 0 };
-    dd[k].n++;
-    if (mDe(l).pagos > 0) dd[k].pagadores++;
-    if ((l.creado_en || '').slice(0, 10) >= desde30) dd[k].mes++;
+    if (l.zona !== 'otra') continue;
+    for (const nombre of distritosDe(l.distrito)) {
+      if (!dd[nombre]) dd[nombre] = { k: nombre, nombre, n: 0, pagadores: 0, mes: 0 };
+      dd[nombre].n++;
+      if (mDe(l).pagos > 0) dd[nombre].pagadores++;
+      if ((l.creado_en || '').slice(0, 10) >= desde30) dd[nombre].mes++;
+    }
   }
   // Solo distritos con al menos un pagador: una lista de nombres con cero plata
   // adentro no ayuda a decidir dónde alquilar una cancha.
@@ -2483,7 +2497,12 @@ function paginaCRM(db, key, query) {
     'al_dia', 'enfriando', 'perdido', 'en_grupo', 'sin_grupo', 'listo_grupo'];
   const relF = RELACION_FILTROS.includes(query.rel) ? query.rel : '';
   const dia = /^\d{4}-\d{2}-\d{2}$/.test(query.dia || '') ? query.dia : '';
-  const distritoF = normTexto(query.distrito || '');
+  // DÓNDE VIVE ≠ DÓNDE JUEGA. El distrito es texto libre —lo que la persona
+  // escribió— y da 108 variantes para 585 contactos. Se traduce a distritos de
+  // verdad (ver src/distritos.js): quien puso "Rimac/breña" aparece en las dos
+  // listas, no en una tercera llamada "Rimac/breña". La ZONA es otra cosa: la
+  // cancha donde juega, que puede no ser ninguna de las dos.
+  const distritoF = (query.distrito || '').trim();
   // "Derivado" (toda la historia) y "esperando ahora" (habló en 72 h, después
   // del corte) son dos conjuntos distintos y cada uno tiene su filtro: el
   // Resumen cuenta los que esperan AHORA y tiene que poder abrir exactamente
@@ -2510,7 +2529,7 @@ function paginaCRM(db, key, query) {
     if (tipo === 'nuevos') leads = leads.filter(esNuevoEse);
     if (tipo === 'recurrentes') leads = leads.filter((l) => !esNuevoEse(l));
   }
-  if (distritoF) leads = leads.filter((l) => normTexto(l.distrito) === distritoF);
+  if (distritoF) leads = leads.filter((l) => viveEn(l.distrito, distritoF));
   /**
    * Las nueve opciones de RELACIÓN, que son EXACTAMENTE los dos bloques del
    * Resumen: los cuatro escalones del embudo y los tres de salud de la base,
@@ -2550,16 +2569,13 @@ function paginaCRM(db, key, query) {
   if (relF) leads = leads.filter(PRED_REL[relF]);
   const hayFiltro = Boolean(q || zona || filtro || relF || dia || distritoF);
 
-  // Distritos existentes (texto libre normalizado) para el selector.
+  // Los distritos del selector son los REALES, no las 108 formas de escribirlos.
+  // Un contacto que nombró tres cuenta en los tres.
   const ddCrm = {};
   for (const l of todos) {
-    const d = (l.distrito || '').trim();
-    if (!d) continue;
-    const k = normTexto(d);
-    if (!ddCrm[k]) ddCrm[k] = { label: d, n: 0 };
-    ddCrm[k].n++;
+    for (const d of distritosDe(l.distrito)) ddCrm[d] = (ddCrm[d] || 0) + 1;
   }
-  const distritosCrm = Object.entries(ddCrm).sort((a, b) => b[1].n - a[1].n);
+  const distritosCrm = Object.entries(ddCrm).sort((a, b) => b[1] - a[1]);
 
   // Dos grupos: necesitan respuesta (handoff o sin responder) y el resto.
   // Un handoff solo es URGENTE si el contacto sigue activo (habló en 72 h).
@@ -2614,7 +2630,7 @@ function paginaCRM(db, key, query) {
   const cZona = {};
   for (const l of todos) if (l.zona) cZona[l.zona] = (cZona[l.zona] || 0) + 1;
   const opcZona = zonasVivas.map((z) => [
-    z, `Zona: ${z === 'otra' ? 'sin sede cerca' : db.nombreDeZona(z)}`, cZona[z] || 0,
+    z, `Juega en: ${z === 'otra' ? 'ninguna sede cerca' : db.nombreDeZona(z)}`, cZona[z] || 0,
   ]);
 
   // 3 · RELACIÓN — reemplaza al desplegable de ETAPA, que ofrecía ocho opciones
@@ -2638,7 +2654,9 @@ function paginaCRM(db, key, query) {
     ['sin_grupo', 'Sin grupo todavía', nPor(PRED_REL.sin_grupo)],
   ];
 
-  const opcDistrito = distritosCrm.map(([k, d]) => [k, `📍 ${d.label}`, d.n]);
+  // "Vive en" y no "📍 Comas" a secas: al lado hay otro desplegable de ZONA que
+  // dice dónde juega, y sin el rótulo los dos se leían como lo mismo.
+  const opcDistrito = distritosCrm.map(([d, n]) => [d, `Vive en: ${d}`, n]);
 
   /**
    * VISTAS RÁPIDAS — las seis listas que Clarck abre de verdad.
@@ -2721,8 +2739,25 @@ function paginaCRM(db, key, query) {
       ${SVG.chev}</a>`;
   };
 
-  const grupo = (titulo, arr) => arr.length
-    ? `<div class="shdr">${titulo} · ${arr.length}</div><div class="llist">${arr.map(fila).join('')}</div>` : '';
+  /**
+   * LA LISTA DEJA DE SER INFINITA.
+   *
+   * Se pintaban los 1,099 contactos de una: ~650 KB por carga y un scroll que
+   * no termina nunca. Ahora se muestran los primeros y hay un botón para traer
+   * más. La cola de trabajo ("necesitan tu atención") se muestra ENTERA — esa
+   * sí hay que verla completa; lo que se corta es el listón de todos.
+   */
+  const POR_TANDA = 40;
+  const verN = Math.max(POR_TANDA, Math.min(2000, Number(query.ver) || POR_TANDA));
+  const grupo = (titulo, arr, cortar = false) => {
+    if (!arr.length) return '';
+    const visibles = cortar ? arr.slice(0, verN) : arr;
+    const faltan = arr.length - visibles.length;
+    return `<div class="shdr">${titulo} · ${arr.length}</div>
+      <div class="llist">${visibles.map(fila).join('')}</div>
+      ${faltan > 0 ? `<a class="vermas" href="/admin/leads?key=${key}&vista=crm${qsCrm({ ver: verN + POR_TANDA * 4 })}">
+        Ver ${Math.min(POR_TANDA * 4, faltan)} más <small>· quedan ${faltan}</small></a>` : ''}`;
+  };
 
   // Con filtro de día, la agrupación útil es quién escribió por primera vez ese
   // día y quién ya estaba. Ojo con la palabra: acá "ya estaban registrados" es
@@ -2731,10 +2766,10 @@ function paginaCRM(db, key, query) {
   // recurrentes, aunque el parámetro de la URL siga llamándose así.
   const lista = dia
     ? (leads.length
-      ? grupo('🟢 Nuevos ese día', leads.filter(esNuevoEse)) + grupo('🔵 Ya estaban registrados', leads.filter((l) => !esNuevoEse(l)))
+      ? grupo('🟢 Nuevos ese día', leads.filter(esNuevoEse), true) + grupo('🔵 Ya estaban registrados', leads.filter((l) => !esNuevoEse(l)), true)
       : '<p class="vacio">Nadie escribió ese día ⚽</p>')
     : ((urgentes.length || resto.length)
-      ? grupo('Necesitan tu atención ahora', urgentes) + grupo('Todos los contactos', resto)
+      ? grupo('Necesitan tu atención ahora', urgentes) + grupo('Todos los contactos', resto, true)
       : `<p class="vacio">${Object.keys(query).some((k) => ['filtro', 'zona', 'rel', 'distrito', 'q'].includes(k))
           ? 'Ningún pichanguero calza con este filtro ⚽<br><a style="color:var(--lime-ink);font-weight:600" href="/admin/leads?key=' + key + '&vista=crm">Ver todos</a>'
           : 'Todavía no hay pichangueros registrados ⚽<br>Cuando alguien escriba al número, aparece acá.'}</p>`);
@@ -2776,9 +2811,9 @@ function paginaCRM(db, key, query) {
         ${query.q ? `<input type="hidden" name="q" value="${esc(query.q)}">` : ''}
         ${dia && tipo ? `<input type="hidden" name="tipo" value="${esc(tipo)}">` : ''}
         ${selectorFiltro('filtro', filtro, 'Todos los contactos', opcAtencion)}
-        ${selectorFiltro('zona', zona, 'Todas las zonas', opcZona)}
+        ${selectorFiltro('zona', zona, 'Juega en: cualquier sede', opcZona)}
         ${selectorFiltro('rel', relF, 'Toda relación', opcRelacion)}
-        ${distritosCrm.length ? selectorFiltro('distrito', distritoF, 'Todos los distritos', opcDistrito) : ''}
+        ${distritosCrm.length ? selectorFiltro('distrito', distritoF, 'Vive en: cualquier distrito', opcDistrito) : ''}
         <input type="date" name="dia" value="${dia}" max="${hoy}" aria-label="Filtrar por día">
         <button class="btn-toque btn-guardar">Filtrar</button>
       </form>
