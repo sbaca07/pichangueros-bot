@@ -83,7 +83,10 @@ const srv = app.listen(0, async () => {
   const GET = async (ruta) => { const r = await fetch(B + ruta); return { status: r.status, html: await r.text() }; };
   const POST = async (ruta, obj) => {
     const r = await fetch(B + ruta, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(obj).toString(), redirect: 'manual' });
-    return { status: r.status, location: r.headers.get('location') || '' };
+    // El cuerpo también: casi todos los POST redirigen, pero los que contestan
+    // una pantalla (la vista previa de importar una lista) hay que poder leerlos.
+    const html = r.status === 302 ? '' : await r.text().catch(() => '');
+    return { status: r.status, location: r.headers.get('location') || '', html };
   };
 
   console.log('== 1 · CRAWLER: ningún clic del panel puede dar 404/500 ==');
@@ -846,6 +849,44 @@ const srv = app.listen(0, async () => {
 
     const ficha2 = (await GET(`/admin/leads?key=ux&numero=${N}`)).html;
     check('…y la ficha ya lo muestra anotado, sin volver a ofrecerlo', /anotado en la pichanga del/.test(ficha2) && !/no está en ninguna pichanga/.test(ficha2));
+  }
+
+  console.log('== 4l7 · Pegar la lista del grupo, en dos tiempos ==');
+  {
+    const F = enDias(3);
+    const ddmmaa = `${F.slice(8, 10)}/${F.slice(5, 7)}/${F.slice(2, 4)}`;
+    const LISTA = `🔴 *PICHANGA ${ddmmaa}*🔴\n📍 Sede: Cancha Caja\n🕗 Horario: 8pm a 9pm\n💵 Inversión: S/ 15\nESTADO DE LA LISTA:\n[💰] 1. Lista Uno\n[💰] 2. Lista Dos\n[💰] 3.`;
+
+    const partidos = (await GET('/admin/leads?key=ux&vista=partidos')).html;
+    check('Partidos ofrece pegar una lista del grupo', /lista\/importar/.test(partidos) && /Pegar una lista/.test(partidos));
+
+    // Paso 1: la vista previa NO escribe.
+    const antes = db.listPartidos().length;
+    const previa = await POST('/admin/lista/importar', { key: 'ux', texto: LISTA });
+    check('la vista previa contesta la página, no un redirect', previa.status === 200, `HTTP ${previa.status}`);
+    check('…y dice a qué partido va', /Esto es lo que voy a hacer/.test(previa.html) && /Lista Uno/.test(previa.html));
+    check('…avisa que se anotan como reservado, no pagado', /no como pagado/i.test(previa.html));
+    check('…y todavía no escribió nada', db.listPartidos().length === antes);
+
+    // Paso 2: confirmar.
+    const r = await POST('/admin/lista/importar', { key: 'ux', texto: LISTA, confirmar: '1' });
+    check('confirmar carga la lista', r.status === 302, `HTTP ${r.status}`);
+    // El partido al que fue a parar lo dice el propio redirect: acá ya hay
+    // otros partidos de esa fecha y buscarlo a ojo traía el de otro bloque.
+    // Que reutilice el que ya existía en vez de abrir uno gemelo es parte de
+    // lo que se está probando.
+    const idImportado = Number((r.location.match(/partido=(\d+)/) || [])[1]);
+    check('…lo lleva al partido de la lista', Number.isInteger(idImportado) && idImportado > 0, r.location);
+    const dentro = db.inscripcionesDe(idImportado).filter((i) => i.estado !== 'baja');
+    check('…con sus dos jugadores (el cupo vacío no cuenta)',
+      dentro.filter((i) => /^Lista (Uno|Dos)$/.test(i.nombre || '')).length === 2);
+    check('…y no abrió un partido gemelo',
+      db.listPartidos().filter((p) => p.fecha === F && p.hora === '8-9pm' && p.zona === 'brena').length === 1);
+
+    // Un texto que no se entiende no rompe: lo dice.
+    const malo = await POST('/admin/lista/importar', { key: 'ux', texto: 'hola qué tal' });
+    check('un texto que no es una lista se explica, no revienta',
+      malo.status === 200 && /No pude leerla/.test(malo.html));
   }
 
   console.log('== 4m · Pagos: "limpiar" solo si hay algo que limpiar ==');

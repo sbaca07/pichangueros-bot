@@ -28,6 +28,7 @@ const backup = require('./backup');
 const { buildLeadsWorkbook } = require('./excel');
 // Identidades sin teléfono (BSUID de Meta): no se les puede armar un wa.me.
 const { esBsuid } = require('./mensajes');
+const listas = require('./listas');
 
 const esc = (v) =>
   String(v ?? '—').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -853,6 +854,43 @@ function registrarPanel(app, db, conexion = null) {
     aPagos(enganchado
       ? `Pago de ${quien} confirmado y anotado en el partido del ${db.fechaBonita(enganchado.fecha)}${enganchado.hora ? ` ${enganchado.hora}` : ''}.`
       : `Pago de ${quien} confirmado. No calzaba con un solo partido, así que quedó suelto: asígnalo desde la pantalla del partido.`);
+  });
+
+  /**
+   * TRAER LA LISTA DEL GRUPO — en dos tiempos, siempre.
+   *
+   * Primero se lee el texto y se muestra QUÉ va a pasar: a qué partido va, a
+   * quién reconoce del CRM, a quién va a anotar como invitado y qué Yapes
+   * sueltos se van a enganchar. Recién con eso a la vista se confirma.
+   *
+   * El paso de vista previa no escribe nada y no guarda estado: el texto viaja
+   * en el formulario de confirmación. Si Clarck se arrepiente, cierra y ya.
+   */
+  app.post('/admin/lista/importar', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const texto = String(req.body.texto || '');
+    const keyRaw = req.body.key;
+    const key = encodeURIComponent(keyRaw);
+
+    if (req.body.confirmar !== '1') {
+      const prev = listas.prepararImportacion(db, texto);
+      return res.send(paginaImportarPrevia(db, key, keyRaw, texto, prev));
+    }
+
+    const r = listas.importarLista(db, texto);
+    if (!r.ok) return volver(res, { key: keyRaw, vista: 'partidos', aviso: r.error, err: true });
+    const cuantos = r.anotados.length;
+    const partes = [
+      r.creado ? 'partido abierto' : 'partido que ya estaba',
+      cuantos ? `${cuantos} anotado${cuantos === 1 ? '' : 's'}` : 'nadie nuevo que anotar',
+      r.yaEstaban.length ? `${r.yaEstaban.length} ya estaban` : '',
+      r.pagosEnganchados.length ? `${r.pagosEnganchados.length} Yape${r.pagosEnganchados.length === 1 ? '' : 's'} enganchado${r.pagosEnganchados.length === 1 ? '' : 's'}` : '',
+      r.noEntraron.length ? `${r.noEntraron.length} no entraron (revisa el cupo)` : '',
+    ].filter(Boolean);
+    volver(res, {
+      key: keyRaw, vista: 'partidos', partido: r.partido.id,
+      aviso: `Lista cargada: ${partes.join(' · ')}.`,
+    });
   });
 
   app.post('/admin/turno', (req, res) => {
@@ -3522,6 +3560,76 @@ const COLOR_FASE = {
  * domingo que viene no tenía nada cargado — que es exactamente lo que pasó el
  * 15/08: se vendió un partido que no existía.
  */
+/**
+ * "Esto es lo que voy a hacer con tu lista" — la pantalla intermedia.
+ *
+ * Importar una lista abre partidos y anota gente: es de las pocas cosas del
+ * panel que escribe varias filas de un golpe. Verlo antes evita el error caro
+ * —cargar la lista del martes en el partido del miércoles— que después se
+ * deshace de a una persona por vez.
+ */
+function paginaImportarPrevia(db, key, keyRaw, texto, prev) {
+  const volverAtras = `<a class="btn-toque" style="display:flex;align-items:center;justify-content:center;min-height:var(--tap);text-decoration:none;background:var(--surface);color:var(--ink);border:1.5px solid var(--line-strong)" href="/admin/leads?key=${key}&vista=partidos#importar">‹ Volver</a>`;
+
+  if (!prev.ok) {
+    return baseHtml('Importar lista · Pichangueros', `
+      <div class="px">
+        <div class="ltitle"><div><div class="eyebrow">Pegar una lista</div><h2>No pude leerla</h2></div></div>
+        <div class="banner err px" style="margin:0 0 14px"><div class="bic">⚠️</div><div class="btxt"><b>${esc(prev.error)}</b></div></div>
+        <div class="group" style="padding:14px">
+          <div style="font-size:var(--t-s);color:var(--ink-2);margin-bottom:8px">Esto fue lo que pegaste:</div>
+          <pre style="white-space:pre-wrap;font-size:13px;color:var(--ink-2);margin:0">${esc(texto.slice(0, 1200))}</pre>
+        </div>
+        <div style="margin-top:12px">${volverAtras}</div>
+      </div>`, { activo: 'partidos', key });
+  }
+
+  const { lista, partido, filas, sede } = prev;
+  const nuevos = filas.filter((f) => !f.yaEsta);
+  const conPago = nuevos.filter((f) => f.pago);
+  const fila = (f) => `<div class="grow" style="align-items:flex-start">
+      <span class="k">${esc(f.nombre)}${f.lead ? `<br><small style="color:var(--ink-3)">es ${esc(f.lead.nombre)} · +${esc(f.lead.numero)}</small>` : ''}</span>
+      <span class="v" style="color:${f.yaEsta ? 'var(--ink-3)' : f.pago ? 'var(--lime-ink)' : 'var(--ink-2)'}">${
+  f.yaEsta ? 'ya estaba' : f.pago ? `se anota · Yape S/ ${esc(f.pago.monto)}` : f.lead ? 'se anota' : 'se anota como invitado'}</span>
+    </div>`;
+
+  return baseHtml('Importar lista · Pichangueros', `
+    <div class="px">
+      <div class="ltitle"><div><div class="eyebrow">Pegar una lista</div><h2>Esto es lo que voy a hacer</h2></div></div>
+
+      <div class="marcador" style="margin-bottom:14px">
+        <div class="mtop"><span class="mlabel">⚽ ${partido ? 'Va al partido que ya existe' : 'Se va a ABRIR este partido'}</span></div>
+        <div style="font-size:var(--t-l);font-weight:800;color:var(--on-navy);margin-top:6px">
+          ${esc(db.fechaBonita(lista.fecha, { relativa: false }))} · ${esc(lista.hora)}
+        </div>
+        <div class="mfoot">${esc(sede ? sede.nombre : lista.sede)} · ${esc(db.nombreDeZona(prev.zona))}${lista.precio ? ` · S/ ${esc(lista.precio)} por jugador` : ''}${lista.turno ? ` · ${esc(lista.turno)} turno` : ''}</div>
+      </div>
+
+      <div class="shdr">Los ${filas.length} de la lista</div>
+      <div class="group">${filas.map(fila).join('')}</div>
+
+      <div class="banner px" style="margin:14px 0">
+        <div class="bic">💰</div>
+        <div class="btxt">
+          <b>Se anotan como "reservado", no como pagado.</b> El 💰 de la lista dice que te pagaron a ti;
+          el sistema solo puede decir "pagado" cuando hay un Yape identificado.
+          ${conPago.length ? `De estos, <b>${conPago.length}</b> tienen su Yape suelto y se les engancha solo.` : 'Ninguno tiene un Yape suelto para enganchar.'}
+        </div>
+      </div>
+
+      <form method="post" action="/admin/lista/importar">
+        <input type="hidden" name="key" value="${esc(keyRaw)}">
+        <input type="hidden" name="texto" value="${esc(texto)}">
+        <input type="hidden" name="confirmar" value="1">
+        <button class="btn-toque btn-guardar" style="width:100%;min-height:var(--tap-lg);font-size:var(--t-l)">
+          ✅ Sí, cargar ${nuevos.length ? `los ${nuevos.length}` : 'la lista'}
+        </button>
+      </form>
+      <div style="margin-top:10px">${volverAtras}</div>
+      <div class="foot">⚽ Pichangueros · Partidos</div>
+    </div>`, { activo: 'partidos', key });
+}
+
 function paginaPartidos(db, key, query = {}) {
   const keyRaw = decodeURIComponent(key);
   const partidoId = Number(query.partido) || null;
@@ -3830,6 +3938,39 @@ function paginaPartidos(db, key, query = {}) {
           document.querySelectorAll('.qd').forEach(b => b.classList.remove('on')));
         pintaSedes(${JSON.stringify(zonaPre)});
       </script>
+
+      ${/* TRAER LA LISTA DEL GRUPO.
+            Las listas viven en los grupos de WhatsApp y a los grupos el bot no
+            entra: Cloud API no entrega mensajes de grupo. Está verificado — de
+            las convocatorias del 25 y 26 de agosto no llegó ninguna. Mientras
+            la lista se arme allá, alguien tiene que traerla; esto hace que
+            traerla cueste un pegado en vez de anotar doce veces a mano.
+            Va PLEGADO: no es de todos los días, y abierto le robaba la
+            pantalla al formulario de abrir partido, que sí lo es. */ ''}
+      <details class="editor" id="importar" style="margin:0 0 14px" ${query.importado === '1' ? 'open' : ''}>
+        <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:14px;
+          min-height:var(--tap);border:1px solid var(--line);border-radius:var(--r3);background:var(--surface);
+          font-weight:700;font-size:var(--t-m)">
+          <span style="font-size:18px">📋</span>
+          <span style="flex:1">Pegar una lista del grupo</span>
+          <span style="font-size:var(--t-xs);color:var(--ink-2);font-weight:600">y la cargo entera</span>
+        </summary>
+        <div class="group" style="margin-top:10px;padding:14px">
+          <form method="post" action="/admin/lista/importar">
+            <input type="hidden" name="key" value="${esc(keyRaw)}">
+            <label for="txtLista" style="display:block;font-size:var(--t-s);color:var(--ink-2);font-weight:600;margin-bottom:8px">
+              Copia la convocatoria del grupo tal cual —con la fecha, la sede, el horario y los nombres— y pégala acá.
+              Primero te muestro qué va a pasar; recién después se carga.
+            </label>
+            <textarea id="txtLista" name="texto" rows="9" required
+              style="width:100%;font-size:16px;font-family:inherit;padding:12px;border:1.5px solid var(--line-strong);border-radius:var(--r2);background:var(--surface-2);color:var(--ink)"
+              placeholder="🔴 *PICHANGA MARTES 25/08/26*🔴 *SEGUNDO TURNO*&#10;📍 Sede: Estadio colegio Politécnico Estados Unidos&#10;🕗 Horario: 9pm a 10 pm&#10;💵 Inversión: S/ 10&#10;ESTADO DE LA LISTA:&#10;[💰] 1. Renzo Infante&#10;[💰] 2. Yhonatan Chinchay"></textarea>
+            <button class="btn-toque btn-guardar" style="width:100%;min-height:var(--tap-lg);font-size:var(--t-l);margin-top:10px">
+              👀 Ver qué va a pasar
+            </button>
+          </form>
+        </div>
+      </details>
 
       ${/* LA SEMANA. Es como se piensa el negocio ("los domingos 6pm") y es
             donde un hueco o un duplicado se ven solos — en la lista plana
