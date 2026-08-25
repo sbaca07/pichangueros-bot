@@ -219,6 +219,38 @@ function registrarPanel(app, db, conexion = null) {
       : `A ${nombreLead(numero)} ya estaba anotado como que recibió el link.`, 'grupo');
   });
 
+  /**
+   * CONTESTARLE DESDE ACÁ.
+   *
+   * La ficha mostraba la conversación pero no dejaba responder: había que
+   * saltar a WhatsApp. Y para los contactos que llegan sin teléfono (los BSUID
+   * de Meta) no hay a dónde saltar — wa.me no existe para ellos. O sea que se
+   * podían recibir mensajes que no había forma de contestar.
+   *
+   * Lo que se manda queda en la conversación y cuenta como atención a mano: el
+   * bot se calla 5 minutos con ese contacto para no escribir encima.
+   */
+  app.post('/admin/lead/responder', async (req, res) => {
+    if (!autorizado(req, res)) return;
+    const numero = String(req.body.numero || '').trim();
+    const texto = String(req.body.texto || '').trim().slice(0, 1000);
+    const fin = (aviso, err) => volver(res, { key: req.body.key, numero, ancla: 'chat', aviso, err });
+    if (!numero || !texto) return fin('Escribe el mensaje antes de mandarlo.', true);
+    if (!conexion || !conexion.enviar) return fin('El bot no está conectado ahora mismo.', true);
+    const r = await conexion.enviar(numero, texto);
+    if (!r || !r.ok) {
+      // El error de Meta se muestra tal cual: "fuera de la ventana de 24 h" y
+      // "el número no existe" se arreglan de formas muy distintas.
+      return fin(`No se pudo enviar: ${(r && r.error) || 'error desconocido'}`, true);
+    }
+    // Guardar la conversación es cosa del panel, que tiene la BD; al host solo
+    // se le pide callar al bot. Atarlo todo a `conexion` hacía que un
+    // transporte sin ese método perdiera el mensaje del historial.
+    db.saveMessage(numero, 'assistant', texto);
+    if (conexion.marcarManual) conexion.marcarManual(numero);
+    fin('Mensaje enviado. El bot no le escribe por 5 minutos, para no pisarte.');
+  });
+
   app.post('/admin/lead/reactivar', (req, res) => {
     if (!autorizado(req, res)) return;
     const numero = numeroDe(req);
@@ -1594,6 +1626,13 @@ const ESTILOS = `
   .scsv small{font-size:var(--t-xs);color:var(--ink-2);line-height:1.3;padding-left:22px}
   .scsv:hover{background:var(--surface-2)}
   .fcol-right .group{margin-bottom:0}
+  /* Caja de respuesta debajo del chat: pegada a la conversación, como en
+     cualquier mensajería — no en un formulario aparte al final de la página. */
+  .responder{display:flex;gap:8px;align-items:flex-end;margin-top:10px}
+  .responder textarea{flex:1;min-width:0;font:inherit;font-size:16px;line-height:1.4;
+    padding:11px 13px;border:1.5px solid var(--line-strong);border-radius:var(--r2);
+    background:var(--surface);color:var(--ink);resize:vertical;min-height:var(--tap)}
+  .responder button{flex:0 0 auto;min-height:var(--tap);padding:0 20px;font-size:var(--t-m)}
 
   /* El bloque de números del Resumen, plegado. El <summary> ya adelanta las
      tres cifras que uno querría de un vistazo: si eso alcanza, no hace falta
@@ -3006,9 +3045,20 @@ ${/* "Próxima acción" (fecha + nota) se retiró el 16/08: era un recordatorio 
         </div>
 
         </div>
-        <div class="fcol-right">
+        <div class="fcol-right ancla" id="chat">
           <div class="shdr">Conversación</div>
           <div class="chat">${chat}</div>
+          ${/* La caja de respuesta. Para los contactos sin teléfono es la ÚNICA
+                forma de contestarles: wa.me no existe para un BSUID. */ ''}
+          <form class="responder" method="post" action="/admin/lead/responder">
+            <input type="hidden" name="key" value="${esc(keyRaw)}">
+            <input type="hidden" name="numero" value="${esc(numero)}">
+            <textarea name="texto" rows="2" required placeholder="Escríbele desde acá…"></textarea>
+            <button class="btn-toque btn-guardar">Enviar</button>
+          </form>
+          <div class="foot" style="text-align:left;padding:6px 2px 0">
+            Sale desde el número del negocio, queda en esta conversación y el bot no le escribe por 5 minutos.
+          </div>
         </div>
       </div>
       <div class="foot">⚽ Pichangueros CRM</div>

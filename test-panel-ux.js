@@ -889,6 +889,37 @@ const srv = app.listen(0, async () => {
       malo.status === 200 && /No pude leerla/.test(malo.html));
   }
 
+  console.log('== 4l8 · Contestarle desde la ficha ==');
+  {
+    // La ficha mostraba la conversación pero no dejaba responder: había que
+    // saltar a WhatsApp. Y para un contacto sin teléfono (BSUID) no hay a
+    // dónde saltar — se podían recibir mensajes imposibles de contestar.
+    const N = '51990000061';
+    db.getOrCreateLead(N);
+    db.updateLead(N, { nombre: 'Responde Ríos', zona: 'brena' });
+    db.saveMessage(N, 'user', '¿hay cupo para hoy?');
+
+    const ficha = (await GET(`/admin/leads?key=ux&numero=${N}`)).html;
+    check('la ficha ofrece contestarle', /lead\/responder/.test(ficha) && /Escríbele desde acá/.test(ficha));
+
+    const r = await POST('/admin/lead/responder', { key: 'ux', numero: N, texto: 'Claro, te anoto' });
+    check('mandar el mensaje responde bien', r.status === 302, `HTTP ${r.status}`);
+    const hist = db.getHistory(N, 10);
+    check('…y queda en la conversación', hist.some((m) => m.rol === 'assistant' && m.texto === 'Claro, te anoto'));
+
+    const vacio = await POST('/admin/lead/responder', { key: 'ux', numero: N, texto: '   ' });
+    check('un mensaje vacío se rechaza con motivo',
+      vacio.status === 302 && /Escribe el mensaje/.test(decodeURIComponent(vacio.location)));
+
+    // Un contacto sin teléfono: no hay wa.me, la caja es su única vía.
+    const B = 'PE.999000111';
+    db.getOrCreateLead(B);
+    db.saveMessage(B, 'user', 'hola');
+    const fichaB = (await GET(`/admin/leads?key=ux&numero=${encodeURIComponent(B)}`)).html;
+    check('al contacto sin teléfono NO se le ofrece wa.me', !new RegExp(`wa\\.me/${B.replace('.', '\\.')}`).test(fichaB));
+    check('…pero sí la caja para contestarle', /lead\/responder/.test(fichaB));
+  }
+
   console.log('== 4m · Pagos: "limpiar" solo si hay algo que limpiar ==');
   {
     // El período arranca en '7d', así que hayFiltro daba true SIEMPRE: el botón

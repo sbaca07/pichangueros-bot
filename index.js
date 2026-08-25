@@ -851,6 +851,15 @@ app.get('/', (_req, res) => {
 const conexion = {
   estado: () => connectionState,
   numero: () => (oficial ? numeroOficial() : linkedNumber),
+  /**
+   * Contestar desde el panel es una respuesta A MANO: el bot se calla 5
+   * minutos con ese contacto, igual que si Clarck hubiera escrito desde su
+   * celular. Sin esto, el bot podía responder encima de lo que él acababa de
+   * mandar. (Guardar el mensaje en la conversación lo hace el panel.)
+   */
+  marcarManual(numero) {
+    atendidoAMano.set(numero, Date.now());
+  },
   qr: () => (oficial ? null : lastQrDataUrl),
   async desconectar() {
     if (oficial) return false; // el canal oficial no se "desconecta" desde acá
