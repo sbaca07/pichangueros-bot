@@ -26,6 +26,7 @@
  */
 
 const crypto = require('crypto');
+const { esBsuid } = require('./mensajes');
 
 // .trim() en todas: pegar un valor correcto desde el panel de Meta arrastrando
 // un espacio o un newline es trivial, y sin recortar el phone_number_id no pasa
@@ -129,9 +130,14 @@ async function enviarTexto(numero, texto) {
   const res = await fetch(`${GRAPH}/${PHONE_ID}/messages`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+    // A un BSUID se le escribe con `recipient`, NO con `to` — y hay que omitir
+    // `to`, porque si van los dos el teléfono manda y el envío falla. Es la
+    // otra mitad de soportar identidades sin número: recibirlos sin poder
+    // contestarles sería recibir a medias.
     body: JSON.stringify({
       messaging_product: 'whatsapp',
-      to: numero,
+      recipient_type: 'individual',
+      ...(esBsuid(numero) ? { recipient: String(numero).toUpperCase() } : { to: numero }),
       type: 'text',
       text: { body: texto },
     }),
@@ -196,7 +202,13 @@ const sockAdapter = {
  * llega sin `from`/`to`.
  */
 function numeroDelPayload(m, fromMe, contactos = '') {
-  return String((fromMe ? m.to : m.from) || contactos || '').replace(/\D/g, '');
+  const tel = String((fromMe ? m.to : m.from) || contactos || '').replace(/\D/g, '');
+  if (tel) return tel;
+  // Sin teléfono, Meta manda el BSUID (`PE.187019082`) — es la identidad de la
+  // persona igual, y desde julio de 2026 sirve también para responderle. Se
+  // conserva con sus letras: sin ellas sería un número de otro (ver esBsuid).
+  const bsuid = String((fromMe ? m.to_user_id : m.from_user_id) || m.user_id || '').trim();
+  return esBsuid(bsuid) ? bsuid.toUpperCase() : '';
 }
 
 /** Convierte un mensaje del webhook de Meta a la forma Baileys que espera index.js. */

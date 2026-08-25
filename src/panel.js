@@ -26,6 +26,8 @@
 const sheetsync = require('./sheetsync');
 const backup = require('./backup');
 const { buildLeadsWorkbook } = require('./excel');
+// Identidades sin teléfono (BSUID de Meta): no se les puede armar un wa.me.
+const { esBsuid } = require('./mensajes');
 
 const esc = (v) =>
   String(v ?? '—').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -2862,14 +2864,20 @@ function paginaFicha(db, key, numero, query = {}) {
     <div class="px">
       <div class="navbar">
         <a class="navback" href="/admin/leads?key=${key}&vista=crm">${SVG.back} Jugadores</a>
-        <a class="wabtn" href="https://wa.me/${esc(numero)}" target="_blank" rel="noopener">${SVG.wa} WhatsApp</a>
+        ${/* Un BSUID no tiene teléfono, así que wa.me no lleva a ningún lado:
+              a esta persona se le escribe desde acá (el bot sí sabe cómo). */ ''}
+        ${esBsuid(numero)
+          ? '<span class="wabtn" style="background:var(--surface-2);color:var(--ink-2);box-shadow:none;border:1.5px solid var(--line-strong);cursor:default" title="WhatsApp no nos dio su número: escríbele desde el panel, más abajo.">🔒 Sin número</span>'
+          : `<a class="wabtn" href="https://wa.me/${esc(numero)}" target="_blank" rel="noopener">${SVG.wa} WhatsApp</a>`}
       </div>
       <div class="ficha-grid">
         <div class="fcol-left stack">
       <div class="fhead">
         <div class="fava" style="background:${avatarColor(numero)}">${esc(iniciales(lead.nombre, numero))}</div>
         <h2>${esc(lead.nombre || 'Sin nombre')}</h2>
-        <div class="fnum">+${esc(numero)}</div>
+        <div class="fnum">${esBsuid(numero)
+          ? `<span title="Identidad de WhatsApp (BSUID). Meta no manda el teléfono de quien usa nombre de usuario y no está en la agenda.">🔒 ${esc(numero)} · sin teléfono</span>`
+          : `+${esc(numero)}`}</div>
         <div class="fpills">
           ${z ? `<span class="pz" style="background:${z.color}">${esc(z.nombre)}</span>` : ''}
           ${lead.handoff ? `<span class="pz" style="background:var(--st-alerta-solid)">🔔 ${esc(lead.handoff_motivo || 'derivado')}</span>` : ''}

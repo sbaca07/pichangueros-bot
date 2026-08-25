@@ -36,7 +36,26 @@ function extraerTexto(msg) {
   return ''; // reacciones, mensajes de protocolo, etc.: no ameritan respuesta
 }
 
-const jidToNumero = (jid) => (jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+/**
+ * El BSUID de Meta: la identidad que manda el webhook cuando NO manda el
+ * teléfono (`PE.187019082`). Pasa desde abril de 2026 con los usuarios que
+ * activaron su nombre de usuario en WhatsApp y a los que no tenemos en la
+ * agenda ni les hablamos en 30 días. Meta obliga a soportarlo.
+ */
+const esBsuid = (v) => /^[A-Za-z]{2}\.\d+$/.test(String(v || '').trim());
+
+/**
+ * Identidad del contacto a partir del jid.
+ *
+ * Un BSUID se conserva TAL CUAL. Pasarlo por el `replace(/\D/g,'')` lo
+ * convertiría en "187019082", que es un número de teléfono perfectamente
+ * válido de otra persona: dos desconocidos terminarían en la misma ficha.
+ */
+const jidToNumero = (jid) => {
+  const base = (jid || '').split('@')[0].split(':')[0];
+  if (esBsuid(base)) return base.toUpperCase();
+  return base.replace(/\D/g, '');
+};
 
 /**
  * Número real del remitente. WhatsApp a veces manda el chat con un LID
@@ -53,4 +72,4 @@ function numeroDe(msg) {
   return jidToNumero(jid);
 }
 
-module.exports = { desenvolver, extraerTexto, jidToNumero, numeroDe };
+module.exports = { desenvolver, extraerTexto, jidToNumero, numeroDe, esBsuid };
