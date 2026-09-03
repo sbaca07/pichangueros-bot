@@ -106,8 +106,22 @@ check('con el Yape en revisión NO se le quita el cupo', db.vencerReservas().eve
 check('y sigue ocupando su lugar', filaDe(p7, '51911100010').estado === 'reservado');
 
 // Partido que ya empezó: a esa altura decide Clarck en la cancha, no el reloj.
-const pAyer = db.crearPartido({ zona: 'comas', fecha: enUnosDias(-1), hora: '8-9pm', sede: 'Cancha Test', cupo: 3 });
+//
+// El partido se abre A FUTURO, se anota al jugador y RECIÉN AHÍ se le mueve la
+// fecha a ayer — el mismo truco que usa test-panel-ux.js (partidoJugado).
+//
+// Antes se creaba directamente con fecha de ayer y se anotaba encima. Eso
+// funcionaba solo media tarde: un partido de ayer 8-9pm termina a las 21:00, la
+// GRACIA para anotar dura 24 h, así que a partir de las 21:00 de HOY `inscribir`
+// devolvía `inscripcion: null` y el test reventaba con un TypeError. Fallaba
+// todas las noches de 21:00 a 24:00 hora de Lima, y como la regla es que la
+// suite esté en verde antes de cualquier push, tres horas por noche no se podía
+// desplegar nada.
+const pAyer = db.crearPartido({ zona: 'comas', fecha: enUnosDias(40), hora: '8-9pm', sede: 'Cancha Test', cupo: 3 });
 const rViejo = db.inscribir(pAyer, '51911100011');
+if (!rViejo.inscripcion) throw new Error(`no se pudo anotar en el partido a futuro: ${rViejo.motivo}`);
+const movido = db.actualizarPartido(pAyer, { fecha: enUnosDias(-1) });
+if (!movido.ok) throw new Error(`no se pudo mover el partido a ayer: ${movido.motivo}`);
 yaVenció(rViejo.inscripcion.id);
 check('en un partido que ya pasó no se vence nada', db.vencerReservas().every((v) => v.inscripcion.numero !== '51911100011'));
 
