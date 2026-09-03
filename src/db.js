@@ -438,13 +438,26 @@ function actividadPorDia(desde) {
   ).all(desde);
 }
 
-/** Mapa numero → {rol, en} del ÚLTIMO mensaje (para detectar chats sin responder). */
+/**
+ * Mapa numero → {rol, en, texto} del ÚLTIMO mensaje (para detectar chats sin
+ * responder, y para el renglón de cada fila del CRM).
+ *
+ * El `texto` viene de acá y no de un `getHistory(numero, 1)` por fila: esa
+ * versión hacía UNA consulta por contacto pintado, y la cola "Necesitan tu
+ * atención ahora" se pinta ENTERA a propósito. Con 271 derivados esperando,
+ * eran 271 consultas para dibujar una pantalla. Es la misma razón por la que
+ * las métricas se leen de una sola vez (metricasPorNumero).
+ *
+ * Se trae RECORTADO a 120 caracteres: la fila muestra 40, y traer el mensaje
+ * entero de 1,300 contactos es cargar la conversación completa en memoria para
+ * tirarla enseguida.
+ */
 function ultimosRoles() {
   const rows = db.prepare(
-    'SELECT m.numero, m.rol, m.creado_en FROM mensajes m WHERE m.id IN (SELECT MAX(id) FROM mensajes GROUP BY numero)'
+    'SELECT m.numero, m.rol, m.creado_en, substr(m.texto, 1, 120) AS texto FROM mensajes m WHERE m.id IN (SELECT MAX(id) FROM mensajes GROUP BY numero)'
   ).all();
   const mapa = {};
-  for (const r of rows) mapa[r.numero] = { rol: r.rol, en: r.creado_en };
+  for (const r of rows) mapa[r.numero] = { rol: r.rol, en: r.creado_en, texto: r.texto };
   return mapa;
 }
 

@@ -2719,7 +2719,11 @@ function paginaCRM(db, key, query) {
   const fila = (l) => {
     const sr = sinResp(l);
     const m = mDe(l);
-    const ultimo = db.getHistory(l.numero, 1)[0];
+    // El último mensaje sale del mapa que YA se leyó arriba (una consulta para
+    // toda la lista). Antes era un getHistory por fila: la cola de atención se
+    // pinta entera, así que la pantalla hacía una consulta por cada contacto
+    // que estuviera esperando.
+    const ultimo = roles[l.numero];
     const sub = l.handoff ? esc(l.handoff_motivo || 'derivado a Clarck')
       : ultimo && ultimo.rol === 'user' ? `"${esc((ultimo.texto || '').slice(0, 40))}"`
       : [l.distrito ? esc(l.distrito) : null, l.edad ? `${l.edad} años` : null].filter(Boolean).join(' · ') || 'sin datos aún';

@@ -961,6 +961,38 @@ const srv = app.listen(0, async () => {
     check('…y "ver más" trae más', (masLargo.match(/class="lrow"/g) || []).length > filas);
   }
 
+  console.log('== 4l-bis · El CRM no pregunta una vez por cada fila ==');
+  {
+    /**
+     * Cada fila mostraba el último mensaje del contacto, y para conseguirlo
+     * hacía su propio getHistory: UNA consulta por contacto pintado. La cola
+     * "Necesitan tu atención ahora" se pinta ENTERA a propósito, así que la
+     * cuenta crecía con la cola — el 02/09 había 271 derivados esperando.
+     *
+     * El último mensaje ya venía en ultimosRoles, que se lee una sola vez para
+     * toda la lista. Este test cuenta las consultas: si alguien vuelve a
+     * resolver la fila contacto por contacto, acá se entera.
+     */
+    db.getOrCreateLead('51990000072');
+    db.updateLead('51990000072', { nombre: 'Ene Mas Uno', zona: 'brena' });
+    db.saveMessage('51990000072', 'user', 'a que hora juegan el sabado');
+
+    const original = db.getHistory;
+    let llamadas = 0;
+    db.getHistory = (...args) => { llamadas++; return original(...args); };
+    const pintada = (await GET('/admin/leads?key=ux&vista=crm')).html;
+    const pintadas = (pintada.match(/class="lrow"/g) || []).length;
+    db.getHistory = original;
+
+    check('pintar el CRM no consulta el historial de nadie', llamadas === 0,
+      `${llamadas} consultas para ${pintadas} filas`);
+    check('…y aun así la fila sigue mostrando lo último que escribió',
+      /a que hora juegan el sabado/.test(
+        (await GET('/admin/leads?key=ux&vista=crm&q=Ene+Mas+Uno')).html));
+    check('…recortado, no la conversación entera',
+      db.ultimosRoles()['51990000072'].texto.length <= 120);
+  }
+
   console.log('== 4m · Pagos: "limpiar" solo si hay algo que limpiar ==');
   {
     // El período arranca en '7d', así que hayFiltro daba true SIEMPRE: el botón
