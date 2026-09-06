@@ -192,7 +192,32 @@ function registrarPanel(app, db, conexion = null) {
     res.redirect(`/admin/leads?${p.join('&')}${ancla ? `#${ancla}` : ''}`);
   };
 
-  const numeroDe = (req) => (req.body.numero || '').replace(/\D/g, '');
+  /**
+   * El número tal como lo escribe Clarck en el panel → el formato con el que
+   * vive en el resto del sistema (51 + 9 dígitos, que es como lo entrega
+   * WhatsApp).
+   *
+   * Escribir "943791755" creaba una inscripción con ESE número, que no calza
+   * con el lead "51943791755": la ficha salía sin nombre —aunque el nombre
+   * estuviera guardado— y, lo grave, el enganche de pagos no encontraba nunca
+   * esa reserva, porque `vincularPago` e `inscripcionActiva` buscan por el
+   * número de WhatsApp. Un jugador anotado a mano quedaba invisible para su
+   * propio Yape (2026-09-06, probando con el número de Sebastian).
+   *
+   * Un BSUID se conserva CON las letras: recortarlas lo convierte en el
+   * teléfono de otra persona (ver mensajes.esBsuid).
+   */
+  const numeroPanel = (txt) => {
+    const bruto = String(txt || '').trim();
+    if (!bruto) return '';
+    if (esBsuid(bruto)) return bruto.toUpperCase();
+    const d = bruto.replace(/\D/g, '');
+    // Móvil peruano: 9 dígitos empezando en 9. Lo demás se deja como vino
+    // (fijos, números de otro país): normalizar a ciegas es peor que no hacerlo.
+    return d.length === 9 && d.startsWith('9') ? `51${d}` : d;
+  };
+
+  const numeroDe = (req) => numeroPanel(req.body.numero);
   // Cómo nombrar a alguien en un aviso: su nombre si lo tenemos, si no el número.
   const nombreLead = (numero) => {
     const l = db.getLead(numero);
@@ -748,7 +773,7 @@ function registrarPanel(app, db, conexion = null) {
   app.post('/admin/partido/inscribir', (req, res) => {
     if (!autorizado(req, res)) return;
     const partidoId = Number(req.body.partido_id);
-    const numero = (req.body.numero || '').replace(/\D/g, '') || null;
+    const numero = numeroPanel(req.body.numero) || null;
     const nombre = (req.body.nombre || '').trim().slice(0, 80) || null;
     const fin = (aviso, err) => volverAPartidos(req, res, partidoId, aviso, 'inscritos', err);
     if (!numero && !nombre) return fin('Escribe el número de WhatsApp o el nombre del invitado.', true);
@@ -996,7 +1021,7 @@ function registrarPanel(app, db, conexion = null) {
   // Mensaje suelto desde el panel (prueba de conexión o aviso manual).
   app.post('/admin/enviar', async (req, res) => {
     if (!autorizado(req, res)) return;
-    const numero = (req.body.numero || '').replace(/\D/g, '');
+    const numero = numeroPanel(req.body.numero);
     const texto = (req.body.texto || '').trim().slice(0, 1000);
     if (!numero || !texto) return res.status(400).json({ ok: false, error: 'faltan numero/texto' });
     if (!conexion || !conexion.enviar) return res.status(500).json({ ok: false, error: 'conexión no disponible' });
@@ -1013,7 +1038,7 @@ function registrarPanel(app, db, conexion = null) {
   app.get('/admin/leads', (req, res) => {
     if (!autorizado(req, res)) return;
     const key = encodeURIComponent(req.query.key);
-    const numero = (req.query.numero || '').replace(/\D/g, '');
+    const numero = numeroPanel(req.query.numero);
     // Ficha y Ajustes también reciben la query: ahí viven los avisos de
     // "guardado" que antes no tenían dónde mostrarse.
     if (numero) return res.send(paginaFicha(db, key, numero, req.query));

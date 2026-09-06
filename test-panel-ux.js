@@ -1008,6 +1008,28 @@ const srv = app.listen(0, async () => {
     check('y sus medios dicen de qué familia son', /Medio: Yape/.test(base));
   }
 
+  console.log('== 6 · El número escrito a mano se normaliza ==');
+  {
+    // Escribir "955555555" (sin el 51) creaba una inscripción con ESE número:
+    // no calzaba con el lead, la lista lo mostraba pelado —aunque el nombre
+    // estuviera guardado— y, lo grave, su Yape nunca encontraba la reserva,
+    // porque vincularPago busca por el número de WhatsApp. Pasó el 2026-09-06.
+    db.getOrCreateLead('51955555555');
+    db.updateLead('51955555555', { nombre: 'Sebastián de Prueba' });
+    const pNum = db.crearPartido({ zona: 'brena', fecha: enDias(4), hora: '7-8pm', cupo: 10 });
+    const r = await POST('/admin/partido/inscribir', { key: 'ux', partido_id: pNum, numero: '955555555' });
+    check('anotar a mano sin el 51 redirige como siempre', r.status === 302);
+    const insc = db.inscripcionesDe(pNum);
+    check('el cupo se guarda con el número de WhatsApp (51 + 9 dígitos)', insc[0]?.numero === '51955555555');
+    check('por eso la lista muestra su nombre y no el número pelado', (insc[0]?.nombre || insc[0]?.lead_nombre) === 'Sebastián de Prueba');
+    check('y su Yape SÍ encuentra la reserva que le anotaron a mano', !!db.inscripcionActiva(pNum, '51955555555'));
+    await POST('/admin/partido/inscribir', { key: 'ux', partido_id: pNum, numero: '51955555555' });
+    check('volver a anotarlo CON el 51 no lo duplica: es la misma persona', db.inscripcionesDe(pNum).length === 1);
+    await POST('/admin/partido/inscribir', { key: 'ux', partido_id: pNum, numero: 'PE.187019082' });
+    check('un BSUID se guarda con sus letras (recortarlas lo vuelve el teléfono de otro)',
+      db.inscripcionesDe(pNum).some((i) => i.numero === 'PE.187019082'));
+  }
+
   console.log('== 5 · Sin key, nada existe ==');
   check('vista sin key → 404', (await GET('/admin/leads?vista=crm')).status === 404);
   check('export sin key → 404', (await GET('/admin/leads.csv')).status === 404);
