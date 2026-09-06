@@ -1025,6 +1025,14 @@ const srv = app.listen(0, async () => {
     check('y su Yape SÍ encuentra la reserva que le anotaron a mano', !!db.inscripcionActiva(pNum, '51955555555'));
     await POST('/admin/partido/inscribir', { key: 'ux', partido_id: pNum, numero: '51955555555' });
     check('volver a anotarlo CON el 51 no lo duplica: es la misma persona', db.inscripcionesDe(pNum).length === 1);
+    const nuevoNum = '51966666666';
+    await POST('/admin/partido/inscribir', { key: 'ux', partido_id: pNum, numero: nuevoNum, nombre: 'Casero de la Cancha' });
+    check('anotar a mano a un número desconocido lo crea en el CRM', !!db.getLead(nuevoNum));
+    check('y le guarda el nombre que se escribió', db.getLead(nuevoNum)?.nombre === 'Casero de la Cancha');
+    check('anotar a mano NO le pisa el nombre a quien ya lo tenía', (() => {
+      db.inscribir(pNum, '51955555555'); // ya existe como "Sebastián de Prueba"
+      return db.getLead('51955555555')?.nombre === 'Sebastián de Prueba';
+    })());
     await POST('/admin/partido/inscribir', { key: 'ux', partido_id: pNum, numero: 'PE.187019082' });
     check('un BSUID se guarda con sus letras (recortarlas lo vuelve el teléfono de otro)',
       db.inscripcionesDe(pNum).some((i) => i.numero === 'PE.187019082'));

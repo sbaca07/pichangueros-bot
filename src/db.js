@@ -2350,6 +2350,16 @@ function pagoSueltoDe(numero, horas = null) {
 function pagarInscripcion(inscripcionId, pagoId) {
   const insc = db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(inscripcionId);
   if (!insc) return { ok: false, motivo: 'no_existe' };
+  // YA TENÍA OTRO YAPE ENGANCHADO. Pisarlo dejaba al anterior huérfano: la
+  // caja del partido suma por pago_id (`cajaPartido`), así que esa plata
+  // desaparecía del cuadre sin que nada lo dijera. Es como se perdieron los
+  // S/15 de Patrick el 2026-09-02. Un segundo pago sobre la misma persona no
+  // es un reemplazo, es plata ADICIONAL — y qué hacer con ella (sumar un cupo
+  // de invitado, o mirarlo de cerca) lo decide quien llama, que es el único
+  // que sabe si vino con un amigo o si yapeó dos veces.
+  if (insc.pago_id && insc.pago_id !== pagoId) {
+    return { ok: false, motivo: 'ya_tenia_pago', pagoPrevio: insc.pago_id };
+  }
   const p = getPartido(insc.partido_id);
   const ocupaAhora = ['reservado', 'pagado'].includes(insc.estado);
   if (!ocupaAhora && p && ocupadosDe(insc.partido_id) >= p.cupo) {

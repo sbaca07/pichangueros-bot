@@ -782,6 +782,14 @@ function registrarPanel(app, db, conexion = null) {
     // `vence: false`: lo que anota Clarck a mano NO caduca. El plazo de la
     // reserva existe para las promesas de chat ("ya te yapeo"), no para el
     // casero que él mismo metió en la lista mirando la cancha.
+    // Anotar a alguien a mano también lo mete al CRM. Antes el cupo existía
+    // pero la persona no: sin ficha, sin historial y sin aparecer en ninguna
+    // cuenta. Y si además se escribió un nombre y el lead todavía no tenía,
+    // se guarda ahí: es el único momento en que alguien lo sabe.
+    if (numero) {
+      const lead = db.getOrCreateLead(numero);
+      if (nombre && !lead.nombre) db.updateLead(numero, { nombre });
+    }
     const { resultado, motivo } = db.inscribir(partidoId, numero, { nombre, vence: false });
     const quien = nombre || `+${numero}`;
     if (resultado === 'espera') return fin(`${quien} entró a la LISTA DE ESPERA: el partido ya está lleno.`);
@@ -865,7 +873,26 @@ function registrarPanel(app, db, conexion = null) {
     // vincula el pago (inscribir devolvería 'ya_inscrito' sin hacer nada y
     // el botón quedaba muerto — hallazgo del code review 2026-08-11).
     const activa = pago.numero ? db.inscripcionActiva(partidoId, pago.numero) : null;
-    if (activa) db.pagarInscripcion(activa.id, pago.id);
+    if (activa) {
+      const r = db.pagarInscripcion(activa.id, pago.id);
+      if (r.motivo === 'ya_tenia_pago') {
+        // Ya tenía OTRO Yape en este partido, así que este es plata adicional:
+        // vino con alguien, o pagó dos turnos. Antes se pisaba el pago viejo y
+        // ese quedaba huérfano, fuera de la caja del partido. Ahora se suma
+        // como cupo de invitado y se dice, para que quien mira pueda deshacerlo
+        // si en realidad fue un Yape repetido.
+        const quien = pago.nombre || `+${pago.numero}`;
+        let sumados = 0;
+        for (let i = 0; i < Math.max(1, pago.cupos || 1); i++) {
+          const { inscripcion } = db.inscribir(partidoId, null,
+            { nombre: `Invitado de +${pago.numero}`, estado: 'pagado', pagoId: pago.id, vence: false });
+          if (inscripcion) sumados++;
+        }
+        return sumados
+          ? fin(`${quien} ya tenía un Yape en este partido: sumé ${sumados} cupo${sumados === 1 ? '' : 's'} de invitado con este pago. Si fue un pago repetido, dale de baja.`)
+          : fin(`${quien} ya tenía un Yape acá y no pude sumar el cupo del invitado: el partido está lleno.`, true);
+      }
+    }
     else {
       // Sobre un partido que ya no admite gente, inscribir() devuelve null y el
       // pago se quedaba suelto sin que nadie lo dijera. Ojo: el partido de

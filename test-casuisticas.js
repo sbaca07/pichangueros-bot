@@ -164,6 +164,22 @@ check('un pago "por revisar" NO entra a la caja hasta confirmarse', (() => {
   return db.cajaPartido(pCaja).cobrado === antes;
 })());
 
+console.log('== Un segundo pago no puede borrar al primero ==');
+const pDoble = db.crearPartido({ zona: 'brena', fecha: enDias(7), hora: '9-10pm', cupo: 10, precio: 15 });
+const I = '51900000801';
+db.getOrCreateLead(I);
+const pagoI1 = db.registrarPago({ numero: I, monto: 15, numero_operacion: 'OP-I1', estado: 'confirmado' });
+db.vincularPago(I, pagoI1, 1, 'brena', 15, { partidoId: pDoble });
+const inscI = db.inscripcionActiva(pDoble, I);
+check('queda pagado con su primer Yape', inscI.pago_id === pagoI1);
+const pagoI2 = db.registrarPago({ numero: I, monto: 15, numero_operacion: 'OP-I2', estado: 'confirmado' });
+const rDoble = db.pagarInscripcion(inscI.id, pagoI2);
+check('asignarle un segundo Yape NO pisa el primero', rDoble.motivo === 'ya_tenia_pago');
+check('y dice cuál era el pago que ya tenía', rDoble.pagoPrevio === pagoI1);
+check('la inscripción sigue apuntando al primer Yape', db.inscripcionActiva(pDoble, I).pago_id === pagoI1);
+check('así el primer Yape NO se cae de la caja del partido', db.cajaPartido(pDoble).cobradoVerificado === 15);
+check('marcar pagado con el MISMO pago sigue funcionando (no es un pago nuevo)', db.pagarInscripcion(inscI.id, pagoI1).ok === true);
+
 console.log('== El pago que llega antes que la inscripción ==');
 const H = '51900000701';
 db.getOrCreateLead(H);
