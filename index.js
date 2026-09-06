@@ -409,7 +409,7 @@ async function manejarMensaje(sock, msg) {
   // conversaciones diarias que ya atiende a mano. El tope decide cuánto se
   // delega, no a quién se abandona.
   const topeNuevos = db.topeNuevosDia();
-  const abreConversacion = db.esNuevoDeHoy(numero) && !db.conversacionAbierta(numero);
+  const abreConversacion = !db.conversacionAbierta(numero);
   if (!modoSilencio && topeNuevos > 0 && abreConversacion && db.nuevosDeHoy() >= topeNuevos) {
     db.setHandoff(numero, `Tope de ${topeNuevos} conversaciones nuevas por día`);
     console.log(`[tope] ${numero}: se llenó el cupo de ${topeNuevos} nuevos de hoy — pasa a Clarck.`);

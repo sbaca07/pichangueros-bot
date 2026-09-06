@@ -705,26 +705,29 @@ function conversacionAbierta(numero) {
   return !!db.prepare("SELECT 1 FROM mensajes WHERE numero = ? AND rol = 'assistant' LIMIT 1").get(numero);
 }
 
-/** ¿Este contacto apareció HOY? (su ficha se abrió hoy). */
-function esNuevoDeHoy(numero) {
-  const l = getLead(numero);
-  return !!l && String(l.creado_en || '').slice(0, 10) === hoyLimaDb();
-}
-
 /**
- * Cuántas conversaciones NUEVAS abrimos hoy.
+ * Cuántas conversaciones NUEVAS abrió el bot hoy.
  *
- * Cuenta fichas de hoy a las que YA les contestamos, no fichas creadas. La
- * diferencia importa por dos lados: los que quedaron fuera del tope no
- * consumen cupo (si no, el tope se comería a sí mismo), y las fichas que crea
- * Clarck al anotar gente a mano en el panel tampoco — anotar a catorce
- * jugadores en la cancha no puede gastarse el cupo de conversaciones del día.
+ * Cuenta a quienes recibieron su PRIMERA respuesta hoy — no fichas creadas.
+ * La diferencia importa por tres lados, y los tres salieron de equivocarse:
+ *
+ *  1. Los que quedan afuera del tope no consumen cupo. Si contara fichas, el
+ *     tope se comería a sí mismo.
+ *  2. Las fichas que crea Clarck al anotar gente a mano en el panel tampoco:
+ *     anotar catorce jugadores parado en la cancha no puede gastarse el cupo
+ *     de conversaciones del día.
+ *  3. Y al revés: hay 583 fichas VIEJAS a las que nunca les contestamos
+ *     (gente que escribió con el bot apagado). Mirando la fecha de la ficha,
+ *     esas entraban sin consumir cupo — y son justo las que peor la pasarían
+ *     si algo quedó mal, porque nunca vieron una respuesta del sistema.
+ *     Para el tope, una conversación es nueva si NUNCA la tuvimos, no si la
+ *     ficha es de hoy.
  */
 function nuevosDeHoy() {
   return db.prepare(`
-    SELECT COUNT(*) AS n FROM leads l
-    WHERE substr(l.creado_en, 1, 10) = ?
-      AND EXISTS (SELECT 1 FROM mensajes m WHERE m.numero = l.numero AND m.rol = 'assistant')
+    SELECT COUNT(*) AS n FROM (
+      SELECT numero, MIN(creado_en) AS primera FROM mensajes WHERE rol = 'assistant' GROUP BY numero
+    ) WHERE substr(primera, 1, 10) = ?
   `).get(hoyLimaDb()).n;
 }
 
@@ -2870,7 +2873,7 @@ module.exports = {
   precioDeZona, precioDePartido, cuposPorMonto, partidosQueCalzan,
   // Ajustes operativos: lo que antes vivía en Render y ahora edita Clarck.
   modoSeguro, estadoBot, setBotEncendido, numeroAvisos, setNumeroAvisos,
-  topeNuevosDia, setTopeNuevosDia, esNuevoDeHoy, nuevosDeHoy, conversacionAbierta,
+  topeNuevosDia, setTopeNuevosDia, nuevosDeHoy, conversacionAbierta,
   avisosProbadoEn, marcarAvisosProbado, numerosDePrueba, setNumerosDePrueba,
   correoAvisos, correoRespaldo, setCorreo, recurrenteDesde, setRecurrenteDesde,
   crearPartido, abrirPartido, getPartido, actualizarPartido, cajaPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,
