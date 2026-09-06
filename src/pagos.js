@@ -133,8 +133,12 @@ const SCHEMA_INTENCION = {
         type: 'boolean',
         description: 'true si de la conversación se desprende que paga por un partido (día/hora/sede concretos) que NO está en la lista.',
       },
+      paga_por_otros: {
+        type: 'boolean',
+        description: 'true SOLO si la conversación dice que este pago cubre acompañantes/invitados además del jugador (o solo a ellos). false si parece el mismo comprobante reenviado o un pago repetido del mismo cupo.',
+      },
     },
-    required: ['partido_id', 'cupos', 'confianza', 'motivo', 'partido_no_cargado'],
+    required: ['partido_id', 'cupos', 'confianza', 'motivo', 'partido_no_cargado', 'paga_por_otros'],
   },
 };
 
@@ -185,6 +189,7 @@ Reglas:
 - El monto pagado fue S/ ${monto ?? '?'}. Sirve para deducir cuántos cupos cubre, pero NO alcanza para elegir partido por sí solo.
 - confianza "alta" SOLO si la conversación nombra el día, la hora o la sede sin ambigüedad. Ante la duda, "baja": es plata, y equivocarse mete a alguien en el partido de otro día.
 - Si acordaron un partido concreto que NO está en la lista, pon partido_no_cargado=true y partido_id=null. Ese caso importa: significa que se vendió un cupo de un partido que nadie cargó al sistema.
+- Si el jugador YA tiene su cupo pagado y manda OTRO comprobante, pon paga_por_otros en true solo si la conversación habla de un amigo, invitado o acompañante ("voy con un pata", "pago por mi hermano"). Reenviar la misma captura NO es un invitado: eso es false.
 - En motivo, cita la frase que te convenció. Corto.`,
       },
       { role: 'user', content: `Conversación (lo más reciente al final):\n${charla}` },
@@ -424,11 +429,36 @@ async function procesarVoucher(numero, zona, imageBuffer) {
           }
         }
       }
-      const v = db.vincularPago(numero, pagoId, cupos, zona, r.monto, { partidoId });
+      // ¿Ya tiene un cupo PAGADO en el partido al que iría este Yape? Entonces
+      // este pago no cubre su lugar: o viene con un invitado, o yapeó dos veces.
+      // La aritmética no los distingue, así que acá se lee la conversación
+      // AUNQUE el partido sea obvio — en el caso Patrick (2026-09-02) había un
+      // solo candidato y justamente por eso nadie consultó la charla: el
+      // invitado se perdió y el segundo Yape no quedó enganchado a nada.
+      let invitados = false;
+      const destino = partidoId || (candidatos.length === 1 ? candidatos[0].id : null);
+      if (destino && db.inscripcionActiva(destino, numero)?.estado === 'pagado') {
+        const extra = await module.exports.interpretarPago(
+          db.getHistory(numero, 20), db.partidosAbiertos(null, { vigentes: true, incluirEnCurso: true }), r.monto
+        );
+        if (extra && extra.paga_por_otros && extra.confianza === 'alta' && (extra.cupos || 0) > 0) {
+          invitados = true;
+          cupos = extra.cupos;
+          partidoId = extra.partido_id || destino;
+        } else {
+          // Nunca se descarta en silencio: si no se puede AFIRMAR que es por un
+          // invitado, el pago queda suelto y lo asigna Clarck. Lo que no puede
+          // repetirse es que el Yape entre y no quede enganchado a nada.
+          alerta = alertaPagoExtra(numero, r.monto, extra);
+        }
+      }
+      const v = db.vincularPago(numero, pagoId, cupos, zona, r.monto, { partidoId, invitados });
       if (v) {
         const enCancha = v.inscripciones.filter((i) => i.estado === 'pagado').length;
         const p = v.partido;
-        if (enCancha > 0) {
+        if (v.invitados) {
+          respuesta += textoInvitados(v, p);
+        } else if (enCancha > 0) {
           respuesta += `\n📋 Ya estás en la lista del ${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''}${p.sede ? ` en ${p.sede}` : ''}. ¡Nos vemos en la cancha!`;
         } else {
           respuesta += `\n⏳ El partido del ${db.fechaBonita(p.fecha)} está lleno: quedaste primero en la lista de espera y te avisamos si se libera un cupo.`;
@@ -446,6 +476,28 @@ async function procesarVoucher(numero, zona, imageBuffer) {
     } catch (e) { console.error('[pagos] Error vinculando pago a partido:', e.message); }
   }
   return { respuesta, handoff: r.handoff, motivoHandoff: r.motivoHandoff, alerta };
+}
+
+/** Aviso a Clarck cuando llega un Yape de alguien que YA tenía su cupo pagado. */
+function alertaPagoExtra(numero, monto, extra) {
+  const porQue = (extra && extra.motivo) || 'No pude deducir de la conversación si es por un invitado o si yapeó dos veces.';
+  return `👥 ${nombreCorto(numero)} ya tenía cupo pagado y mandó OTRO Yape de S/ ${monto}.\n${porQue}\nAsígnalo desde el panel → Pagos.`;
+}
+
+/**
+ * Confirmación de los cupos de invitado, pidiendo los nombres para la lista.
+ *
+ * Va aparte del "Ya estás en la lista" a propósito: el cupo que se acaba de
+ * crear es del ACOMPAÑANTE, no suyo. Patrick (2026-09-02) recibió dos veces el
+ * mensaje de "ya estás en la lista" y quedó convencido de que su amigo estaba
+ * anotado — no lo estaba.
+ */
+function textoInvitados(v, p) {
+  const n = v.inscripciones.length;
+  const cuando = `${db.fechaBonita(p.fecha)}${p.hora ? ` de ${p.hora}` : ''}`;
+  return n === 1
+    ? `\n👥 Sumé el cupo de tu invitado a la lista del ${cuando}. Pásame su nombre completo para anotarlo ⚽`
+    : `\n👥 Sumé ${n} cupos de invitados a la lista del ${cuando}. Pásame sus nombres completos para anotarlos ⚽`;
 }
 
 /** Nombre del contacto para los avisos, o su número si todavía no lo dio. */

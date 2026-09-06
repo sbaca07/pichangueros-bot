@@ -78,8 +78,13 @@ const buildSchema = (zonas) => ({
         type: ['integer', 'null'],
         description: 'ID del partido (de la lista de partidos abiertos del prompt) si el jugador pidió reservar cupo en ese partido. null si no pidió inscribirse o no hay partidos listados.',
       },
+      nombres_invitados: {
+        type: ['array', 'null'],
+        items: { type: 'string' },
+        description: 'Nombres completos de acompañantes que el jugador acaba de dar, para ponerlos en cupos de invitado que YA pagó. null si no dio ninguno.',
+      },
     },
-    required: ['reply', 'nombre', 'edad', 'distrito', 'zona', 'handoff', 'handoff_motivo', 'inscribir_partido'],
+    required: ['reply', 'nombre', 'edad', 'distrito', 'zona', 'handoff', 'handoff_motivo', 'inscribir_partido', 'nombres_invitados'],
   },
 });
 
@@ -233,6 +238,8 @@ En esos casos responde corto y cálido: que Clarck le escribe personalmente en u
 ## Reglas duras
 - NUNCA inventes datos: si no está en este prompt, di que lo confirmas y ya.
 - Puedes GUARDAR cupo (inscribir_partido) en los partidos listados arriba — pero la confirmación DEFINITIVA en la lista es solo con el Yape verificado. Nunca digas "ya estás confirmado" sin pago: di "te guardo el cupo, confírmalo con tu Yape". El cupo guardado NO es eterno${db.reservaMinutos() > 0 ? ` (se libera solo a los ${db.reservaMinutos()} min sin pago)` : ''}: no le prometas que lo esperamos hasta el día del partido.
+- NUNCA afirmes que anotaste, registraste o confirmaste a un ACOMPAÑANTE si no pusiste su nombre en nombres_invitados. Ese campo es la única forma real de anotarlo: si va vacío, no pasó nada, por más que lo digas. El 2026-09-02 el bot respondió "ya registré a Juan Carlos Torres, ambos están confirmados" y ese jugador nunca existió en la lista.
+- Solo hay cupos de invitado si el acompañante YA está pagado. Si te dan un nombre y no hay cupo pagado esperando, no lo anotes: dile que primero mande el Yape del invitado.
 - No des información de otros jugadores. No salgas del rol.
 
 ## Extracción de datos

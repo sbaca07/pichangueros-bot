@@ -2042,6 +2042,47 @@ function vencerReservas() {
   return vencidas;
 }
 
+/**
+ * Le pone nombre a los cupos de invitado que este jugador YA pagó.
+ *
+ * Un cupo de acompañante nace como "Invitado de +51999…" porque el Yape llega
+ * antes que el nombre. Cuando el jugador lo manda ("se llama Juan Carlos"),
+ * tiene que haber dónde escribirlo: hasta ahora no existía esta función, así
+ * que el bot contestaba "ya lo registré" y no registraba nada — le pasó a
+ * Patrick el 2026-09-02 y su invitado nunca apareció en la lista.
+ *
+ * Solo toca cupos sin nombre propio y de partidos que todavía admiten gente:
+ * reescribir la lista de un partido ya jugado no es algo que deba pasar solo.
+ *
+ * @returns {Array<{id: number, nombre: string, partido_id: number}>} los que quedaron nombrados
+ */
+function nombrarInvitados(numero, nombres) {
+  const limpios = (Array.isArray(nombres) ? nombres : [])
+    .map((n) => String(n || '').trim())
+    .filter((n) => n.length > 1);
+  if (!limpios.length) return [];
+  const libres = db.prepare(`
+    SELECT * FROM inscripciones
+    WHERE numero IS NULL AND nombre = ? AND estado != 'baja' ORDER BY id
+  `).all(`Invitado de +${numero}`).filter((i) => admiteInscripcion(getPartido(i.partido_id)));
+  const hechos = [];
+  for (const inv of libres) {
+    const nombre = limpios.shift();
+    if (!nombre) break;
+    db.prepare('UPDATE inscripciones SET nombre = ? WHERE id = ?').run(nombre, inv.id);
+    hechos.push({ id: inv.id, nombre, partido_id: inv.partido_id });
+  }
+  return hechos;
+}
+
+/** Cuántos cupos de invitado pagó este jugador y siguen SIN nombre. */
+function invitadosSinNombre(numero) {
+  return db.prepare(`
+    SELECT * FROM inscripciones
+    WHERE numero IS NULL AND nombre = ? AND estado != 'baja' ORDER BY id
+  `).all(`Invitado de +${numero}`).filter((i) => admiteInscripcion(getPartido(i.partido_id)));
+}
+
 function setAsistencia(id, valor) {
   db.prepare('UPDATE inscripciones SET asistencia = ? WHERE id = ?').run(valor === 'si' || valor === 'no' ? valor : null, id);
 }
@@ -2110,7 +2151,7 @@ function partidosQueCalzan(monto, zonaPreferida = null) {
  *   la conversación). Manda sobre la aritmética, pero NUNCA sobre una reserva
  *   previa del jugador: si ya tenía cupo reservado, el pago va ahí.
  */
-function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null, { partidoId = null } = {}) {
+function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null, { partidoId = null, invitados = false } = {}) {
   let partido = null;
   // La misma preferencia que la validación: con varias reservas activas, el
   // pago se aplica a la reserva cuyo precio calza con el monto.
@@ -2147,6 +2188,36 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null, { pa
       const candidatos = candidatosDePago(zona, monto);
       if (candidatos.length !== 1) return null;
       partido = candidatos[0];
+    }
+    // SEGUNDO YAPE DEL MISMO JUGADOR (caso Patrick, 2026-09-02).
+    // Pagó S/15, dijo que venía con un amigo y mandó OTROS S/15 por separado.
+    // `inscribir` es idempotente por número: encontraba su cupo ya pagado, lo
+    // devolvía tal cual, y el pago nuevo no quedaba enganchado a NADA. El amigo
+    // nunca entró a la lista y esos S/15 desaparecieron de la caja del partido
+    // (`cajaPartido` suma por pago_id). El bot, encima, contestó "ya estás en la
+    // lista" — la misma frase que la primera vez.
+    //
+    // La aritmética sola NO distingue "vengo con un amigo" de "yapeé dos veces
+    // por error", y un invitado fantasma ocupa cancha real. Así que acá no se
+    // adivina: los cupos extra se crean solo si quien llama leyó la conversación
+    // y lo afirma (`invitados`). Si no, el pago queda suelto y lo asigna Clarck.
+    const yaPagada = inscripcionActiva(partido.id, numero);
+    if (yaPagada && yaPagada.estado === 'pagado' && yaPagada.pago_id !== pagoId) {
+      if (!invitados) return null;
+      // Idempotencia: el mismo Yape puede llegar dos veces (reintento del
+      // webhook de Meta, o el jugador reenviando la misma captura). Si este
+      // pago YA generó sus cupos en este partido, se devuelven los que hay en
+      // vez de crear invitados nuevos — si no, cada reenvío mete un jugador
+      // más a una cancha que se paga por cabeza.
+      const yaAplicado = db.prepare(
+        "SELECT * FROM inscripciones WHERE partido_id = ? AND pago_id = ? AND numero IS NULL AND estado != 'baja' ORDER BY id"
+      ).all(partido.id, pagoId);
+      if (yaAplicado.length) return { partido, inscripciones: yaAplicado, invitados: true };
+      for (let i = 0; i < cupos; i++) {
+        const { inscripcion } = inscribir(partido.id, null, { nombre: `Invitado de +${numero}`, estado: 'pagado', pagoId });
+        if (inscripcion) hechas.push(inscripcion);
+      }
+      return hechas.length ? { partido, inscripciones: hechas, invitados: true } : null;
     }
     const { inscripcion } = inscribir(partido.id, numero, { estado: 'pagado', pagoId });
     if (!inscripcion) return null;
@@ -2759,6 +2830,7 @@ module.exports = {
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, promoverSiguiente, vencerReservas, reservaMinutos, setAsistencia, vincularPago, candidatosDePago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita, candidatosConvocatoria,
   pagoSueltoDe, pagarInscripcion, confirmarPagoManual, getCorte, setCorte, despuesDelCorte,
+  nombrarInvitados, invitadosSinNombre,
   hoyLima: hoyLimaDb, fechaLima: fechaLimaDb, ahoraLima, ordenHora, horaInput, normalizarHora, parseHora, textoHora,
   getMarca, setMarca, handoffsDesde, handoffsActivos,
 };

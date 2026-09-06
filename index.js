@@ -433,6 +433,26 @@ async function manejarMensaje(sock, msg) {
         }
         return; // no pasa al cerebro conversacional — ya se atendió como pago
       }
+      // LA IMAGEN NO SE PUDO LEER COMO COMPROBANTE. Antes esto caía al cerebro
+      // conversacional, que NO ve la imagen: contestaba a partir del historial
+      // en texto y llegó a escribir "todo conforme con el pago de ambos" sobre
+      // tres capturas que no generaron ni una fila en `pagos` (2026-09-03).
+      // Decirle la verdad es peor conversación y mucho mejor negocio: si era un
+      // Yape de verdad, hay plata adentro que el sistema no vio, y eso lo tiene
+      // que saber alguien. El aviso a Clarck sale aunque el bot esté apagado.
+      await notificarControl(
+        sock,
+        `🖼️ No pude leer la imagen que mandó ${lead.nombre || `+${numero}`}. Si era un Yape, NO quedó registrado.\nwa.me/${numero}`,
+        'Imagen ilegible'
+      );
+      if (!modoSilencio) {
+        const aviso = 'No pude leer esa imagen 🙈 Si es tu Yape, mándame la captura completa donde se vean el monto, la fecha y el número de operación ⚽';
+        try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
+        if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
+        await enviarTexto(sock, destino, aviso);
+        db.saveMessage(numero, 'assistant', aviso);
+      }
+      return;
     } catch (e) { console.error('[pagos] Error procesando imagen:', e.message); }
   }
 
@@ -542,6 +562,33 @@ async function manejarMensaje(sock, msg) {
         + `El bot está APAGADO, así que NO lo anotó ni le contestó: anótalo tú desde el panel y escríbele.\nwa.me/${numero}`,
         'Alguien pidió cupo con el bot apagado',
       );
+    }
+  }
+
+  // NOMBRES DE ACOMPAÑANTES. El cupo de invitado se paga ANTES de que el
+  // jugador mande el nombre, así que nace como "Invitado de +51999…". Acá se le
+  // escribe encima. Hasta ahora esto no existía: el cerebro no tenía ningún
+  // campo para anotar a un acompañante, así que respondía en prosa "ya registré
+  // a Juan Carlos Torres, ambos están confirmados" y no había ninguna fila que
+  // tocar. Patrick lo creyó y su amigo nunca estuvo en la lista (2026-09-02).
+  let invitadosNombrados = [];
+  if (decision.nombres_invitados?.length && !modoSilencio) {
+    invitadosNombrados = db.nombrarInvitados(numero, decision.nombres_invitados);
+    if (invitadosNombrados.length) {
+      console.log(`[partido] ${numero} nombró ${invitadosNombrados.length} invitado(s): ${invitadosNombrados.map((i) => i.nombre).join(', ')}.`);
+      if (decision.reply) {
+        const quienes = invitadosNombrados.map((i) => i.nombre).join(' y ');
+        if (!invitadosNombrados.every((i) => decision.reply.includes(i.nombre))) {
+          decision.reply += `\n\n✅ ${quienes} ${invitadosNombrados.length === 1 ? 'quedó anotado' : 'quedaron anotados'} en la lista.`;
+        }
+      }
+    } else {
+      // Dio nombres pero NO hay ningún cupo de invitado pagado esperando. El
+      // acompañante no está en la lista, y esa es justamente la frase que no
+      // se puede decir a la ligera: se reemplaza el reply en vez de dejar que
+      // el modelo confirme algo que no ocurrió.
+      console.warn(`[partido] ${numero} dio nombres de invitado (${decision.nombres_invitados.join(', ')}) pero no tiene cupos de invitado pagados.`);
+      decision.reply = `Para anotar a ${decision.nombres_invitados.join(' y ')} necesito primero el Yape de su cupo 🙏 Mándamelo y lo sumo a la lista al toque ⚽`;
     }
   }
 
