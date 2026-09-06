@@ -1038,6 +1038,21 @@ const srv = app.listen(0, async () => {
       db.inscripcionesDe(pNum).some((i) => i.numero === 'PE.187019082'));
   }
 
+  console.log('== 7 · La perilla del tope de conversaciones nuevas ==');
+  {
+    check('por defecto no hay tope (0 = el bot atiende a todos)', db.topeNuevosDia() === 0);
+    const r = await POST('/admin/config/avisos', { key: 'ux', tope_nuevos: '20' });
+    check('guardar el tope desde Ajustes redirige', r.status === 302);
+    check('y queda en 20', db.topeNuevosDia() === 20);
+    await POST('/admin/config/avisos', { key: 'ux', tope_nuevos: '-5' });
+    check('un número negativo no rompe: cae a sin tope', db.topeNuevosDia() === 0);
+    await POST('/admin/config/avisos', { key: 'ux', tope_nuevos: 'ocho' });
+    check('un texto que no es número tampoco', db.topeNuevosDia() === 0);
+    db.setTopeNuevosDia(20);
+    const cfg = await GET('/admin/leads?key=ux&vista=config');
+    check('el campo se ve en Ajustes con su valor', /name="tope_nuevos"[^>]*value="20"/.test(cfg.html));
+  }
+
   console.log('== 5 · Sin key, nada existe ==');
   check('vista sin key → 404', (await GET('/admin/leads?vista=crm')).status === 404);
   check('export sin key → 404', (await GET('/admin/leads.csv')).status === 404);

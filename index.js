@@ -398,6 +398,29 @@ async function manejarMensaje(sock, msg) {
     return;
   }
 
+  // TOPE DE CONVERSACIONES NUEVAS DEL DÍA (la marcha blanca).
+  //
+  // Encender el bot no se acota con la lista de números de prueba: esa lista
+  // dice a QUIÉN le contesta y tiene techo de 10. Lo que hay que acotar es a
+  // CUÁNTA gente nueva le habla en un día, que es donde vive el riesgo — si
+  // algo quedó mal, que lo sufran 20 personas y no las 61 de un pico.
+  //
+  // El que pasa el tope NO se queda mudo: se deriva a Clarck, igual que las 97
+  // conversaciones diarias que ya atiende a mano. El tope decide cuánto se
+  // delega, no a quién se abandona.
+  const topeNuevos = db.topeNuevosDia();
+  const abreConversacion = db.esNuevoDeHoy(numero) && !db.conversacionAbierta(numero);
+  if (!modoSilencio && topeNuevos > 0 && abreConversacion && db.nuevosDeHoy() >= topeNuevos) {
+    db.setHandoff(numero, `Tope de ${topeNuevos} conversaciones nuevas por día`);
+    console.log(`[tope] ${numero}: se llenó el cupo de ${topeNuevos} nuevos de hoy — pasa a Clarck.`);
+    await notificarControl(
+      sock,
+      `🚦 Se llenó el cupo de ${topeNuevos} conversaciones nuevas de hoy.\n${lead.nombre || `+${numero}`} escribió y el bot NO le contestó: "${body.slice(0, 120)}"\nAtiéndelo tú · wa.me/${numero}`,
+      'Tope de nuevos alcanzado'
+    );
+    return;
+  }
+
   // Posible comprobante de Yape: se procesa aparte del cerebro conversacional
   // (Semana 4). Se desenvuelve el mensaje porque los vouchers suelen llegar
   // como foto "ver una sola vez". Si no es un voucher reconocible, sigue el

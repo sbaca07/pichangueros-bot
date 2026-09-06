@@ -676,6 +676,57 @@ function setNumerosDePrueba(csv) {
   escribirConfig('testers_definido', '1');
   return lista;
 }
+/**
+ * TOPE DE CONVERSACIONES NUEVAS POR DÍA (0 = sin tope).
+ *
+ * La lista de números de prueba contesta "a quién le confío el bot" y tiene un
+ * techo de 10: nunca fue una compuerta para abrir el servicio, es un banco de
+ * pruebas. Para encender de verdad hay que acotar OTRA cosa —a cuánta gente
+ * NUEVA le habla el bot en un día—, que es el eje del riesgo real: con 27
+ * nuevos diarios de promedio y picos de 61 (26/08), la diferencia entre que un
+ * bug lo sufran 20 personas o 61 es toda la marcha blanca.
+ *
+ * Pasado el tope nadie queda mudo: el que llega se deriva a Clarck, que es
+ * exactamente lo que hace hoy con las 97 conversaciones diarias. Por eso un
+ * tope no puede empeorar nada respecto de hoy: solo decide cuánto se delega.
+ */
+function topeNuevosDia() {
+  const n = Number(leerConfig('tope_nuevos_dia'));
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+function setTopeNuevosDia(valor) {
+  const n = Math.max(0, Math.floor(Number(valor) || 0));
+  escribirConfig('tope_nuevos_dia', String(n));
+  return n;
+}
+
+/** ¿Ya le hablamos alguna vez? (el bot, o Clarck desde su celular). */
+function conversacionAbierta(numero) {
+  return !!db.prepare("SELECT 1 FROM mensajes WHERE numero = ? AND rol = 'assistant' LIMIT 1").get(numero);
+}
+
+/** ¿Este contacto apareció HOY? (su ficha se abrió hoy). */
+function esNuevoDeHoy(numero) {
+  const l = getLead(numero);
+  return !!l && String(l.creado_en || '').slice(0, 10) === hoyLimaDb();
+}
+
+/**
+ * Cuántas conversaciones NUEVAS abrimos hoy.
+ *
+ * Cuenta fichas de hoy a las que YA les contestamos, no fichas creadas. La
+ * diferencia importa por dos lados: los que quedaron fuera del tope no
+ * consumen cupo (si no, el tope se comería a sí mismo), y las fichas que crea
+ * Clarck al anotar gente a mano en el panel tampoco — anotar a catorce
+ * jugadores en la cancha no puede gastarse el cupo de conversaciones del día.
+ */
+function nuevosDeHoy() {
+  return db.prepare(`
+    SELECT COUNT(*) AS n FROM leads l
+    WHERE substr(l.creado_en, 1, 10) = ?
+      AND EXISTS (SELECT 1 FROM mensajes m WHERE m.numero = l.numero AND m.rol = 'assistant')
+  `).get(hoyLimaDb()).n;
+}
 
 /**
  * DOS correos, no uno.
@@ -2819,6 +2870,7 @@ module.exports = {
   precioDeZona, precioDePartido, cuposPorMonto, partidosQueCalzan,
   // Ajustes operativos: lo que antes vivía en Render y ahora edita Clarck.
   modoSeguro, estadoBot, setBotEncendido, numeroAvisos, setNumeroAvisos,
+  topeNuevosDia, setTopeNuevosDia, esNuevoDeHoy, nuevosDeHoy, conversacionAbierta,
   avisosProbadoEn, marcarAvisosProbado, numerosDePrueba, setNumerosDePrueba,
   correoAvisos, correoRespaldo, setCorreo, recurrenteDesde, setRecurrenteDesde,
   crearPartido, abrirPartido, getPartido, actualizarPartido, cajaPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,

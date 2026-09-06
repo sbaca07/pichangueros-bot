@@ -506,6 +506,10 @@ function registrarPanel(app, db, conexion = null) {
       const lista = db.setNumerosDePrueba(req.body.testers);
       cambios.push(lista.length ? `${lista.length} número${lista.length === 1 ? '' : 's'} de prueba` : 'sin números de prueba');
     }
+    if (req.body.tope_nuevos !== undefined) {
+      const t = db.setTopeNuevosDia(req.body.tope_nuevos);
+      cambios.push(t ? `tope de ${t} conversaciones nuevas por día` : 'sin tope de conversaciones nuevas');
+    }
     volverAConfig(req, res, cambios.length ? `Guardado: ${cambios.join(' · ')}.` : 'No cambiaste nada.', 'avisos');
   });
 
@@ -3339,6 +3343,8 @@ function paginaConfig(db, key, conexion = null, query = {}) {
   const numeroAvisos = db.numeroAvisos();
   const probadoEn = db.avisosProbadoEn();
   const testers = db.numerosDePrueba();
+  const topeNuevos = db.topeNuevosDia();
+  const nuevosHoy = db.nuevosDeHoy();
   const bloqueAvisos = `
     <div class="ancla" id="avisos">
       <div class="shdr">🔔 Avisos y números de prueba <small>· a quién le escribe el bot cuando algo necesita a Clarck</small></div>
@@ -3358,6 +3364,9 @@ function paginaConfig(db, key, conexion = null, query = {}) {
             ${campo('av-testers', 'Números de prueba',
               `<input id="av-testers" name="testers" value="${esc(testers.join(','))}" inputmode="tel" placeholder="51999888777,51988777666">`,
               'Separados por coma. Con el bot apagado, estos son los ÚNICOS a los que sí les responde: es el ensayo antes de encenderlo.', true)}
+            ${campo('av-tope', 'Tope de conversaciones nuevas por día',
+              `<input id="av-tope" name="tope_nuevos" value="${topeNuevos || ''}" inputmode="numeric" placeholder="0 = sin tope" style="max-width:160px">`,
+              `Con el bot ENCENDIDO, a cuánta gente nueva le contesta por día. Al que pasa el tope no se le deja mudo: se deriva a ti. Llegan ~27 nuevos por día y el pico fue 61. Hoy van ${nuevosHoy}.`, true)}
           </div>
           <div class="pie-form">
             <button class="btn-toque btn-guardar">Guardar</button>
