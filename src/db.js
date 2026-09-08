@@ -768,6 +768,22 @@ function atendidosHoy() {
   `).get(hoyLimaDb()).n;
 }
 
+/**
+ * QUIÉNES son los que el bot ya atendió hoy, no cuántos.
+ *
+ * `atendidosHoy()` devuelve un número y con eso no se puede reservar un lugar:
+ * quien está esperando al cerebro todavía no escribió su fila, así que no
+ * aparece. index.js necesita la LISTA para llevar el cupo del día en memoria y
+ * cerrar la compuerta al entrar. Se lee al arrancar y cuando cambia el día —
+ * tras un reinicio de Render la memoria está vacía pero el cupo ya se gastó.
+ */
+function numerosAtendidosHoy() {
+  return db.prepare(`
+    SELECT DISTINCT numero FROM mensajes
+    WHERE rol = 'assistant' AND via = 'bot' AND substr(creado_en, 1, 10) = ?
+  `).all(hoyLimaDb()).map((r) => r.numero);
+}
+
 /** ¿El bot ya le habló HOY a este contacto? Entonces ya gastó su cupo y la
  *  conversación sigue: cortarla a la mitad sería peor que no haberla abierto. */
 function atendidoHoy(numero) {
@@ -2939,7 +2955,7 @@ module.exports = {
   precioDeZona, precioDePartido, cuposPorMonto, partidosQueCalzan,
   // Ajustes operativos: lo que antes vivía en Render y ahora edita Clarck.
   modoSeguro, estadoBot, setBotEncendido, numeroAvisos, setNumeroAvisos,
-  topeNuevosDia, setTopeNuevosDia, nuevosDeHoy, atendidosHoy, atendidoHoy, conversacionAbierta,
+  topeNuevosDia, setTopeNuevosDia, nuevosDeHoy, atendidosHoy, atendidoHoy, numerosAtendidosHoy, conversacionAbierta,
   avisosProbadoEn, marcarAvisosProbado, numerosDePrueba, setNumerosDePrueba,
   correoAvisos, correoRespaldo, setCorreo, recurrenteDesde, setRecurrenteDesde,
   crearPartido, abrirPartido, getPartido, actualizarPartido, cajaPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,

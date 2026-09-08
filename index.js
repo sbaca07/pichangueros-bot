@@ -222,6 +222,25 @@ async function comandoControl(sock, from, body) {
 const avisosHandoff = new Map();   // numero → cuándo se re-avisó a control por última vez
 const avisosTope = new Map();      // numero → fecha (Lima) del último aviso por tope, uno por día
 const disculpasBrain = new Map();  // numero → cuándo se le mandó la disculpa por falla de IA
+
+/**
+ * EL CUPO DEL DÍA, en memoria: a quiénes ya les habló (o les va a hablar) el bot.
+ *
+ * Vive acá y no en la BD porque tiene que reservarse ANTES de contestar, y en
+ * la BD un contacto recién existe cuando la respuesta ya salió. Se siembra de
+ * la BD cuando cambia el día: tras un reinicio de Render la memoria arranca
+ * vacía y el cupo de hoy ya estaba gastado, así que sin esto un redeploy a
+ * media mañana regalaba 20 conversaciones nuevas.
+ */
+const cupo = { fecha: null, numeros: new Set() };
+function cupoDelDia() {
+  const hoy = db.hoyLima();
+  if (cupo.fecha !== hoy) {
+    cupo.fecha = hoy;
+    cupo.numeros = new Set(db.numerosAtendidosHoy());
+  }
+  return cupo.numeros;
+}
 const avisosCupo = new Map();      // numero → cuándo se avisó "pidió cupo con el bot apagado"
 
 // Cola por contacto: los mensajes de un mismo número se atienden EN ORDEN.
@@ -474,8 +493,20 @@ async function manejarMensaje(sock, msg) {
   // Al que YA le contestó hoy se le sigue contestando: gastó su cupo con el
   // primer mensaje y cortarle la conversación a la mitad sería peor que no
   // haberla empezado.
+  //
+  // LA COMPUERTA SE CIERRA AL ENTRAR, NO AL SALIR. Contar con
+  // `db.atendidosHoy()` no alcanzaba: ese número sale de las respuestas YA
+  // ESCRITAS, y la respuesta se escribe recién cuando el cerebro terminó de
+  // pensar (2-5 s). En esos segundos de un lunes a la mañana entran quince
+  // personas más y todas leen el mismo contador viejo. Medido con 60 personas
+  // escribiendo a la vez y el tope en 20: pasaron las 60.
+  //
+  // Por eso el cupo del día se lleva acá, y el lugar se reserva ANTES de ir al
+  // cerebro. Se siembra de la BD al cambiar el día porque tras un reinicio de
+  // Render la memoria arranca vacía y el cupo ya estaba gastado.
   const topeNuevos = db.topeNuevosDia();
-  if (!modoSilencio && topeNuevos > 0 && !db.atendidoHoy(numero) && db.atendidosHoy() >= topeNuevos) {
+  const cupo = cupoDelDia();
+  if (!modoSilencio && topeNuevos > 0 && !cupo.has(numero) && cupo.size >= topeNuevos) {
     // NO se lo deriva a Clarck para siempre. Cuando el tope contaba solo
     // nuevos, derivar al que sobraba tenía sentido: eran pocos. Contando a
     // todos, con 97 personas por día y un cupo de 20, serían ~77 handoffs
@@ -503,6 +534,14 @@ async function manejarMensaje(sock, msg) {
     await aprenderSinResponder(numero, lead, body, 'pasó el tope del día');
     return;
   }
+  // PASÓ LA COMPUERTA: se le reserva el lugar acá mismo, antes de la primera
+  // espera. Si se anotara al responder, todo el que llegue mientras el cerebro
+  // piensa entraría gratis — que es exactamente lo que pasaba.
+  //
+  // Se anota SIEMPRE que el bot vaya a contestar, tenga o no tope puesto: si
+  // solo se contara con el tope activo, encenderlo a media mañana arrancaría
+  // de cero y regalaría 20 conversaciones que ya habían ocurrido.
+  if (!modoSilencio) cupo.add(numero);
 
   // Posible comprobante de Yape: se procesa aparte del cerebro conversacional
   // (Semana 4). Se desenvuelve el mensaje porque los vouchers suelen llegar
