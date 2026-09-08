@@ -122,10 +122,24 @@ function prepararImportacion(db, texto) {
   const leads = db.listLeads().filter((l) => l.nombre);
   const inscritos = partido ? db.inscripcionesDe(partido.id).filter((i) => i.estado !== 'baja') : [];
 
+  /**
+   * Cómo se llama alguien que YA está en la lista del partido.
+   *
+   * Un cupo creado por número no guarda nombre propio: el nombre vive en su
+   * ficha. Comparar solo contra `i.nombre` dejaba invisible justo a quien ya
+   * había pagado —el que entró por su Yape, sin nombre en la inscripción—, así
+   * que el importador lo anotaba de nuevo como invitado. El 2026-09-08 eso
+   * duplicó a tres jugadores en dos partidos del mismo día (Anthony Ranilla,
+   * Alexander Gamarra y Juan Carlos Torres): dos filas para una persona en una
+   * cancha que se paga por cabeza, y la caja contando un cupo que nadie ocupa.
+   */
+  const nombresPorNumero = new Map(leads.map((l) => [l.numero, l.nombre]));
+  const nombreInscrito = (i) => i.nombre || (i.numero ? nombresPorNumero.get(i.numero) || '' : '');
+
   const filas = lista.jugadores.map((nombre) => {
     const cand = leads.filter((l) => mismoNombre(l.nombre, nombre));
     const lead = cand.length === 1 ? cand[0] : null;
-    const yaEsta = inscritos.some((i) => (lead && i.numero === lead.numero) || mismoNombre(i.nombre || '', nombre));
+    const yaEsta = inscritos.some((i) => (lead && i.numero === lead.numero) || mismoNombre(nombreInscrito(i), nombre));
     // Su Yape suelto, si tiene: lo que convierte "anotado" en "pagado".
     const pago = lead ? (db.pagosSinPartido(200).find((p) => p.numero === lead.numero) || null) : null;
     return { nombre, numero: lead ? lead.numero : null, lead, ambiguo: cand.length > 1, yaEsta, pago };

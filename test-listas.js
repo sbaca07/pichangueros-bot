@@ -150,6 +150,41 @@ check('…y no anota a nadie de nuevo', r2.anotados.length === 0);
 check('…ni abre otro partido igual', !r2.creado);
 check('la lista sigue teniendo 12', db.inscripcionesDe(r.partido.id).filter((i) => i.estado !== 'baja').length === 12);
 
+console.log('== El que ya pagó no se anota dos veces ==');
+// Caso real del 2026-09-08: al importar las listas del grupo se duplicaron tres
+// jugadores en dos partidos del mismo día (Anthony Ranilla, Alexander Gamarra,
+// Juan Carlos Torres). Los tres YA estaban adentro por su Yape — y un cupo
+// creado por número no guarda nombre propio, el nombre vive en su ficha. El
+// chequeo miraba solo el nombre de la inscripción, así que justo al que pagó no
+// lo veía: dos filas para una persona en una cancha que se paga por cabeza.
+{
+  const YA = '51900123456';
+  db.getOrCreateLead(YA);
+  db.updateLead(YA, { nombre: 'Anthony Marcelo Ranilla Aymara', zona: 'comas' });
+  // Un homónimo, que es lo que había en producción: con DOS fichas que calzan
+  // el importador no elige ninguna, y ahí queda a solas con el nombre de la
+  // inscripción — que en el que pagó está vacío. Sin este segundo lead el bug
+  // no aparece, porque la ficha única lo salva por número.
+  db.getOrCreateLead('51900123457');
+  db.updateLead('51900123457', { nombre: 'Anthony Ranilla Perez', zona: 'comas' });
+  const pDup = db.crearPartido({ zona: 'comas', fecha: enDias(5), hora: '8-9pm', sede: 'Colegio Politécnico Estados Unidos', cupo: 12, precio: 10 });
+  // Entra por su Yape: inscripción CON número y SIN nombre propio.
+  db.inscribir(pDup, YA, { estado: 'pagado' });
+  const antes = db.inscripcionesDe(pDup).filter((i) => i.estado !== 'baja').length;
+  check('arranca con una sola fila, la del que pagó', antes === 1);
+
+  const listaDup = `🔴 *PICHANGA ${ddmmaa(enDias(5))}*🔴\n📍 Sede: Colegio Politécnico Estados Unidos\n🕗 Horario: 8pm a 9pm\n💵 Inversión: S/ 10\n[💰] 1. Anthony Ranilla\n[💰] 2. Otro Jugador Nuevo`;
+  const prev = prepararImportacion(db, listaDup);
+  check('la previa avisa que Anthony ya estaba', prev.ok && prev.filas.find((f) => f.nombre === 'Anthony Ranilla')?.yaEsta === true);
+
+  const imp = importarLista(db, listaDup);
+  check('no lo vuelve a anotar', imp.ok && imp.yaEstaban.includes('Anthony Ranilla'));
+  check('y sí anota al que faltaba', imp.anotados.some((n) => n.startsWith('Otro Jugador Nuevo')));
+  check('la cancha queda con 2, no con 3', db.inscripcionesDe(pDup).filter((i) => i.estado !== 'baja').length === 2);
+  check('y el que pagó sigue siendo el mismo cupo, con su pago intacto',
+    db.inscripcionesDe(pDup).filter((i) => i.numero === YA && i.estado === 'pagado').length === 1);
+}
+
 console.log('== Una sede que no existe se dice, no se adivina ==');
 const raro = importarLista(db, `PICHANGA LUNES ${ddmmaa(enDias(2))}\n📍 Sede: Cancha de Marte\n🕗 Horario: 8pm a 9pm\n[💰] 1. Juan Perez`);
 check('no importa una lista de una cancha desconocida', !raro.ok && /sede/i.test(raro.error), raro.error);
