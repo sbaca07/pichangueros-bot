@@ -1994,6 +1994,25 @@ function inscripcionActiva(partidoId, numero) {
 }
 
 /**
+ * En qué pichangas está anotado este jugador, de hoy en adelante.
+ *
+ * Lo pide `src/reglas.js`: la respuesta a "gracias", "ok" o "hola" no depende
+ * de lo que escribió sino de CÓMO ESTÁ. Clarck contesta "me pasas foto del
+ * yape" al que le falta pagar, "anotado" al que ya está y "si se baja alguien
+ * te aviso" al que quedó en espera — el mismo "ok" con tres respuestas.
+ */
+function inscripcionesVigentesDe(numero) {
+  if (!numero) return [];
+  return db.prepare(`
+    SELECT i.*, p.fecha, p.hora, p.zona, p.sede, p.inicio_min, p.precio AS precio_partido
+    FROM inscripciones i JOIN partidos p ON p.id = i.partido_id
+    WHERE i.numero = ? AND i.estado != 'baja'
+      AND p.estado != 'cancelado' AND p.fecha >= ?
+    ORDER BY p.fecha, p.inicio_min
+  `).all(numero, hoyLimaDb());
+}
+
+/**
  * Inscribe un cupo. Si el partido está lleno entra como 'espera'.
  * Idempotente por número: si ya tiene inscripción activa, la devuelve tal cual.
  *
@@ -2974,7 +2993,7 @@ module.exports = {
   // ahora se LEE de Config en cada acceso: es una regla de Clarck, no una
   // constante nuestra.
   get RECURRENTE_DESDE() { return recurrenteDesde(); },
-  inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, promoverSiguiente, vencerReservas, reservaMinutos, setAsistencia, vincularPago, candidatosDePago,
+  inscripcionActiva, inscripcionesVigentesDe, inscribir, setEstadoInscripcion, darDeBaja, promoverSiguiente, vencerReservas, reservaMinutos, setAsistencia, vincularPago, candidatosDePago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita, candidatosConvocatoria,
   pagoSueltoDe, pagarInscripcion, confirmarPagoManual, getCorte, setCorte, despuesDelCorte,
   nombrarInvitados, invitadosSinNombre, nombreInvitado,

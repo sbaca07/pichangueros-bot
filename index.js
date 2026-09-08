@@ -50,6 +50,7 @@ const db = require('./src/db');
 const brain = require('./src/brain');
 const ia = require('./src/ia');
 const atajos = require('./src/atajos');
+const reglas = require('./src/reglas');
 const pagos = require('./src/pagos');
 const sheet = require('./src/sheetsync');
 const backup = require('./src/backup');
@@ -642,6 +643,40 @@ async function manejarMensaje(sock, msg) {
     // "hola, soy de Comas, ¿cuánto sale?" le respondía la plantilla de precios
     // y el "Comas" se perdía.
     await aprenderSinResponder(numero, lead, body, `atajo ${rapida.atajo}`);
+    return;
+  }
+
+  // SEGUNDA CAPA SIN IA: responder por ESTADO (src/reglas.js).
+  //
+  // De los 12.719 mensajes de 30 días, uno de cada ocho es "gracias" / "ok" /
+  // "listo" y uno de cada trece es un saludo pelado. Ninguno de esos dice nada
+  // — lo que decide la respuesta es cómo está el jugador, y eso está en la
+  // base: si le falta pagar, si ya está en la lista, si quedó en espera. Es
+  // exactamente lo que hace Clarck a mano.
+  //
+  // Va acá, después del embudo y antes del cerebro, para que la IA quede de
+  // última instancia y no de primera.
+  const m = desenvolver(msg.message || {});
+  const adjunto = m.audioMessage ? 'audio'
+    : m.stickerMessage ? 'sticker'
+    : m.videoMessage ? 'video'
+    : m.documentMessage ? 'documento'
+    : null;
+  const porEstado = reglas.responder(lead, body, adjunto);
+  if (porEstado) {
+    console.log(`[regla] ${numero} → ${porEstado.regla} (sin IA)${porEstado.respuesta ? '' : ' · sin responder, a propósito'}`);
+    if (porEstado.respuesta && !modoSilencio) {
+      try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
+      if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
+      try {
+        await enviarTexto(sock, destino, porEstado.respuesta);
+        db.saveMessage(numero, 'assistant', porEstado.respuesta);
+      } catch (e) { console.error(`[send] ERROR regla → ${destino}:`, e?.message); }
+    }
+    // Un "gracias" no trae datos, pero la ficha puede estar incompleta y el
+    // freno de costo de `aprenderSinResponder` ya se encarga de no gastar una
+    // llamada cuando no hay nada que aprender.
+    await aprenderSinResponder(numero, lead, body, `regla ${porEstado.regla}`);
     return;
   }
 
