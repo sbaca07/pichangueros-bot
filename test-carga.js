@@ -53,12 +53,12 @@ globalThis.fetch = async (url, opts = {}) => {
 
 // El cerebro, con la demora REAL medida en producción (~2 a 5 s). La demora es
 // el punto: es la ventana en la que el contador de atendidos queda viejo.
-const DEMORA_CEREBRO_MS = Number(process.env.DEMORA_CEREBRO_MS || 1200);
+let DEMORA = Number(process.env.DEMORA || 1200);
 const brain = require('./src/brain');
 let partidoDeTodos = null;
 brain.cerebroActivo = () => true;
 brain.pensar = async () => {
-  await new Promise((r) => setTimeout(r, DEMORA_CEREBRO_MS));
+  await new Promise((r) => setTimeout(r, DEMORA));
   return {
     reply: 'Te guardo el cupo, mándame tu Yape 🙏',
     nombre: null, edad: null, distrito: null, zona: null,
@@ -108,7 +108,7 @@ const atendidos = () => new Set(enviados.filter((e) => NUMEROS.includes(e.a)).ma
   // Todas de una: es lo que pasa un lunes 8am cuando sale la convocatoria.
   await Promise.all(NUMEROS.map((n) => escribe(n, 'Hola, quiero anotarme para hoy')));
   // Se espera a que la última pueda haber terminado de pensar y responder.
-  await sleep(DEMORA_CEREBRO_MS + 6000);
+  await sleep(DEMORA + 6000);
   const cuantos = atendidos().size;
   console.log(`  → el bot le contestó a ${cuantos} personas de ${GENTE} · ${Date.now() - t0} ms`);
   check(`no le contestó a más de ${TOPE}`, cuantos <= TOPE, `contestó a ${cuantos}`);
@@ -139,15 +139,48 @@ const atendidos = () => new Set(enviados.filter((e) => NUMEROS.includes(e.a)).ma
   const yaEntro = [...atendidos()][0];
   const antesDe = enviados.filter((e) => e.a === yaEntro).length;
   await escribe(yaEntro, '¿y a qué hora tengo que llegar?');
-  await sleep(DEMORA_CEREBRO_MS + 2500);
+  await sleep(DEMORA + 2500);
   check('le contestó de nuevo', enviados.filter((e) => e.a === yaEntro).length > antesDe);
 
   const quedoAfuera = NUMEROS.find((n) => !atendidos().has(n));
   const afueraAntes = enviados.filter((e) => e.a === quedoAfuera).length;
   await escribe(quedoAfuera, 'holaaa sigo esperando');
-  await sleep(DEMORA_CEREBRO_MS + 2500);
+  await sleep(DEMORA + 2500);
   check('y al que quedó afuera sigue sin contestarle (lo atiende Clarck)', enviados.filter((e) => e.a === quedoAfuera).length === afueraAntes);
   check('el cupo sigue clavado en 20', atendidos().size === TOPE, `${atendidos().size}`);
+
+  console.log('\n== 6 · La IA lenta, y Meta reintentando encima ==');
+  // Cuando el cerebro tarda, el webhook queda sin contestar y Cloud API REENVÍA
+  // el mismo mensaje. O sea que el peor momento para la IA es exactamente
+  // cuando llega el doble de tráfico. Se deduplica por id de mensaje
+  // (src/meta.js), pero eso nunca se había probado con todo entrando junto:
+  // dos copias del mismo id procesándose a la vez es otra cosa que dos copias
+  // seguidas.
+  DEMORA = 3000;
+  db.setTopeNuevosDia(0); // acá se mide el duplicado, no la compuerta
+  const OTROS = Array.from({ length: 25 }, (_, i) => `5190055${String(i).padStart(4, '0')}`);
+  const idsPorNumero = new Map();
+  const conId = (de, texto, id) => postJson('/webhook/meta', {
+    object: 'whatsapp_business_account',
+    entry: [{ id: 'WABA-SIM', changes: [{ field: 'messages', value: {
+      messages: [{ id, from: de, type: 'text', text: { body: texto } }],
+    } }] }],
+  });
+  const antesDeTodo = enviados.length;
+  await Promise.all(OTROS.flatMap((n, i) => {
+    const id = `wamid.reintento-${i}`;
+    idsPorNumero.set(n, id);
+    // La copia y el original, a la vez: es lo que hace el reintento de Meta.
+    return [conId(n, 'quiero jugar hoy', id), conId(n, 'quiero jugar hoy', id)];
+  }));
+  await sleep(DEMORA + 6000);
+  const dobleRespuesta = OTROS.filter((n) => enviados.filter((e) => e.a === n).length > 1);
+  console.log(`  → ${OTROS.length} personas × 2 webhooks · el bot mandó ${enviados.length - antesDeTodo} mensajes`);
+  check('a nadie se le contestó dos veces', dobleRespuesta.length === 0, dobleRespuesta.slice(0, 5).join(','));
+  const filas2 = db.inscripcionesDe(partidoDeTodos);
+  const dobles2 = OTROS.filter((n) => filas2.filter((f) => f.numero === n).length > 1);
+  check('nadie quedó anotado dos veces por el reintento', dobles2.length === 0, dobles2.slice(0, 5).join(','));
+  check('el proceso sigue vivo', db.topeNuevosDia() === 0);
 
   console.log(`\n${fallos === 0 ? '✅' : '❌'} ${ok} checks OK · ${fallos} fallos`);
   process.exit(fallos === 0 ? 0 : 1);
