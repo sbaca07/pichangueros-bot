@@ -25,6 +25,7 @@ const check = (nombre, cond) => { if (cond) { ok++; console.log(`  ✓ ${nombre}
 
 const hoy = db.hoyLima();
 const manana = new Date(Date.now() - 5 * 3600e3 + 86400e3).toISOString().slice(0, 10);
+const pasado = new Date(Date.now() - 5 * 3600e3 + 2 * 86400e3).toISOString().slice(0, 10);
 const horaAhora = Number(new Date(Date.now() - 5 * 3600e3).toISOString().slice(11, 13));
 const comoTexto = (h) => `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`;
 
@@ -91,6 +92,42 @@ const N = '51900777888';
   res = await pagos.procesarVoucher(cuarto, 'comas', Buffer.from('x'));
   check('la pista se ignora si el partido ya no está abierto',
     !db.inscripcionesDe(domingo.id ?? domingo).some((i) => i.numero === cuarto));
+
+  console.log('== 6 · La IA elige el partido; los cupos los dice el monto ==');
+  // Caso Aldo (2026-09-07). Yapeó S/15 y su historial de agosto estaba lleno de
+  // "yo y 2 amigos" y "te yapeo de 3 personas". La IA leyó eso, devolvió cupos:3
+  // y la línea decía `cupos = intencion.cupos` a secas: UN pago de S/15 metió
+  // TRES personas en la lista del 8-sep. La fila de `pagos` quedó en 1 cupo y la
+  // lista con 3 — la base contradiciéndose sola. Auditando salieron 8 pagos
+  // así, 10 cupos regalados, S/140 que la caja daba por cobrados y no entraron.
+  // DOS partidos de Breña, como el 7 y el 8 de sep: con más de un candidato la
+  // aritmética no alcanza y la decisión pasa a la conversación. Ése es el único
+  // camino por el que la IA llega a fijar los cupos — con un solo candidato ni
+  // se la llama, y el bug no aparece.
+  const pAldo = db.crearPartido({ zona: 'brena', fecha: manana, hora: '8-9pm', cupo: 16, precio: 15 });
+  const pOtroDia = db.crearPartido({ zona: 'brena', fecha: pasado, hora: '8-9pm', cupo: 16, precio: 15 });
+  const aldo = '51900778222';
+  db.getOrCreateLead(aldo); db.updateLead(aldo, { nombre: 'Aldo Leandro', zona: 'brena' });
+  pagos.leerVoucher = async () => ({ es_comprobante_pago: true, monto: 15, nombre_remitente: 'Aldo Leandro', numero_operacion: 'OP-ALDO-1', medio: 'yape', confianza: 'alta' });
+  intencionDevuelta = { partido_id: pAldo, cupos: 3, confianza: 'alta', motivo: 'dijo que venía con dos amigos', partido_no_cargado: false };
+  res = await pagos.procesarVoucher(aldo, 'brena', Buffer.from('x'));
+  const listaAldo = db.inscripcionesDe(pAldo).filter((i) => i.estado !== 'baja');
+  check('S/15 entra UNA persona, aunque la charla hable de tres', listaAldo.length === 1);
+  check('y esa persona es la que pagó, no un invitado', listaAldo[0].numero === aldo);
+  check('la caja del partido cobra lo que de verdad entró', db.cajaPartido(pAldo).cobradoVerificado === 15);
+  check('a Clarck se le avisa que los otros no pagaron', /pero la conversación habla de 3/.test(res.alerta || ''));
+
+  console.log('== 7 · Si la charla dice MENOS que el monto, se le hace caso ==');
+  // Hacia abajo sí: pagó de más y aclara que es por uno solo. Nunca hacia
+  // arriba, que es donde se inventa gente en una cancha que se paga por cabeza.
+  const pMenos = db.crearPartido({ zona: 'brena', fecha: manana, hora: '9-10pm', cupo: 16, precio: 15 });
+  db.crearPartido({ zona: 'brena', fecha: pasado, hora: '9-10pm', cupo: 16, precio: 15 }); // el segundo candidato
+  const generoso = '51900778333';
+  db.getOrCreateLead(generoso); db.updateLead(generoso, { nombre: 'Generoso', zona: 'brena' });
+  pagos.leerVoucher = async () => ({ es_comprobante_pago: true, monto: 30, nombre_remitente: 'Generoso', numero_operacion: 'OP-MENOS-1', medio: 'yape', confianza: 'alta' });
+  intencionDevuelta = { partido_id: pMenos, cupos: 1, confianza: 'alta', motivo: 'dijo que el resto es adelanto del próximo', partido_no_cargado: false };
+  await pagos.procesarVoucher(generoso, 'brena', Buffer.from('x'));
+  check('S/30 con "es solo por mí" anota a uno solo', db.inscripcionesDe(pMenos).filter((i) => i.estado !== 'baja').length === 1);
 
   console.log(`\n${fallos ? '❌' : '✅'} ${ok} checks OK, ${fallos} fallos`);
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {}

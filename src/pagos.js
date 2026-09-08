@@ -410,7 +410,12 @@ async function procesarVoucher(numero, zona, imageBuffer) {
       // Primero la aritmética: si deja UN candidato, no hace falta leer nada.
       // Solo cuando hay cero o varios se gasta una llamada en la conversación.
       let partidoId = null;
-      let cupos = r.cupos || 1;
+      // Lo que el MONTO compró. Es el techo de todo lo que sigue: la plata es
+      // un hecho, no una opinión. La IA puede decir a QUÉ partido va un pago
+      // —eso no está escrito en el monto y hay que leerlo de la charla— pero
+      // nunca cuántos cupos son, porque eso sí está en el monto.
+      const comprados = r.cupos || 1;
+      let cupos = comprados;
       const candidatos = db.candidatosDePago(zona, r.monto);
       if (candidatos.length !== 1) {
         const intencion = await module.exports.interpretarPago(
@@ -421,7 +426,23 @@ async function procesarVoucher(numero, zona, imageBuffer) {
           // en el partido de otro día es peor que dejar el pago suelto.
           if (intencion.partido_id && intencion.confianza === 'alta') {
             partidoId = intencion.partido_id;
-            if (intencion.cupos > 0) cupos = intencion.cupos;
+            // La IA elige el partido; los cupos los sigue diciendo el monto.
+            //
+            // Esta línea decía `cupos = intencion.cupos` a secas, y el 2026-09-07
+            // un Yape de S/15 metió TRES personas en la lista del 8-sep: la IA
+            // leyó un historial de agosto ("yo y 2 amigos", "te yapeo de 3
+            // personas") y lo aplicó al pago de hoy. La fila de `pagos` quedó
+            // en 1 cupo y la lista con 3 — la base contradiciéndose sola, y la
+            // caja dando por cobradas dos personas que no pagaron. En total
+            // fueron 8 pagos, 10 cupos regalados, S/140.
+            //
+            // Hacia abajo sí se le hace caso (pagó de más y aclara que es por
+            // uno solo); hacia arriba no existe: nadie entra a una cancha que
+            // se paga por cabeza sin que su cabeza esté pagada.
+            if (intencion.cupos > 0 && intencion.cupos < cupos) cupos = intencion.cupos;
+            if (intencion.cupos > comprados) {
+              alerta = `⚠️ ${nombreCorto(numero)} pagó S/ ${r.monto} (alcanza para ${comprados} cupo${comprados === 1 ? '' : 's'}) pero la conversación habla de ${intencion.cupos}.\nSe anotó solo lo pagado. Si vienen más, les falta yapear.\nwa.me/${numero}`;
+            }
           } else {
             alerta = intencion.partido_no_cargado
               ? `🆕 ${nombreCorto(numero)} pagó S/ ${r.monto} por un partido que NO está cargado en el sistema.\n${intencion.motivo}\nCárgalo y asígnale el pago, o el jugador va a llegar a una cancha que nadie reservó.`
@@ -443,8 +464,14 @@ async function procesarVoucher(numero, zona, imageBuffer) {
         );
         if (extra && extra.paga_por_otros && extra.confianza === 'alta' && (extra.cupos || 0) > 0) {
           invitados = true;
-          cupos = extra.cupos;
+          // Mismo techo que arriba: la charla dice PARA QUIÉN es el segundo
+          // Yape, el monto dice para cuántos alcanza. Un "vengo con tres" con
+          // S/15 encima son tres que quieren jugar y uno solo pagado.
+          cupos = Math.min(extra.cupos, comprados);
           partidoId = extra.partido_id || destino;
+          if (extra.cupos > comprados) {
+            alerta = `⚠️ ${nombreCorto(numero)} yapeó S/ ${r.monto} por invitados (alcanza para ${comprados}) pero dice que son ${extra.cupos}.\nSe anotaron los pagados. Los otros tienen que yapear.\nwa.me/${numero}`;
+          }
         } else {
           // Nunca se descarta en silencio: si no se puede AFIRMAR que es por un
           // invitado, el pago queda suelto y lo asigna Clarck. Lo que no puede
