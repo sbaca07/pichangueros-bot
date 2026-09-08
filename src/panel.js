@@ -273,7 +273,9 @@ function registrarPanel(app, db, conexion = null) {
     // Guardar la conversación es cosa del panel, que tiene la BD; al host solo
     // se le pide callar al bot. Atarlo todo a `conexion` hacía que un
     // transporte sin ese método perdiera el mensaje del historial.
-    db.saveMessage(numero, 'assistant', texto);
+    // 'manual': lo escribió Clarck desde acá, así que no le gasta al bot su
+    // cupo de conversaciones del día.
+    db.saveMessage(numero, 'assistant', texto, 'manual');
     if (conexion.marcarManual) conexion.marcarManual(numero);
     fin('Mensaje enviado. El bot no le escribe por 5 minutos, para no pisarte.');
   });

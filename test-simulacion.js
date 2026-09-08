@@ -210,19 +210,23 @@ const enDias = (n) => new Date(Date.now() - 5 * 3600e3 + n * 86400e3).toISOStrin
   await sleep(4000); // margen holgado: si fuera a responder, ya lo habría hecho
   check('pero el bot se calla mientras Clarck atiende', enviadosA(B2).length === antesManual);
 
-  console.log('== 12 · Tope de conversaciones nuevas del día ==');
-  // Con el bot ENCENDIDO, el tope acota a cuánta gente nueva le habla por día.
-  // Al que pasa el tope no se le deja mudo: se deriva a Clarck. Es la compuerta
-  // de la marcha blanca — que un bug lo sufran 20 personas y no 61.
+  console.log('== 12 · Tope de conversaciones del día ==');
+  // Con el bot ENCENDIDO, el tope acota a cuánta gente le habla por día. Es la
+  // compuerta de la marcha blanca: que un bug lo sufran 20 personas y no 97.
+  //
+  // Contaba conversaciones NUEVAS, así que un conocido no gastaba cupo y el
+  // bot podía terminar hablando con 97 personas habiendo "abierto" 20. Ahora
+  // cuenta a todos los del día, que es lo que se pidió al abrir.
   db.setBotEncendido(true, 'test');
-  const base = db.nuevosDeHoy();
+  const base = db.atendidosHoy();
   db.setTopeNuevosDia(base + 1);           // entra uno más, el siguiente ya no
-  const T1 = '51900001201', T2 = '51900001202';
+  const T1 = '51900001201', T2 = '51900001202', T3 = '51900001203';
 
   await escribe(T1, 'hola');
   check('el que entra DENTRO del tope recibe respuesta',
     await esperar(() => enviadosA(T1).length > 0, 'respuesta a T1'));
   check('y no queda derivado a Clarck', db.getLead(T1)?.handoff === 0);
+  check('contestarle consumió un cupo del día', db.atendidosHoy() === base + 1);
 
   await escribe(T2, 'hola');
   check('el que llega PASADO el tope queda registrado igual (no se pierde el lead)',
@@ -230,17 +234,31 @@ const enDias = (n) => new Date(Date.now() - 5 * 3600e3 + n * 86400e3).toISOStrin
   check('su mensaje también se guarda',
     await esperar(() => db.getHistory(T2, 10).some((m) => m.rol === 'user' && m.texto === 'hola'), 'mensaje de T2'));
   check('pero el bot NO le contesta', enviadosA(T2).length === 0);
-  check('y pasa a manos de Clarck, no al vacío',
-    await esperar(() => db.getLead(T2)?.handoff === 1, 'handoff de T2'));
+  // Ya no se lo deriva para siempre: con el tope contando a TODOS serían ~77
+  // handoffs por día, y como el handoff se mira antes que el tope, a la semana
+  // el bot no le hablaría nunca más a nadie. El tope frena el día, no marca a
+  // la persona — mañana este mismo vuelve a tener chance.
+  check('pero NO queda derivado para siempre: el tope es del día, no de la persona',
+    db.getLead(T2)?.handoff === 0);
+  check('y no gastó cupo, porque no se le contestó', db.atendidosHoy() === base + 1);
 
-  // El tope decide si se ABRE una conversación, no si sigue. T1 ya tiene la
-  // suya abierta, así que con el cupo lleno igual se le contesta: cortarle la
-  // charla al que ya está adentro sería peor que no haber contestado nunca.
+  // El que ya fue atendido HOY sigue siendo atendido: gastó su cupo con el
+  // primer mensaje, y cortarle la charla a la mitad sería peor que no haberla
+  // empezado.
   const antesT1 = enviadosA(T1).length;
   await escribe(T1, 'y a que hora es?');
-  check('el que ya tenía conversación abierta sigue atendido con el tope lleno',
+  check('al que ya se le contestó hoy se le sigue contestando',
     await esperar(() => enviadosA(T1).length > antesT1, 'respuesta a T1'));
-  check('y el que quedó afuera no consumió cupo del tope', db.nuevosDeHoy() === base + 1);
+  check('y eso no gasta un cupo nuevo', db.atendidosHoy() === base + 1);
+
+  // EL CAMBIO: un CONOCIDO tampoco pasa gratis. Antes alcanzaba con tener una
+  // conversación abierta de otro día para saltarse el tope entero.
+  db.saveMessage(T3, 'assistant', 'te contesté yo ayer', 'manual');
+  check('T3 tiene conversación abierta', db.conversacionAbierta(T3) === true);
+  check('pero una respuesta a mano de Clarck NO gasta cupo del bot', db.atendidosHoy() === base + 1);
+  await escribe(T3, 'hola de nuevo');
+  await sleep(4000); // margen: si fuera a contestar, ya lo habría hecho
+  check('el conocido tampoco entra con el cupo lleno (antes se colaba)', enviadosA(T3).length === 0);
 
   db.setTopeNuevosDia(0);
   db.setBotEncendido(false, 'test');

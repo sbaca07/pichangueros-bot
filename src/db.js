@@ -158,6 +158,16 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'tz_migrado_v2_2026_07'"
   console.log('[tz-v2] Timestamps guardados en UTC por el bug del DEFAULT (tras el primer fix) corregidos a hora de Lima.');
 }
 
+// Quién escribió cada mensaje saliente: 'bot' o 'manual' (Clarck desde su
+// celular o desde el panel). Los dos se guardan como rol 'assistant' porque
+// para el jugador y para el cerebro son lo mismo — la conversación es una
+// sola. Pero el TOPE del día tiene que contar solo lo que mandó el bot: si
+// las respuestas a mano de Clarck gastaran su cupo, un día de mucho trabajo
+// suyo dejaría al bot sin poder contestarle a nadie. Las filas viejas quedan
+// en NULL y no cuentan, que es lo correcto: son de antes del tope.
+const colsMensajes = db.prepare('PRAGMA table_info(mensajes)').all().map((c) => c.name);
+if (!colsMensajes.includes('via')) db.exec('ALTER TABLE mensajes ADD COLUMN via TEXT');
+
 // Migración suave del CRM (2026-06-10): agrega columnas si la BD es anterior.
 const colsLeads = db.prepare('PRAGMA table_info(leads)').all().map((c) => c.name);
 if (!colsLeads.includes('etiquetas')) db.exec('ALTER TABLE leads ADD COLUMN etiquetas TEXT');
@@ -259,7 +269,7 @@ const stmtNewLead = db.prepare(
   "INSERT INTO leads (numero, creado_en, actualizado_en) VALUES (?, datetime('now', '-5 hours'), datetime('now', '-5 hours'))"
 );
 const stmtSaveMsg = db.prepare(
-  "INSERT INTO mensajes (numero, rol, texto, creado_en) VALUES (?, ?, ?, datetime('now', '-5 hours'))"
+  "INSERT INTO mensajes (numero, rol, texto, via, creado_en) VALUES (?, ?, ?, ?, datetime('now', '-5 hours'))"
 );
 const stmtHistory = db.prepare(
   'SELECT rol, texto, creado_en FROM mensajes WHERE numero = ? ORDER BY id DESC LIMIT ?'
@@ -300,8 +310,15 @@ function updateLead(numero, campos) {
   db.prepare(`UPDATE leads SET ${sets.join(', ')}, actualizado_en = datetime('now', '-5 hours') WHERE numero = ?`).run(...valores);
 }
 
-function saveMessage(numero, rol, texto) {
-  stmtSaveMsg.run(numero, rol, texto);
+/**
+ * Guarda un mensaje de la conversación.
+ *
+ * `via` solo tiene sentido en los salientes: 'bot' o 'manual' (Clarck, desde
+ * su celular o desde el panel). El default es 'bot' porque contestar a mano es
+ * la excepción y se declara donde pasa.
+ */
+function saveMessage(numero, rol, texto, via = 'bot') {
+  stmtSaveMsg.run(numero, rol, texto, via);
 }
 
 /** Últimos N mensajes en orden cronológico (para el contexto del cerebro). */
@@ -729,6 +746,35 @@ function nuevosDeHoy() {
       SELECT numero, MIN(creado_en) AS primera FROM mensajes WHERE rol = 'assistant' GROUP BY numero
     ) WHERE substr(primera, 1, 10) = ?
   `).get(hoyLimaDb()).n;
+}
+
+/**
+ * A cuánta gente DISTINTA le contestó el bot hoy. El tope se mide con esto.
+ *
+ * Contaba conversaciones NUEVAS (`nuevosDeHoy`), y por eso un conocido no
+ * gastaba cupo: el bot podía terminar hablando con 97 personas en un día
+ * habiendo "abierto" solo 20. Para encender la marcha blanca lo que importa
+ * es a cuántos les habla en total, sean nuevos o de siempre.
+ *
+ * Solo cuenta lo que mandó el BOT (`via = 'bot'`): las respuestas a mano de
+ * Clarck no pueden gastarle el cupo, o un día suyo de mucho trabajo dejaría al
+ * bot mudo con todos. Las filas viejas tienen `via` en NULL y no cuentan —
+ * son de antes de que esto existiera.
+ */
+function atendidosHoy() {
+  return db.prepare(`
+    SELECT COUNT(DISTINCT numero) AS n FROM mensajes
+    WHERE rol = 'assistant' AND via = 'bot' AND substr(creado_en, 1, 10) = ?
+  `).get(hoyLimaDb()).n;
+}
+
+/** ¿El bot ya le habló HOY a este contacto? Entonces ya gastó su cupo y la
+ *  conversación sigue: cortarla a la mitad sería peor que no haberla abierto. */
+function atendidoHoy(numero) {
+  return !!db.prepare(`
+    SELECT 1 FROM mensajes
+    WHERE numero = ? AND rol = 'assistant' AND via = 'bot' AND substr(creado_en, 1, 10) = ? LIMIT 1
+  `).get(numero, hoyLimaDb());
 }
 
 /**
@@ -2893,7 +2939,7 @@ module.exports = {
   precioDeZona, precioDePartido, cuposPorMonto, partidosQueCalzan,
   // Ajustes operativos: lo que antes vivía en Render y ahora edita Clarck.
   modoSeguro, estadoBot, setBotEncendido, numeroAvisos, setNumeroAvisos,
-  topeNuevosDia, setTopeNuevosDia, nuevosDeHoy, conversacionAbierta,
+  topeNuevosDia, setTopeNuevosDia, nuevosDeHoy, atendidosHoy, atendidoHoy, conversacionAbierta,
   avisosProbadoEn, marcarAvisosProbado, numerosDePrueba, setNumerosDePrueba,
   correoAvisos, correoRespaldo, setCorreo, recurrenteDesde, setRecurrenteDesde,
   crearPartido, abrirPartido, getPartido, actualizarPartido, cajaPartido, setEstadoPartido, eliminarPartido, listPartidos, partidosAbiertos, inscripcionesDe,

@@ -116,20 +116,21 @@ const leDijoAlgo = (n) => enviados.some((e) => e.a === n);
   check('y sigue derivado a Clarck', db.getLead(DERIVADO).handoff === 1);
 
   console.log('== El que pasa el tope del día tampoco entra como ficha vacía ==');
-  // El cupo se llena con gente que YA recibió su primera respuesta hoy: es
-  // así como lo cuenta `nuevosDeHoy` (conversaciones tenidas, no fichas).
+  // El cupo se llena con gente a la que el BOT ya le contestó hoy: es así como
+  // lo cuenta `atendidosHoy` (personas atendidas, no fichas creadas).
   db.setTopeNuevosDia(2);
-  for (let i = 0; db.nuevosDeHoy() < 2 && i < 10; i++) {
+  for (let i = 0; db.atendidosHoy() < 2 && i < 10; i++) {
     const relleno = `5190099${1000 + i}`;
     db.getOrCreateLead(relleno);
     db.saveMessage(relleno, 'assistant', 'hola');
   }
-  check('el cupo de conversaciones nuevas del día está lleno', db.nuevosDeHoy() >= db.topeNuevosDia());
+  check('el cupo de conversaciones del día está lleno', db.atendidosHoy() >= db.topeNuevosDia());
   await escribe(TOPE, 'hola, me llamo Leo, 23 años, soy de Brena');
   await sleep(1600);
   const t = db.getLead(TOPE);
-  check('el que pasa el tope queda derivado a Clarck', t.handoff === 1);
   check('el bot no le contesta (para eso está el tope)', !leDijoAlgo(TOPE));
+  // El tope frena el día, no marca a la persona: mañana vuelve a tener chance.
+  check('y no queda derivado para siempre', t.handoff === 0);
   check('pero su ficha NO queda vacía: le quedó la zona', t.zona === 'brena');
   check('y el nombre', t.nombre === 'Leo');
 

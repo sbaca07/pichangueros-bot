@@ -219,6 +219,7 @@ async function comandoControl(sock, from, body) {
 }
 
 const avisosHandoff = new Map();   // numero → cuándo se re-avisó a control por última vez
+const avisosTope = new Map();      // numero → fecha (Lima) del último aviso por tope, uno por día
 const disculpasBrain = new Map();  // numero → cuándo se le mandó la disculpa por falla de IA
 const avisosCupo = new Map();      // numero → cuándo se avisó "pidió cupo con el bot apagado"
 
@@ -320,7 +321,10 @@ function registrarRespuestaManual(msg) {
   const numero = numeroDe(msg);
   if (!numero || numero === numeroControl()) return;
   if (!db.getLead(numero)) return;
-  db.saveMessage(numero, 'assistant', texto);
+  // 'manual': esto lo escribió Clarck, no el bot. Se guarda igual en la
+  // conversación —para el jugador y para el cerebro es lo mismo— pero no le
+  // gasta al bot su cupo del día.
+  db.saveMessage(numero, 'assistant', texto, 'manual');
   atendidoAMano.set(numero, Date.now());
   if (atendidoAMano.size > 1000) atendidoAMano.delete(atendidoAMano.keys().next().value);
   console.log(`[manual] Clarck respondió a mano a ${numero} — el bot se calla ${MANUAL_MS / 60000} min con él.`);
@@ -452,26 +456,42 @@ async function manejarMensaje(sock, msg) {
     return;
   }
 
-  // TOPE DE CONVERSACIONES NUEVAS DEL DÍA (la marcha blanca).
+  // TOPE DE CONVERSACIONES DEL DÍA (la marcha blanca).
   //
   // Encender el bot no se acota con la lista de números de prueba: esa lista
   // dice a QUIÉN le contesta y tiene techo de 10. Lo que hay que acotar es a
-  // CUÁNTA gente nueva le habla en un día, que es donde vive el riesgo — si
-  // algo quedó mal, que lo sufran 20 personas y no las 61 de un pico.
+  // CUÁNTA gente le habla en un día, que es donde vive el riesgo — si algo
+  // quedó mal, que lo sufran 20 personas y no las 97 de un día normal.
   //
-  // El que pasa el tope NO se queda mudo: se deriva a Clarck, igual que las 97
-  // conversaciones diarias que ya atiende a mano. El tope decide cuánto se
-  // delega, no a quién se abandona.
+  // Contaba conversaciones NUEVAS, así que un conocido no gastaba cupo: con el
+  // tope en 20 el bot podía terminar hablando con 97 personas habiendo
+  // "abierto" 20. Ahora cuenta a TODOS los del día, nuevos o de siempre — que
+  // es lo que se pidió al abrir: "los primeros 20 que hablen".
+  //
+  // El día corta a la medianoche de Lima, como todo acá.
+  //
+  // Al que YA le contestó hoy se le sigue contestando: gastó su cupo con el
+  // primer mensaje y cortarle la conversación a la mitad sería peor que no
+  // haberla empezado.
   const topeNuevos = db.topeNuevosDia();
-  const abreConversacion = !db.conversacionAbierta(numero);
-  if (!modoSilencio && topeNuevos > 0 && abreConversacion && db.nuevosDeHoy() >= topeNuevos) {
-    db.setHandoff(numero, `Tope de ${topeNuevos} conversaciones nuevas por día`);
-    console.log(`[tope] ${numero}: se llenó el cupo de ${topeNuevos} nuevos de hoy — pasa a Clarck.`);
-    await notificarControl(
-      sock,
-      `🚦 Se llenó el cupo de ${topeNuevos} conversaciones nuevas de hoy.\n${lead.nombre || `+${numero}`} escribió y el bot NO le contestó: "${body.slice(0, 120)}"\nAtiéndelo tú · wa.me/${numero}`,
-      'Tope de nuevos alcanzado'
-    );
+  if (!modoSilencio && topeNuevos > 0 && !db.atendidoHoy(numero) && db.atendidosHoy() >= topeNuevos) {
+    // NO se lo deriva a Clarck para siempre. Cuando el tope contaba solo
+    // nuevos, derivar al que sobraba tenía sentido: eran pocos. Contando a
+    // todos, con 97 personas por día y un cupo de 20, serían ~77 handoffs
+    // diarios — y como el handoff se mira ANTES que el tope, a la semana el
+    // bot no le podría contestar a nadie nunca más. El tope es un freno del
+    // día, no una decisión permanente sobre una persona.
+    console.log(`[tope] ${numero}: se llenó el cupo de ${topeNuevos} conversaciones de hoy — hoy lo atiende Clarck.`);
+    // Un aviso por persona por día: 77 avisos diarios no los lee nadie.
+    const ultimoAviso = avisosTope.get(numero) || '';
+    if (ultimoAviso !== db.hoyLima().fecha) {
+      avisosTope.set(numero, db.hoyLima().fecha);
+      await notificarControl(
+        sock,
+        `🚦 Se llenó el cupo de ${topeNuevos} conversaciones de hoy.\n${lead.nombre || `+${numero}`} escribió y el bot NO le contestó: "${body.slice(0, 120)}"\nAtiéndelo tú · wa.me/${numero}`,
+        'Tope del día alcanzado'
+      );
+    }
     // El tope limita a cuánta gente le CONTESTA el bot, no cuánta conoce. Sin
     // esto, el día que se abre la marcha blanca cada persona por encima del
     // cupo entraba al CRM como una ficha vacía y encima derivada, que es la
