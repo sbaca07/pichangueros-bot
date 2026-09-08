@@ -1053,6 +1053,50 @@ const srv = app.listen(0, async () => {
     check('el campo se ve en Ajustes con su valor', /name="tope_nuevos"[^>]*value="20"/.test(cfg.html));
   }
 
+  console.log('== 8 · Liquidar sin entrar al partido ==');
+  {
+    // Liquidar es la acción que queda pendiente en TODOS los partidos jugados,
+    // uno por uno. Entrar a cada ficha para apretar un botón es el ritual que
+    // hacía que no se liquidara ninguno — el mismo motivo por el que existe
+    // "archivar vacíos". Así que también va en la semana, donde se ven.
+    // Hora propia: a esa fecha ya hay otros partidos de prueba en Breña, y dos
+    // partidos de la misma cancha, día y hora son el MISMO partido.
+    const jugado = partidoJugado(enDias(-1), ['51900008801', '51900008802'], { hora: '7-8pm' });
+    // Ayer cae en esta semana o en la anterior según el día en que se corra:
+    // se mira en las dos y alcanza con que aparezca en una.
+    const semana = (await GET('/admin/leads?key=ux&vista=partidos')).html
+      + (await GET('/admin/leads?key=ux&vista=partidos&semana=-1')).html;
+    check('el partido que ya se jugó trae su botón de liquidar en la lista',
+      new RegExp(`action="/admin/partido/liquidar"[\\s\\S]{0,400}value="${jugado}"`).test(semana));
+    check('y dice cuántos quedan por cobrar, que es lo que se da por perdido',
+      /Liquidar · faltan 2 por cobrar/.test(semana));
+    check('sigue pidiendo confirmación: liquidar lo afirma una persona',
+      /onsubmit="return confirm\('[^']*Liquidar el partido/.test(semana));
+    // Un partido que todavía no se jugó no puede ofrecer liquidarlo: no se
+    // autoliquida nada, y menos algo que ni empezó.
+    const futuro = (await GET(`/admin/leads?key=ux&vista=partidos&dia=${enDias(1)}`)).html;
+    check('el partido que todavía no se juega NO ofrece liquidar',
+      !new RegExp(`action="/admin/partido/liquidar"[\\s\\S]{0,400}value="${partido}"`).test(futuro));
+    // Y el botón hace lo que dice.
+    const antes = db.getPartido(jugado).liquidado_en;
+    await POST('/admin/partido/liquidar', { key: 'ux', id: String(jugado) });
+    check('apretarlo liquida de verdad', !antes && !!db.getPartido(jugado).liquidado_en);
+  }
+
+  console.log('== 9 · Ajustes plegables en el celular ==');
+  {
+    const cfg = (await GET('/admin/leads?key=ux&vista=config')).html;
+    check('Ajustes trae el plegado de secciones', cfg.includes("sessionStorage.getItem(LLAVE)"));
+    check('solo se pliega en pantalla chica', cfg.includes("matchMedia('(max-width: 860px)')"));
+    check('recuerda qué sección quedó abierta (la pantalla recarga en cada guardado)',
+      cfg.includes("sessionStorage.setItem(LLAVE"));
+    check('y abre la sección del ancla, para no aterrizar en una cerrada',
+      cfg.includes('location.hash'));
+    // Lo importante de una mejora progresiva: el contenido sigue estando.
+    check('el contenido sigue en el HTML, plegar no lo esconde del servidor',
+      cfg.includes('name="yape_numero"') && cfg.includes('name="tope_nuevos"'));
+  }
+
   console.log('== 5 · Sin key, nada existe ==');
   check('vista sin key → 404', (await GET('/admin/leads?vista=crm')).status === 404);
   check('export sin key → 404', (await GET('/admin/leads.csv')).status === 404);

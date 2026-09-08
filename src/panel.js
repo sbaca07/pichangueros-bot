@@ -1336,6 +1336,14 @@ const ESTILOS = `
      de CADA sección de CADA vista. */
   .shdr{font-size:var(--t-xs);font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-2);padding:22px 6px 9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .shdr small{text-transform:none;letter-spacing:0;font-weight:400;font-size:var(--t-s);color:var(--ink-2)}
+  /* Ajustes plegados en el celular (lo pone el script de esa pantalla; sin él
+     nada de esto aplica y la página queda entera). La flecha gira al abrir. */
+  .shdr-pleg{cursor:pointer;min-height:var(--tap);padding-right:34px;position:relative;user-select:none}
+  .shdr-pleg::after{content:'';position:absolute;right:12px;top:50%;width:8px;height:8px;
+    border-right:2px solid var(--ink-3);border-bottom:2px solid var(--ink-3);
+    transform:translateY(-70%) rotate(45deg);transition:transform .15s}
+  .shdr-pleg[aria-expanded="true"]::after{transform:translateY(-25%) rotate(225deg)}
+  .shdr-pleg:active{background:var(--surface-3);border-radius:var(--r2)}
 
   /* zona rows */
   .zlist{background:var(--surface);border:1px solid var(--line);border-radius:var(--r3);overflow:hidden;box-shadow:var(--sombra)}
@@ -1423,6 +1431,14 @@ const ESTILOS = `
   .lrow{display:flex;align-items:center;gap:13px;min-height:var(--tap);padding:12px 14px;border-bottom:1px solid var(--line);position:relative}
   .lrow:last-child{border-bottom:none}
   .lrow:active{background:var(--surface-3)}
+  /* Liquidar desde la semana: va PEGADO a su partido (la fila de arriba pierde
+     su línea) para que se lea como parte de esa tarjeta y no como una fila más. */
+  .lrow:has(+ .lacc){border-bottom:none}
+  .lacc{padding:0 14px 12px;border-bottom:1px solid var(--line)}
+  .lacc:last-child{border-bottom:none}
+  .btn-liq{width:100%;min-height:var(--tap);border:1px solid var(--line);border-radius:var(--r2);
+    background:var(--surface-2);color:var(--ink-2);font:inherit;font-size:var(--t-s);font-weight:700;cursor:pointer}
+  .btn-liq:active{background:var(--surface-3)}
   .ava{width:44px;height:44px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;font-weight:700;font-size:15px;color:#fff}
   .lbody{flex:1;min-width:0;overflow:hidden;display:flex;flex-direction:column}
   .lname{font-size:var(--t-m);font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -3688,6 +3704,66 @@ function paginaConfig(db, key, conexion = null, query = {}) {
 
       <div class="foot">⚽ Pichangueros · Config</div>
     </div>
+    ${/* AJUSTES PLEGADOS EN EL CELULAR.
+          Esta pantalla son once secciones largas de formularios: en el
+          escritorio se recorren con la vista, en un celular hay que scrollear
+          un rato para encontrar cualquier cosa. Acá se pliegan todas y se abre
+          la que se necesite.
+
+          Va como mejora progresiva sobre el HTML que ya existe —busca cada
+          .shdr con su .group— y no toca el markup de ninguna sección: si el
+          script no corre, la página queda exactamente como antes, entera y
+          usable. Solo se activa en pantallas chicas.
+
+          Dos cosas que parecen detalle y no lo son: la sección se recuerda
+          abierta (esta pantalla se guarda con POST y recarga en cada cambio,
+          así que sin esto se cerraría sola cada vez que tocás "Guardar"), y si
+          la URL trae un ancla se abre ésa — el panel redirige a #bot, #canal,
+          etc., y aterrizar en una sección cerrada es aterrizar en la nada. */ ''}
+    <script>
+    (function () {
+      if (!window.matchMedia || !matchMedia('(max-width: 860px)').matches) return;
+      var LLAVE = 'cfgAbiertas';
+      var abiertas;
+      try { abiertas = JSON.parse(sessionStorage.getItem(LLAVE) || '[]'); } catch (e) { abiertas = []; }
+      var hash = (location.hash || '').replace('#', '');
+      var secciones = [];
+      Array.prototype.forEach.call(document.querySelectorAll('.px .shdr'), function (shdr) {
+        var grupo = shdr.nextElementSibling;
+        if (!grupo || grupo.className.indexOf('group') === -1) return;
+        var id = (shdr.parentNode && shdr.parentNode.id) || shdr.textContent.trim().slice(0, 40);
+        var abierta = abiertas.indexOf(id) !== -1 || (hash && shdr.parentNode && shdr.parentNode.id === hash);
+        shdr.classList.add('shdr-pleg');
+        shdr.setAttribute('role', 'button');
+        shdr.setAttribute('tabindex', '0');
+        function pintar() {
+          grupo.hidden = !abierta;
+          shdr.setAttribute('aria-expanded', abierta ? 'true' : 'false');
+        }
+        function alternar() {
+          abierta = !abierta;
+          pintar();
+          var i = abiertas.indexOf(id);
+          if (abierta && i === -1) abiertas.push(id);
+          if (!abierta && i !== -1) abiertas.splice(i, 1);
+          try { sessionStorage.setItem(LLAVE, JSON.stringify(abiertas)); } catch (e) {}
+        }
+        shdr.addEventListener('click', alternar);
+        shdr.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); alternar(); }
+        });
+        pintar();
+        secciones.push({ shdr: shdr, id: id });
+      });
+      // Si se llegó con un ancla, esa sección ya quedó abierta arriba: ahora se
+      // la trae a la vista, porque el navegador ya hizo su scroll cuando todavía
+      // estaba plegada y quedó en cualquier lado.
+      if (hash) {
+        var destino = document.getElementById(hash);
+        if (destino && destino.scrollIntoView) destino.scrollIntoView();
+      }
+    })();
+    </script>
   `, { refresh: false, activo: 'config', key, aviso: query });
 }
 
@@ -3836,6 +3912,24 @@ function paginaPartidos(db, key, query = {}) {
           ? `<span class="est est-debe">${p.ocupados}/${p.cupo} · nadie anotado</span>`
           : `<span class="est est-ok">${p.ocupados}/${p.cupo} · ${p.cupo - p.ocupados} libre${p.cupo - p.ocupados === 1 ? '' : 's'}</span>`;
     const cancelado = p.fase === 'cancelado';
+    // LIQUIDAR SIN ENTRAR AL PARTIDO.
+    //
+    // Liquidar es la única acción que queda pendiente en TODOS los partidos ya
+    // jugados, uno por uno, y entrar a cada ficha para apretar un botón es el
+    // ritual que hacía que nadie liquidara ninguno (el mismo motivo por el que
+    // existe "archivar vacíos"). Acá está donde se ven: en la semana.
+    //
+    // Sigue siendo una afirmación de una persona —no se autoliquida nada— y el
+    // confirm dice lo mismo que el de adentro, incluido a cuántos les falta
+    // pagar, porque liquidar da esa plata por perdida.
+    const debenPagar = Math.max(0, (p.ocupados || 0) - (p.pagados || 0));
+    const puedeLiquidar = ['gracia', 'por_liquidar'].includes(p.fase);
+    const accionLiquidar = puedeLiquidar ? `
+      <form class="lacc" method="post" action="/admin/partido/liquidar"
+        onsubmit="return confirm('${jsTxt(`¿Liquidar el partido del ${db.fechaBonita(p.fecha, { relativa: false })}${p.hora ? ` ${p.hora}` : ''}? Es afirmar que la plata ya está contada.${debenPagar ? ` Quedan ${debenPagar} sin pagar y se van a dar por perdidos.` : ''} Deja de aceptar pagos.`)}')">
+        <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="id" value="${p.id}">
+        <button class="btn-liq" type="submit">🧾 Liquidar${debenPagar ? ` · faltan ${debenPagar} por cobrar` : ''}</button>
+      </form>` : '';
     return `<a class="lrow${cancelado ? ' cancelada' : ''}" href="/admin/leads?key=${key}&vista=partidos&partido=${p.id}">
       <span class="pfecha"><b>${esc(p.hora ? p.hora.split('-')[0] : '—')}</b><small>${esc(p.hora ? (/am/i.test(p.hora) ? 'am' : 'pm') : 'sin hora')}</small></span>
       <span class="lbody">
@@ -3849,7 +3943,7 @@ function paginaPartidos(db, key, query = {}) {
         </span>
       </span>
       ${SVG.chev}
-    </a>`;
+    </a>${accionLiquidar}`;
   };
 
   /** Un día de la grilla: sus partidos, o el hueco con el aviso de costumbre. */
