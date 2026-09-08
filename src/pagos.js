@@ -350,21 +350,33 @@ function evaluarVoucher(numero, zona, lectura) {
 
 /**
  * Flujo completo: lee la imagen + decide + guarda en BD.
- * @returns {Promise<null|{respuesta: string, handoff: boolean, motivoHandoff?: string}>}
- *          null si la imagen no es un voucher reconocible (deja que el cerebro conversacional normal responda).
+ * @returns {Promise<null|{sinLectura: true}|{respuesta: string, handoff: boolean, motivoHandoff?: string}>}
+ *          null si el lector MIRÓ la imagen y no es un comprobante (que responda
+ *          el cerebro normal) · {sinLectura} si no se pudo llamar al lector: la
+ *          imagen sigue sin mirarse y puede haber plata adentro.
  */
 async function procesarVoucher(numero, zona, imageBuffer) {
   // Vía module.exports (no la referencia interna) para que los tests puedan
   // inyectar lecturas simuladas sin llamar a OpenAI.
   const lectura = await module.exports.leerVoucher(imageBuffer);
-  if (!lectura || !lectura.es_comprobante_pago) {
+  // NO PUDIMOS MIRAR LA IMAGEN ≠ LA IMAGEN NO SIRVE. Son dos cosas distintas y
+  // hasta el 2026-09-08 salían por el mismo caño: con el lector caído, a tres
+  // jugadores se les pidió "mándame la captura completa donde se vean el monto,
+  // la fecha y el número de operación". Las capturas estaban perfectas — el
+  // caído era el sistema. La gente reenvió, y volvió a fallar.
+  if (!lectura) {
+    console.warn(`[pagos] ${numero}: NO se pudo llamar al lector de comprobantes `
+      + `— ${imageBuffer?.length || 0} bytes, ${mimeDeImagen(imageBuffer)}. La imagen no se miró.`);
+    return { sinLectura: true };
+  }
+  if (!lectura.es_comprobante_pago) {
     // Sin este log, una imagen que la visión no reconoce desaparecía sin
     // rastro: el jugador dice "ya te yapeé" y no había forma de saber si
     // falló la descarga, el modelo o si de verdad no era un comprobante.
     // El formato va en el log porque un PNG mal etiquetado ya nos costó cuatro
     // comprobantes el 12-ago: si vuelve a pasar, se ve en la misma línea.
     console.warn(`[pagos] ${numero}: la imagen NO se reconoció como comprobante`
-      + (lectura ? ` (medio=${lectura.medio}, confianza=${lectura.confianza}, monto=${lectura.monto})` : ' (la lectura falló o volvió vacía)')
+      + ` (medio=${lectura.medio}, confianza=${lectura.confianza}, monto=${lectura.monto})`
       + ` — ${imageBuffer?.length || 0} bytes, ${mimeDeImagen(imageBuffer)}.`);
     return null;
   }

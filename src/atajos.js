@@ -155,4 +155,129 @@ function responder(lead, texto) {
   return null;
 }
 
-module.exports = { responder };
+/* ─────────────────────────────────────────────────────────────────────────
+ * PEDIR CUPO SIN IA — la red de seguridad del 2026-09-08.
+ *
+ * Ese día el cerebro estuvo caído toda la mañana y el bot mandó 14 mensajes:
+ * 11 disculpas y 3 "no pude leer esa imagen". Cero útiles. Los atajos de
+ * arriba no amortiguaron nada porque están escritos para las preguntas del
+ * que RECIÉN llega (precios, horarios, dónde queda) y el tráfico real es del
+ * que YA juega: "para anotarme para las 21 hoy", "me apunto a la de hoy".
+ *
+ * Anotarse no necesita un modelo cuando no hay nada que interpretar: si el
+ * jugador tiene zona y queda UN solo partido posible, es una regla. Es el
+ * mismo criterio que ya usa `vincularPago` para no adivinar — con un único
+ * candidato no hace falta pensar; con dos, no se elige.
+ *
+ * Esto NO reemplaza al cerebro: se usa cuando el cerebro no contestó, en vez
+ * de la disculpa. Ante la menor duda devuelve null y sale la disculpa, que es
+ * exactamente lo que pasaba antes.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+// Pedir cupo, dicho de las formas en que la gente lo dice de verdad (sacadas
+// de los mensajes del 1 al 8 de septiembre).
+const PIDE_CUPO = /\b(anotam|anotame|anota|anotar|anotarme|apuntam|apuntame|apunta|apuntar|apuntarme|separam|separame|separa|separar|reservam|reservame|reservar|inscribeme|inscribirme|me sumo|me apunto|me anoto|ponme|pongame|un cupo|1 cupo)\b/;
+
+// Todo lo que hace que el pedido DEJE de ser inconfundible. Cada grupo es un
+// caso que necesita leer la conversación, no una regla:
+//   - acompañantes: cuántos cupos son se decide con la plata, no con el texto
+//   - cambios y bajas: mover un cupo toca uno que ya existe
+//   - pagos: ese camino es el del voucher, no éste
+const NO_ES_SIMPLE = /\b(amig|pata|patas|hermano|brother|invitad|acompan|somos|con un|con dos|con mi|para dos|para tres|dos cupos|2 cupos|tres cupos|3 cupos|cambi|mover|mueve|muevo|pasame|pasar|bajar|bajo|cancel|anular|devol|ya pague|ya yapee|ya te yapee|transferi|espera|lista de espera)\b/;
+
+/** Los minutos desde medianoche que puede querer decir una hora suelta. */
+function minutosPosibles(hora, marca) {
+  const h = Number(hora);
+  if (!Number.isFinite(h) || h < 1 || h > 23) return [];
+  if (h >= 13) return [h * 60];              // "21" no es ambiguo
+  if (marca === 'am') return [h * 60];
+  if (marca === 'pm') return [(h % 12 + 12) * 60];
+  // "a las 9" sin marca: puede ser 9am o 9pm. Se devuelven las dos y que
+  // decida el filtro — si calzan DOS partidos, no se elige ninguno.
+  return [h * 60, (h % 12 + 12) * 60];
+}
+
+/**
+ * La hora que pidió, en minutos desde medianoche. null = no dijo ninguna.
+ *
+ * Se trabaja SIEMPRE contra `inicio_min`, nunca contra el texto de la hora:
+ * el string '8-9pm' es presentación y ya causó dos bugs ('20:00' leído como
+ * las 8 de la mañana).
+ */
+function horasPedidas(t) {
+  // "a las 9", "las 9pm", "9 pm", "de 8 a 9", "8-9", "turno de 9"
+  const m = t.match(/(?:a las|las|de|turno de|turno)\s*(\d{1,2})\s*(?:a|-|\/)\s*(\d{1,2})\s*(am|pm)?/)
+    || t.match(/(?:a las|las|turno de|para las)\s*(\d{1,2})\s*(am|pm)?/)
+    || t.match(/\b(\d{1,2})\s*(pm|am)\b/);
+  if (!m) return null;
+  // En el formato "8 a 9" la hora que vale es la de INICIO (la primera).
+  const marca = m[3] || (m[2] === 'am' || m[2] === 'pm' ? m[2] : null);
+  const posibles = minutosPosibles(m[1], marca);
+  return posibles.length ? posibles : null;
+}
+
+const DIAS = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+
+/** El día que pidió, como filtro sobre un partido. null = no dijo ninguno. */
+function filtroDeDia(t, hoy) {
+  if (/\bhoy\b|\besta noche\b/.test(t)) return (p) => p.fecha === hoy;
+  if (/\bmanana\b/.test(t)) {
+    // Mediodía UTC para que sumar un día no se cruce con husos ni horarios de verano.
+    const manana = new Date(`${hoy}T12:00:00Z`);
+    manana.setUTCDate(manana.getUTCDate() + 1);
+    const fecha = manana.toISOString().slice(0, 10);
+    return (p) => p.fecha === fecha;
+  }
+  const dia = DIAS.findIndex((d) => new RegExp(`\\b(el |este |para el )?${d}\\b`).test(t));
+  if (dia >= 0) return (p) => new Date(`${p.fecha}T12:00:00Z`).getUTCDay() === dia;
+  return null;
+}
+
+/**
+ * ¿Este mensaje es un pedido de cupo que se puede resolver sin leer nada más?
+ *
+ * @returns {null | {partidoId: number, respuesta: string, atajo: string}}
+ *          null → no está claro; que lo resuelva la IA (o Clarck).
+ */
+function pedidoDeCupo(lead, texto) {
+  const t = limpiar(texto);
+  if (!t || t.length > 80) return null;      // largo = contexto = IA
+  if (!PIDE_CUPO.test(t) || NO_ES_SIMPLE.test(t)) return null;
+
+  // SIN ZONA NO HAY NADA QUE HACER: no sabemos ni en qué cancha juega ni
+  // cuánto le sale. Es el mismo agujero que deja a 488 fichas sin precio.
+  if (!lead?.zona || lead.zona === 'otra') return null;
+
+  let candidatos = db.partidosAbiertos(lead.zona, { vigentes: true }).filter((p) => p.restante > 0);
+  if (!candidatos.length) return null;       // ni "no hay": que lo diga la IA con contexto
+
+  const hoy = db.hoyLima();
+  const porDia = filtroDeDia(t, hoy);
+  if (porDia) candidatos = candidatos.filter(porDia);
+  const horas = horasPedidas(t);
+  if (horas) candidatos = candidatos.filter((p) => horas.includes(p.inicio_min));
+
+  // LA REGLA ENTERA: uno solo, o ninguno. Con dos candidatos el bot elegiría
+  // por el orden de la lista, y meter a alguien en el partido de otro día es
+  // el error que ya costó plata el 15/08.
+  if (candidatos.length !== 1) return null;
+
+  const p = candidatos[0];
+  const precio = db.precioDePartido(p);
+  if (precio == null) return null;           // sin precio no se cotiza
+
+  const neg = db.getNegocio();
+  const min = db.reservaMinutos();
+  const respuesta = `¡Listo! Te guardo un cupo ⚽\n\n`
+    + `📅 ${db.fechaBonita(p.fecha)}${p.hora ? ` · ${p.hora}` : ''}\n`
+    + `📍 ${nombreZona(neg, p.zona)}${p.sede ? ` (${p.sede})` : ''}\n`
+    + `💰 S/ ${precio} por jugador\n\n`
+    // El cupo guardado NO es una confirmación, y eso el jugador lo tiene que
+    // saber ANTES, no cuando se lo sacaron: sin Yape identificado no hay
+    // "pagado" en ninguna lista.
+    + `Yapea al ${neg.yape.numero} (${neg.yape.titular}) y quedas confirmado en la lista`
+    + (min > 0 ? ` 🙏 Te lo guardo ${min} min.` : ' 🙏');
+  return { partidoId: p.id, respuesta, atajo: 'cupo' };
+}
+
+module.exports = { responder, pedidoDeCupo };

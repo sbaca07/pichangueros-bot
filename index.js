@@ -485,8 +485,11 @@ async function manejarMensaje(sock, msg) {
     console.log(`[tope] ${numero}: se llenó el cupo de ${topeNuevos} conversaciones de hoy — hoy lo atiende Clarck.`);
     // Un aviso por persona por día: 77 avisos diarios no los lee nadie.
     const ultimoAviso = avisosTope.get(numero) || '';
-    if (ultimoAviso !== db.hoyLima().fecha) {
-      avisosTope.set(numero, db.hoyLima().fecha);
+    // `db.hoyLima()` YA es la fecha ('2026-09-08'), no un objeto: con `.fecha`
+    // esto comparaba undefined contra undefined, así que al mismo contacto se
+    // le avisaba una sola vez en la vida del proceso en vez de una por día.
+    if (ultimoAviso !== db.hoyLima()) {
+      avisosTope.set(numero, db.hoyLima());
       await notificarControl(
         sock,
         `🚦 Se llenó el cupo de ${topeNuevos} conversaciones de hoy.\n${lead.nombre || `+${numero}`} escribió y el bot NO le contestó: "${body.slice(0, 120)}"\nAtiéndelo tú · wa.me/${numero}`,
@@ -512,6 +515,29 @@ async function manejarMensaje(sock, msg) {
         ? await msg._descargar()
         : await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage });
       const resultado = await pagos.procesarVoucher(numero, lead.zona, buffer);
+      // EL LECTOR ESTÁ CAÍDO — la imagen ni se miró. No es lo mismo que una
+      // imagen ilegible, y hasta el 2026-09-08 se contestaban igual: ese día,
+      // con el cerebro caído, a tres jugadores se les pidió reenviar una
+      // captura que estaba impecable. Pedirle al cliente que arregle nuestra
+      // caída lo hace reenviar, fallar de nuevo, y encima queda como que él
+      // hizo algo mal.
+      if (resultado?.sinLectura) {
+        await notificarControl(
+          sock,
+          `🖼️ NO PUDE MIRAR la imagen de ${lead.nombre || `+${numero}`}: el lector de comprobantes no responde.\nSi era un Yape, NO quedó registrado — hay que mirarlo a mano.\nwa.me/${numero}`,
+          'Lector de comprobantes caído'
+        );
+        if (!modoSilencio) {
+          // Sin pedirle que la reenvíe: el problema es nuestro y reenviar no lo
+          // arregla. Y sin prometer que quedó registrado, que no quedó.
+          const aviso = 'Justo ahora no puedo abrir las imágenes 🙈 Ya le avisé a Clarck para que lo revise a mano — no hace falta que la reenvíes ⚽';
+          try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
+          if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
+          await enviarTexto(sock, destino, aviso);
+          db.saveMessage(numero, 'assistant', aviso);
+        }
+        return;
+      }
       if (resultado) {
         if (resultado.handoff) db.setHandoff(numero, resultado.motivoHandoff || 'Revisar comprobante de pago');
         // Un pago confirmado que no se pudo asignar solo se avisa SIEMPRE, aun
@@ -585,7 +611,34 @@ async function manejarMensaje(sock, msg) {
     return;
   }
 
-  const decision = await brain.pensar(lead, db.getHistory(numero), body);
+  let decision = await brain.pensar(lead, db.getHistory(numero), body);
+
+  // EL CEREBRO NO CONTESTÓ — antes de disculparse, lo que se puede resolver
+  // sin él. El 2026-09-08 el cerebro estuvo caído toda la mañana y el bot
+  // mandó 14 mensajes: 11 disculpas y 3 "no pude leer esa imagen". Lo que la
+  // gente estaba pidiendo en esos mismos minutos era "para anotarme para las
+  // 21 hoy" — un pedido que no necesita interpretar nada cuando el jugador
+  // tiene zona y queda UN solo partido posible.
+  //
+  // Es una red, no un reemplazo: `pedidoDeCupo` devuelve null ante la menor
+  // duda, y ahí sale la disculpa de siempre. Se arma la misma forma que
+  // devuelve el cerebro para que la reserva pase por el MISMO camino de abajo
+  // (lista de espera, reloj del cupo, pago suelto que se engancha): duplicar
+  // ese bloque sería duplicar todas sus garantías.
+  if (!decision && !modoSilencio) {
+    const cupo = atajos.pedidoDeCupo(lead, body);
+    if (cupo) {
+      console.log(`[atajo] ${numero} → cupo en partido ${cupo.partidoId} SIN IA (el cerebro no contestó).`);
+      decision = {
+        reply: cupo.respuesta,
+        nombre: null, edad: null, distrito: null, zona: null,
+        handoff: false, handoff_motivo: null,
+        inscribir_partido: cupo.partidoId,
+        nombres_invitados: null,
+      };
+    }
+  }
+
   if (!decision) {
     // La IA falló (caída/cuota/timeout). Antes: silencio total. Ahora: una
     // disculpa corta para no dejar la conversación en el vacío (máx. 1 cada
