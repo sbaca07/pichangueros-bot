@@ -656,7 +656,7 @@ async function manejarMensaje(sock, msg) {
         // invitados pagados desaparecían (hallazgo del code review 2026-08-11).
         const extras = Math.max(0, (suelto.cupos || 1) - 1);
         for (let i = 0; i < extras; i++) {
-          db.inscribir(inscripcion.partido_id, null, { nombre: `Invitado de +${numero}`, estado: 'pagado', pagoId: suelto.id });
+          db.inscribir(inscripcion.partido_id, null, { nombre: db.nombreInvitado(numero), estado: 'pagado', pagoId: suelto.id });
         }
         if (decision.reply) decision.reply += `\n✅ Y tu Yape de S/${suelto.monto}${extras ? ` (${suelto.cupos} cupos)` : ''} ya lo tenía registrado — quedaste CONFIRMADO${extras ? ` junto a tus ${extras} invitado${extras === 1 ? '' : 's'}` : ''} en la lista.`;
         console.log(`[partido] Pago suelto #${suelto.id} (${suelto.cupos || 1} cupos) vinculado a la inscripción de ${numero}.`);

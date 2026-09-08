@@ -3,3 +3,9 @@ node_modules/
 .wwebjs_cache/
 .env
 npm-debug.log*
+
+# Volcados de variables de entorno (pichangueros-bot.env, el export de Render).
+# No es "un archivo de config": adentro van las credenciales de produccion
+# ENTERAS — token de Meta, key de OpenAI, la clave del correo, los secretos de
+# los webhooks. Una sola de estas subida a GitHub obliga a rotarlas todas.
+*.env

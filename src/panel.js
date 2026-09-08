@@ -889,7 +889,7 @@ function registrarPanel(app, db, conexion = null) {
         let sumados = 0;
         for (let i = 0; i < Math.max(1, pago.cupos || 1); i++) {
           const { inscripcion } = db.inscribir(partidoId, null,
-            { nombre: `Invitado de +${pago.numero}`, estado: 'pagado', pagoId: pago.id, vence: false });
+            { nombre: db.nombreInvitado(pago.numero), estado: 'pagado', pagoId: pago.id, vence: false });
           if (inscripcion) sumados++;
         }
         return sumados
@@ -905,7 +905,7 @@ function registrarPanel(app, db, conexion = null) {
       if (cerrado) return fin(MOTIVO_NO_ENTRA(cerrado, pago.nombre || `+${pago.numero}`), true);
       db.inscribir(partidoId, pago.numero, { estado: 'pagado', pagoId: pago.id });
     }
-    for (let i = 1; i < (pago.cupos || 1); i++) db.inscribir(partidoId, null, { nombre: `Invitado de +${pago.numero}`, estado: 'pagado', pagoId: pago.id });
+    for (let i = 1; i < (pago.cupos || 1); i++) db.inscribir(partidoId, null, { nombre: db.nombreInvitado(pago.numero), estado: 'pagado', pagoId: pago.id });
     fin(`Pago de ${pago.nombre || `+${pago.numero}`} (S/ ${pago.monto}) asignado a este partido.`);
   });
 

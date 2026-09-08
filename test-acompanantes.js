@@ -165,5 +165,34 @@ check('los acompañantes no crean fichas de jugador', invs.every((i) => i.numero
 check('se sabe de quién vino cada uno', invs.every((i) => i.nombre === `Invitado de +${DOS}`));
 check('un acompañante nunca queda "reservado sin pagar": nace con su Yape', invs.every((i) => i.estado === 'pagado' && i.pago_id));
 
+console.log('== Lo cree el bot o lo cree Clarck, el acompañante se llama igual ==');
+// El nombre "Invitado de +51999…" no es una etiqueta: es la ÚNICA junta entre
+// "pagó un cupo de invitado" y "ponerle nombre después" — se busca con un `=`
+// exacto. Lo arman TRES caminos distintos (el bot al leer un Yape, el bot al
+// enganchar un pago suelto, y el panel cuando Clarck asigna un pago a mano).
+// Si uno solo deriva, esos cupos se vuelven invisibles y el bot vuelve a decir
+// "ya lo registré" sin registrar nada. Por eso hay un solo lugar donde se
+// escribe, y esto lo verifica.
+const PANEL = '51900006001';
+db.getOrCreateLead(PANEL);
+const pPanel = db.crearPartido({ zona: 'brena', fecha: enDias(8), hora: '8-9pm', cupo: 16, precio: 15 });
+const pagoPanel = db.registrarPago({ numero: PANEL, monto: 30, numero_operacion: 'OP-PANEL', estado: 'confirmado' });
+// Lo mismo que hace el panel cuando Clarck asigna un pago suelto a un partido.
+db.inscribir(pPanel, PANEL, { estado: 'pagado', pagoId: pagoPanel });
+db.inscribir(pPanel, null, { nombre: db.nombreInvitado(PANEL), estado: 'pagado', pagoId: pagoPanel });
+check('un invitado que anotó Clarck desde el panel, el bot lo ve pendiente de nombre', db.invitadosSinNombre(PANEL).length === 1);
+check('y cuando el jugador manda el nombre por WhatsApp, se escribe', db.nombrarInvitados(PANEL, ['Cruce Panel'])[0]?.nombre === 'Cruce Panel');
+check('queda en la misma lista que ve el panel', db.inscripcionesDe(pPanel).some((i) => i.nombre === 'Cruce Panel'));
+check('nadie arma el nombre del invitado a mano: hay un solo lugar', (() => {
+  const armados = ['index.js', 'src/db.js', 'src/panel.js', 'src/pagos.js', 'src/listas.js']
+    .flatMap((f) => fs.readFileSync(path.join(__dirname, f), 'utf8').split('\n')
+      .map((linea, n) => ({ f, n: n + 1, linea }))
+      // Solo código que CONSTRUYE el texto; los comentarios que lo mencionan
+      // para explicar el porqué no molestan a nadie.
+      .filter(({ linea }) => /['"`]Invitado de \+/.test(linea) && !/^\s*(\/\/|\*)/.test(linea)));
+  if (armados.length > 1) console.error(`    ↳ lo arman ${armados.length}: ${armados.map((a) => `${a.f}:${a.n}`).join(', ')} — todos tienen que usar db.nombreInvitado()`);
+  return armados.length === 1;
+})());
+
 console.log(fallos ? `\n❌ ${ok} OK, ${fallos} FALLOS` : `\n✅ ${ok} checks OK, 0 fallos`);
 process.exit(fallos ? 1 : 0);

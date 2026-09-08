@@ -2097,6 +2097,26 @@ function vencerReservas() {
 }
 
 /**
+ * El nombre con el que nace un cupo de acompañante, antes de que su amigo
+ * mande cómo se llama.
+ *
+ * Existe como función porque este texto NO es una etiqueta: es la ÚNICA junta
+ * entre "alguien pagó un cupo de invitado" y "ponerle nombre después".
+ * `nombrarInvitados` e `invitadosSinNombre` buscan por él, con un `=` exacto.
+ * Estaba escrito a mano en seis lugares de tres archivos (el bot al leer un
+ * Yape, el bot al enganchar un pago suelto, y dos caminos del panel), así que
+ * bastaba con que UNO derivara —un espacio, el `+`, un "Acompañante"— para que
+ * esos cupos se volvieran invisibles para quien los busca. Y el modo de falla
+ * no es un error: es el bot contestando "ya lo registré" sin registrar nada,
+ * que es exactamente lo que le pasó a Patrick el 2026-09-02.
+ *
+ * Un solo lugar donde se escribe y donde se lee: si cambia, cambia para todos.
+ */
+function nombreInvitado(numero) {
+  return `Invitado de +${numero}`;
+}
+
+/**
  * Le pone nombre a los cupos de invitado que este jugador YA pagó.
  *
  * Un cupo de acompañante nace como "Invitado de +51999…" porque el Yape llega
@@ -2118,7 +2138,7 @@ function nombrarInvitados(numero, nombres) {
   const libres = db.prepare(`
     SELECT * FROM inscripciones
     WHERE numero IS NULL AND nombre = ? AND estado != 'baja' ORDER BY id
-  `).all(`Invitado de +${numero}`).filter((i) => admiteInscripcion(getPartido(i.partido_id)));
+  `).all(nombreInvitado(numero)).filter((i) => admiteInscripcion(getPartido(i.partido_id)));
   const hechos = [];
   for (const inv of libres) {
     const nombre = limpios.shift();
@@ -2134,7 +2154,7 @@ function invitadosSinNombre(numero) {
   return db.prepare(`
     SELECT * FROM inscripciones
     WHERE numero IS NULL AND nombre = ? AND estado != 'baja' ORDER BY id
-  `).all(`Invitado de +${numero}`).filter((i) => admiteInscripcion(getPartido(i.partido_id)));
+  `).all(nombreInvitado(numero)).filter((i) => admiteInscripcion(getPartido(i.partido_id)));
 }
 
 function setAsistencia(id, valor) {
@@ -2268,7 +2288,7 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null, { pa
       ).all(partido.id, pagoId);
       if (yaAplicado.length) return { partido, inscripciones: yaAplicado, invitados: true };
       for (let i = 0; i < cupos; i++) {
-        const { inscripcion } = inscribir(partido.id, null, { nombre: `Invitado de +${numero}`, estado: 'pagado', pagoId });
+        const { inscripcion } = inscribir(partido.id, null, { nombre: nombreInvitado(numero), estado: 'pagado', pagoId });
         if (inscripcion) hechas.push(inscripcion);
       }
       return hechas.length ? { partido, inscripciones: hechas, invitados: true } : null;
@@ -2278,7 +2298,7 @@ function vincularPago(numero, pagoId, cupos = 1, zona = null, monto = null, { pa
     hechas.push(inscripcion);
   }
   for (let i = 1; i < cupos; i++) {
-    const { inscripcion } = inscribir(partido.id, null, { nombre: `Invitado de +${numero}`, estado: 'pagado', pagoId });
+    const { inscripcion } = inscribir(partido.id, null, { nombre: nombreInvitado(numero), estado: 'pagado', pagoId });
     if (inscripcion) hechas.push(inscripcion);
   }
   return { partido, inscripciones: hechas };
@@ -2895,7 +2915,7 @@ module.exports = {
   inscripcionActiva, inscribir, setEstadoInscripcion, darDeBaja, promoverSiguiente, vencerReservas, reservaMinutos, setAsistencia, vincularPago, candidatosDePago,
   pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita, candidatosConvocatoria,
   pagoSueltoDe, pagarInscripcion, confirmarPagoManual, getCorte, setCorte, despuesDelCorte,
-  nombrarInvitados, invitadosSinNombre,
+  nombrarInvitados, invitadosSinNombre, nombreInvitado,
   hoyLima: hoyLimaDb, fechaLima: fechaLimaDb, ahoraLima, ordenHora, horaInput, normalizarHora, parseHora, textoHora,
   getMarca, setMarca, handoffsDesde, handoffsActivos,
 };
