@@ -326,6 +326,56 @@ function registrarRespuestaManual(msg) {
   console.log(`[manual] Clarck respondió a mano a ${numero} — el bot se calla ${MANUAL_MS / 60000} min con él.`);
 }
 
+/**
+ * Aprende de lo que el contacto escribió, aunque el bot NO le vaya a contestar.
+ *
+ * Hasta el 2026-09-07 la extracción de datos (nombre, edad, distrito, zona)
+ * vivía después de `brain.pensar`, y tres caminos se le adelantaban con un
+ * `return`: el derivado a Clarck, el que pasó el tope del día, y el que se
+ * resolvió con un atajo. En esos casos el mensaje se guardaba y nadie lo leía.
+ *
+ * Lo caro no era perder un dato: era el ciclo cerrado que armaba. Alguien sin
+ * zona manda un Yape → `pagos.js` no puede validar el monto porque sin zona no
+ * hay precio → lo deriva a Clarck → derivado, el bot ya nunca más le habla →
+ * nunca le pregunta el distrito → sigue sin zona, y su próximo Yape vuelve a
+ * caer en "revisar". Al 2026-09-07 había 93 personas ahí adentro, con 152
+ * pagos y S/2,222 encima; y los derivados promedian 48.9 mensajes contra 7.6
+ * de los demás — o sea que el que más juega es el peor registrado.
+ *
+ * Se aprende en silencio: la respuesta que devuelve el cerebro se DESCARTA. El
+ * handoff sigue significando "el bot no le habla"; lo que cambia es que deja de
+ * significar además "el bot no escucha".
+ *
+ * El freno de costo es la ficha misma: si ya sabemos nombre, edad, distrito y
+ * zona no hay nada que aprender y no se gasta una llamada. Se apaga sola a
+ * medida que las fichas se completan, que es justo lo que hace falta para
+ * abrir la marcha blanca sin que el gasto crezca con el volumen.
+ */
+async function aprenderSinResponder(numero, lead, body, motivo) {
+  if (lead.nombre && lead.edad && lead.distrito && lead.zona) return;
+  if (!brain.cerebroActivo()) return;
+  try {
+    const decision = await brain.pensar(lead, db.getHistory(numero), body);
+    if (!decision) return;
+    // `updateLead` nunca pisa un dato existente con null, así que esto solo
+    // puede sumar. La respuesta del cerebro no se usa: acá no se contesta.
+    db.updateLead(numero, {
+      nombre: decision.nombre,
+      edad: decision.edad,
+      distrito: decision.distrito,
+      zona: decision.zona,
+    });
+    const ahora = db.getLead(numero);
+    if (ahora && (ahora.zona !== lead.zona || ahora.distrito !== lead.distrito || ahora.nombre !== lead.nombre)) {
+      console.log(`[aprende] ${numero} (${motivo}): ${ahora.nombre || '?'} · ${ahora.distrito || '?'} → zona ${ahora.zona || '?'}`);
+    }
+  } catch (e) {
+    // Aprender es de yapa: si la IA falla, el mensaje ya quedó guardado y el
+    // camino que venía (derivar, avisar, callar) tiene que seguir igual.
+    console.error(`[aprende] No se pudo leer el mensaje de ${numero}:`, e?.message);
+  }
+}
+
 async function manejarMensaje(sock, msg) {
   const from = msg.key.remoteJid;
   if (!from || from.endsWith('@g.us') || from === 'status@broadcast') return; // grupos: Semana 5
@@ -395,6 +445,10 @@ async function manejarMensaje(sock, msg) {
       avisosHandoff.set(numero, Date.now());
       await notificarControl(sock, `✋ ${lead.nombre || 'Contacto'} (wa.me/${numero}) está derivado a Clarck y sigue escribiendo: "${body.slice(0, 120)}"\nPara que el bot lo retome: kipi reactivar ${numero}`);
     }
+    // Derivado no es sordo: se le sigue completando la ficha aunque no se le
+    // conteste. Es el caso que más duele — el derivado por "falta el precio de
+    // su zona" solo sale de ahí el día que sepamos su zona.
+    await aprenderSinResponder(numero, lead, body, 'derivado a Clarck');
     return;
   }
 
@@ -418,6 +472,11 @@ async function manejarMensaje(sock, msg) {
       `🚦 Se llenó el cupo de ${topeNuevos} conversaciones nuevas de hoy.\n${lead.nombre || `+${numero}`} escribió y el bot NO le contestó: "${body.slice(0, 120)}"\nAtiéndelo tú · wa.me/${numero}`,
       'Tope de nuevos alcanzado'
     );
+    // El tope limita a cuánta gente le CONTESTA el bot, no cuánta conoce. Sin
+    // esto, el día que se abre la marcha blanca cada persona por encima del
+    // cupo entraba al CRM como una ficha vacía y encima derivada, que es la
+    // combinación de la que ya no se sale sola.
+    await aprenderSinResponder(numero, lead, body, 'pasó el tope del día');
     return;
   }
 
@@ -493,6 +552,10 @@ async function manejarMensaje(sock, msg) {
         db.saveMessage(numero, 'assistant', rapida.respuesta);
       } catch (e) { console.error(`[send] ERROR atajo → ${destino}:`, e?.message); }
     }
+    // El atajo contesta sin IA, pero el mensaje igual puede traer el dato: al
+    // "hola, soy de Comas, ¿cuánto sale?" le respondía la plantilla de precios
+    // y el "Comas" se perdía.
+    await aprenderSinResponder(numero, lead, body, `atajo ${rapida.atajo}`);
     return;
   }
 
