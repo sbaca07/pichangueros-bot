@@ -43,6 +43,56 @@ const PRESUPUESTO_MS = () => Number(process.env.OPENAI_PRESUPUESTO_MS || 60000);
 
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * LA COLA: de a pocos, no todos juntos.
+ *
+ * Medido el 2026-09-08 con 30 conversaciones REALES entrando a la vez y el
+ * cerebro de verdad: los TRES modelos devolvieron 429 al mismo tiempo y 10 de
+ * las 30 personas recibieron la disculpa. La cadena hizo su parte —20 se
+ * salvaron con el respaldo— pero cuando el pico es simultáneo no hay a dónde
+ * ir: la cuota del tier gratis de Gemini es POR MINUTO, y treinta llamadas en
+ * el mismo segundo la revientan.
+ *
+ * Más modelos no lo arreglan. Lo que lo arregla es no disparar todo junto: cada
+ * respuesta tarda 1-3 s, así que de a 4 las treinta entran igual en ~15 s y
+ * ninguna da 429. Al jugador le llega la respuesta unos segundos después; la
+ * alternativa era que a uno de cada tres no le llegara nada.
+ *
+ * Es un lunes 8am de Pichangueros, que es cuando sale la convocatoria y
+ * escriben todos a la vez.
+ * ───────────────────────────────────────────────────────────────────────── */
+const MAX_EN_VUELO = () => Math.max(1, Number(process.env.OPENAI_CONCURRENCIA || 4));
+// Techo de la espera en la cola. Si la fila es tan larga que no llegamos nunca,
+// vale más fallar y que salga la disculpa que dejar a alguien esperando dos
+// minutos por un mensaje de WhatsApp.
+const ESPERA_MAX_MS = () => Number(process.env.OPENAI_ESPERA_MAX_MS || 90000);
+
+let enVuelo = 0;
+const cola = [];
+
+function tomarTurno() {
+  if (enVuelo < MAX_EN_VUELO()) { enVuelo++; return Promise.resolve(0); }
+  return new Promise((resolve, reject) => {
+    const item = { t0: Date.now() };
+    item.resolve = () => resolve(Date.now() - item.t0);
+    item.reject = reject;
+    item.timer = setTimeout(() => {
+      const i = cola.indexOf(item);
+      if (i >= 0) cola.splice(i, 1);
+      reject(new Error(`esperó ${ESPERA_MAX_MS()} ms en la cola de la IA sin llegar a su turno`));
+    }, ESPERA_MAX_MS());
+    cola.push(item);
+  });
+}
+
+function soltarTurno() {
+  const siguiente = cola.shift();
+  // El turno se PASA, no se devuelve: si se hiciera enVuelo-- y el que sigue
+  // volviera a pedir, entrarían dos por el mismo lugar.
+  if (siguiente) { clearTimeout(siguiente.timer); siguiente.resolve(); }
+  else enVuelo = Math.max(0, enVuelo - 1);
+}
+
 function esGoogle() {
   return (process.env.OPENAI_BASE_URL || '').includes('googleapis');
 }
@@ -130,6 +180,18 @@ async function pedirA(modelo, params, timeoutMs) {
 async function llamar(params, { etiqueta = 'ia', extra = '' } = {}) {
   if (!process.env.OPENAI_API_KEY) throw new Error('No hay OPENAI_API_KEY');
 
+  // Se hace fila ANTES de mirar el reloj: lo que se mide es la llamada, y el
+  // presupuesto de la cadena no se puede gastar esperando turno.
+  const esperoEnCola = await tomarTurno();
+  if (esperoEnCola > 1500) console.log(`[${etiqueta}] esperó ${esperoEnCola} ms en la cola (${cola.length} atrás).`);
+  try {
+    return await recorrerCadena(params, etiqueta, extra);
+  } finally {
+    soltarTurno();
+  }
+}
+
+async function recorrerCadena(params, etiqueta, extra) {
   const todos = cadena();
   const sanos = todos.filter((m) => !enPenitencia(m));
   // Si están TODOS penados igual se intentan: la penitencia sirve para elegir
@@ -199,6 +261,11 @@ module.exports = {
   // lección de siempre — si se degrada en silencio, nadie se entera.
   estado: () => ({
     cadena: cadena(),
+    // Cuántas llamadas hay en el aire y cuántas esperando turno. Un número que
+    // crece y no baja es la señal de que la IA está lenta y la fila se acumula.
+    enVuelo,
+    enCola: cola.length,
+    concurrencia: MAX_EN_VUELO(),
     penados: [...penitencia.entries()]
       .filter(([, hasta]) => hasta > Date.now())
       .map(([modelo, hasta]) => ({ modelo, segundos: Math.round((hasta - Date.now()) / 1000) })),

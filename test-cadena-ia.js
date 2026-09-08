@@ -140,7 +140,49 @@ const conParams = { messages: [{ role: 'user', content: 'hola' }] };
   const tardo = Date.now() - t0;
   check(`no recorrió los tres colgados (tardó ${tardo} ms, probó ${llamados.length})`, llamados.length < 3 && tardo < 400);
 
-  console.log('== 9 · El estado se puede mirar desde afuera ==');
+  console.log('== 9 · De a pocos, no todos juntos ==');
+  // Medido el 8-sep con 30 conversaciones REALES entrando a la vez y el cerebro
+  // de verdad: los tres modelos dieron 429 al mismo tiempo y 10 de las 30
+  // personas recibieron la disculpa. La cuota del tier gratis es POR MINUTO, y
+  // treinta llamadas en el mismo segundo la revientan. Con la fila, las treinta
+  // entran igual y ninguna se pierde.
+  process.env.OPENAI_CONCURRENCIA = '4';
+  process.env.OPENAI_TIMEOUT_MS = '5000';
+  process.env.OPENAI_PRESUPUESTO_MS = '10000';
+  ia._olvidarPenitencia(); llamados.length = 0;
+  let simultaneas = 0, pico = 0;
+  ia.pedirA = async () => {
+    simultaneas++; pico = Math.max(pico, simultaneas);
+    await new Promise((r) => setTimeout(r, 80));
+    simultaneas--;
+    return respuestaOk('{"reply":"ok"}');
+  };
+  const t9 = Date.now();
+  const treinta = await Promise.all(Array.from({ length: 30 }, () => ia.llamar(conParams, { etiqueta: 'test' })));
+  check('las 30 llegaron a contestarse', treinta.every((r) => r.json.reply === 'ok'));
+  check(`nunca hubo más de 4 llamadas a la vez (pico: ${pico})`, pico <= 4);
+  check(`y no tardó una eternidad (${Date.now() - t9} ms)`, Date.now() - t9 < 4000);
+  const estadoTrasCola = ia.estado();
+  check('la fila quedó vacía al terminar', estadoTrasCola.enVuelo === 0 && estadoTrasCola.enCola === 0,
+    `enVuelo=${estadoTrasCola.enVuelo} enCola=${estadoTrasCola.enCola}`);
+
+  console.log('== 10 · Un error tampoco deja el lugar tomado ==');
+  // Si el turno no se devolviera al fallar, cuatro errores dejarían la cola
+  // trabada para siempre y el bot mudo sin que nadie sepa por qué.
+  ia.pedirA = async () => { throw errorCon(500); };
+  ia._olvidarPenitencia();
+  await Promise.all(Array.from({ length: 6 }, () => ia.llamar(conParams, { etiqueta: 'test' }).catch(() => null)));
+  const trasFallar = ia.estado();
+  check('tras 6 fallas la fila sigue libre', trasFallar.enVuelo === 0 && trasFallar.enCola === 0,
+    `enVuelo=${trasFallar.enVuelo} enCola=${trasFallar.enCola}`);
+  ia.pedirA = async (modelo, params, timeoutMs) => {
+    llamados.push({ modelo, timeoutMs });
+    const g = guion[modelo];
+    if (typeof g === 'function') return g();
+    throw errorCon(500);
+  };
+
+  console.log('== 11 · El estado se puede mirar desde afuera ==');
   const estado = ia.estado();
   check('GET / muestra la cadena', Array.isArray(estado.cadena) && estado.cadena.length >= 2);
   check('GET / muestra quién está penado', Array.isArray(estado.penados) && estado.penados.length > 0);
