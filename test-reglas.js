@@ -97,7 +97,24 @@ check('el sticker se entiende y no se contesta', r(SIN_NADA, '', 'sticker')?.res
 // La FOTO no: puede ser un Yape, y eso necesita ojos.
 check('la foto NO la agarra esta capa', r(SIN_NADA, '', 'imagen') === null);
 
-console.log('\n== 6 · Ante la duda, la IA ==');
+console.log('\n== 6 · Las ráfagas ==');
+// La gente escribe de a pedacitos y index.js los junta con \n. Medido con 100
+// pichangueros reales: las 100 llegaron agrupadas y esta capa, que cortaba por
+// largo TOTAL, no disparó ni una vez — todo se fue a la IA.
+check('tres acuses seguidos siguen siendo un acuse',
+  /yape/i.test(r(RESERVADO, 'listo\ngracias\nok amigo')?.respuesta || ''));
+check('saludo + acuse manda el saludo (te llama por tu nombre)',
+  /marco/i.test(r(RESERVADO, 'hola\ngracias')?.respuesta || ''));
+check('un "ahí te yapeo" adentro de la ráfaga pesa más',
+  /captura/i.test(r(RESERVADO, 'hola amigo\nya\nahi te yapeo')?.respuesta || ''));
+// Lo importante: si UNA línea trae contenido, va toda a la IA. Contestar el
+// "gracias" e ignorar la pregunta es peor que no contestar.
+check('si una línea trae una pregunta, va entera a la IA',
+  r(RESERVADO, 'gracias\ny a que hora tengo que llegar') === null);
+check('y si trae un pedido tampoco la agarra',
+  r(RESERVADO, 'hola\nanotame tambien a mi primo') === null);
+
+console.log('\n== 7 · Ante la duda, la IA ==');
 // Cada uno de estos parece cercano a una regla y NO lo es. Si alguno disparara,
 // el jugador recibiría una respuesta que no tiene nada que ver con lo que pidió.
 const alaIA = [

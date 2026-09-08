@@ -78,6 +78,20 @@ const SALUDO = /^(hola+|holaa+|buenas+|buenos dias|buenas tardes|buenas noches|b
 const AVISA_QUE_PAGO = /^(ya |ahi |ahora |en un toque |ya te |ahi te |ahora te )?(te )?(yapeo|yapee|yapie|yapeare|mando el yape|paso el yape|transfiero|deposito)( (amigo|profe|bro|hermano|en un momento|en unos minutos|ahorita|ya|pues|manito))*$/;
 
 /**
+ * En qué cajón cae UNA línea. null = tiene contenido, esto es de la IA.
+ *
+ * El corte por largo va acá, sobre la línea suelta, no sobre la ráfaga entera:
+ * tres "ok" seguidos suman más de 45 caracteres y seguían siendo tres "ok".
+ */
+function intentDe(t) {
+  if (!t || t.length > 45) return null;
+  if (AVISA_QUE_PAGO.test(t)) return 'yapeo';
+  if (SALUDO.test(t)) return 'saludo';
+  if (ACUSE.test(t)) return 'acuse';
+  return null;
+}
+
+/**
  * ¿Se puede contestar esto sin IA?
  *
  * @param {object} lead      la ficha del contacto
@@ -101,13 +115,29 @@ function responder(lead, texto, adjunto) {
   // pasar. Clarck tampoco los contesta la mitad de las veces.
   if (adjunto === 'sticker') return { respuesta: null, regla: 'sticker' };
 
-  const t = limpiar(texto);
-  if (!t || t.length > 45) return null;   // largo = contexto = IA
+  // LAS RÁFAGAS. Cuando alguien escribe "hola" + "gracias" en el mismo minuto,
+  // index.js las junta con \n y responde una sola vez. Medido con 100
+  // pichangueros reales: las 100 llegaron agrupadas, y como esta capa cortaba
+  // por largo total, no disparó NI UNA vez — todo se fue a la IA.
+  //
+  // Se mira línea por línea y se exige que TODAS sean acuse o saludo. Si una
+  // sola trae contenido ("gracias, ¿a qué hora llego?"), va a la IA entera:
+  // contestar el "gracias" e ignorar la pregunta es peor que no contestar.
+  const lineas = String(texto || '').split('\n').map(limpiar).filter(Boolean);
+  if (!lineas.length) return null;
+  const intents = lineas.map(intentDe);
+  if (intents.some((i) => i === null)) return null;
+
+  // Manda el más "fuerte": una promesa de pago pesa más que un saludo, y un
+  // saludo más que un "ok".
+  const intent = intents.includes('yapeo') ? 'yapeo'
+    : intents.includes('saludo') ? 'saludo'
+    : 'acuse';
 
   const yo = situacion(lead?.numero);
 
   // "gracias" / "ok" / "listo". El texto no dice nada; el estado sí.
-  if (ACUSE.test(t)) {
+  if (intent === 'acuse') {
     if (yo.que === 'reservado') {
       const precio = db.precioDePartido({ zona: yo.insc.zona, precio: yo.insc.precio_partido });
       return {
@@ -129,7 +159,7 @@ function responder(lead, texto, adjunto) {
   // Saludo pelado. Al que no conocemos le va la bienvenida de Config (eso ya lo
   // hace atajos.js); acá se atiende al CONOCIDO, que hasta ahora iba a la IA
   // para que dijera "hola" — 7.8% de los mensajes del mes.
-  if (SALUDO.test(t) && lead?.nombre) {
+  if (intent === 'saludo' && lead?.nombre) {
     const hola = `¡Hola ${primerNombre(lead.nombre)}!`;
     if (yo.que === 'reservado') {
       return { respuesta: `${hola} Te tengo el cupo del ${cuandoYDonde(yo.insc)} — mándame la foto del Yape y quedas confirmado 🙏`, regla: 'saludo/falta-pagar' };
@@ -145,7 +175,7 @@ function responder(lead, texto, adjunto) {
 
   // "ahí te yapeo". No es un pago: es una promesa. Lo único correcto es pedir
   // la captura — sin decir en ningún caso que ya quedó, porque no quedó.
-  if (AVISA_QUE_PAGO.test(t)) {
+  if (intent === 'yapeo') {
     if (yo.que === 'pagado') {
       return { respuesta: `Ojo que ya te tengo pagado el ${cuandoYDonde(yo.insc)} ⚽ Si es por otra fecha, dime cuál 🙌`, regla: 'yapeo/ya-pago' };
     }
