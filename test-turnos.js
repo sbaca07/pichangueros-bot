@@ -99,9 +99,22 @@ console.log('== 2 · La fase se calcula: nadie la guarda ==');
 console.log('== 3 · La gracia de 24 h: el Yape tardío tiene dónde caer ==');
 // ==============================================================================
 {
-  // El partido de anoche: terminó hace horas pero el Yape entra igual. Ese es
-  // el motivo por el que antes NO se podía cerrar ningún partido.
-  const anoche = db.crearPartido({ zona: 'brena', fecha: enDias(-1), hora: '23:30', sede: 'Melgar', cupo: 14, precio: 15 });
+  // Un partido que TERMINÓ HACE 3 HORAS: el Yape tardío entra igual. Ese es el
+  // motivo por el que antes NO se podía cerrar ningún partido.
+  //
+  // Se construye contra el reloj, no contra la fecha. Decía `enDias(-1)` a las
+  // 23:30, que suena a "anoche" y casi siempre lo era — pero corriendo la suite
+  // entre la medianoche y la 1:30 de Lima, ese partido todavía no había
+  // terminado y el test se caía solo. Con el hook de pre-push colgado de la
+  // suite, un test que falla según la hora es un push bloqueado de madrugada,
+  // que es justo cuando se trabaja acá. Cuatro horas atrás siempre terminó
+  // (queda 3 h de gracia consumida) y siempre está dentro de las 24 h.
+  const ahora = db.ahoraLima();
+  let minInicio = ahora.min - 4 * 60;
+  let fechaInicio = ahora.fecha;
+  if (minInicio < 0) { minInicio += 24 * 60; fechaInicio = db.sumarDias(ahora.fecha, -1); }
+  const hhmm = `${String(Math.floor(minInicio / 60)).padStart(2, '0')}:${String(minInicio % 60).padStart(2, '0')}`;
+  const anoche = db.crearPartido({ zona: 'brena', fecha: fechaInicio, hora: hhmm, sede: 'Melgar', cupo: 14, precio: 15 });
   db.getOrCreateLead('51900000701');
   const r = db.inscribir(anoche, '51900000701', { nombre: 'Yape Tardío' });
   check('el partido de anoche todavía deja anotar y cobrar', r.resultado === 'reservado', JSON.stringify(r));

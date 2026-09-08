@@ -1,0 +1,35 @@
+#!/bin/sh
+#
+# La suite completa antes de cada push. Si algo está en rojo, el push no sale.
+#
+# Push a `main` es deploy a producción (autoDeploy en render.yaml): entre
+# `git push` y "el bot está atendiendo con el código nuevo" no hay ningún paso
+# humano. El CLAUDE.md ya decía "antes de cualquier push, la suite en verde",
+# pero era una promesa; esto lo hace cierto.
+#
+# Se saltea con `git push --no-verify`, a propósito: hay urgencias. Lo que no
+# puede pasar es saltárselo sin querer.
+#
+# Se instala solo si el repo apunta acá:
+#   git config core.hooksPath .githooks
+# Va versionado (.git/hooks no se clona) para que valga en cualquier máquina.
+
+# La suite corre sobre los archivos como están AHORA en el disco, que no siempre
+# es lo que se está pusheando: si quedaron cambios sin commitear, se está
+# probando una cosa y subiendo otra. No se bloquea por eso —es normal pushear
+# con el árbol sucio— pero se avisa, porque el verde puede ser de otro código.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "⚠ Hay cambios sin commitear: la suite prueba lo que hay en disco, no exactamente lo que se sube."
+fi
+
+echo "→ Corriendo la suite antes de pushear (git push --no-verify la saltea)…"
+
+if ! npm test; then
+  echo ""
+  echo "✗ PUSH CANCELADO: la suite está en rojo."
+  echo "  Push a main es deploy a producción, y este sistema maneja plata ajena."
+  exit 1
+fi
+
+echo "→ Todo en verde. Pusheando."
+exit 0

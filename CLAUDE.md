@@ -106,14 +106,26 @@ está por repetir el incidente.
 
 ## Tests
 
-18 archivos `test-*.js`, ~1,055 checks. Se corren sin red y con BD temporal.
+24 archivos `test-*.js`, ~1,244 checks. Se corren sin red y con BD temporal.
 
 ```bash
-for f in test-*.js; do node "$f"; done
+npm test              # los 24, ~2 min
+npm test -- casuis    # solo los que coincidan con ese texto
 ```
 
 **Antes de cualquier push**: la suite completa en verde. No hay excepción — un
 test rojo es un rollback esperando ocurrir, y este sistema maneja plata ajena.
+
+Eso dejó de ser una promesa: el hook `.githooks/pre-push` corre la suite y
+cancela el push si algo está rojo. Va versionado porque `.git/hooks` no se
+clona, así que en una máquina nueva hay que apuntarlo una vez:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Se saltea con `git push --no-verify` — hay urgencias. Lo que no puede pasar es
+saltárselo sin querer.
 
 Los tests describen el comportamiento **en castellano y desde el negocio**
 ("el cupo se acaba de llenar, se va a espera"), no desde la implementación.
