@@ -135,9 +135,17 @@ const srv = app.listen(0, async () => {
     check('la vista de derivados ofrece reactivar en lote', /Reactivar los \d+/.test(vista), vista.slice(0, 0));
     check('…y avisa cuáles se quedan afuera', vista.includes('Con Reclamo'));
 
+    check('ofrece además empezar de cero, en un botón aparte', vista.includes('Empezar de cero'));
+
     await POST('/admin/leads/reactivar-lote', { key: 'ux' });
     check('el que estaba por falta de zona vuelve al bot', db.getLead(RESUELTO)?.handoff === 0);
     check('el del reclamo NO se toca: eso lo sigue Clarck', db.getLead(RECLAMO)?.handoff === 1);
+
+    // "Empezar de cero" sí lo incluye. No es tan temerario como suena: el guion
+    // del bot deriva quejas, devoluciones y efectivo de forma obligatoria, así
+    // que al primer mensaje sobre el reclamo vuelve a Clarck solo.
+    await POST('/admin/leads/reactivar-lote', { key: 'ux', todos: '1' });
+    check('“empezar de cero” sí reactiva también el caso abierto', db.getLead(RECLAMO)?.handoff === 0);
     // Sin la nota, mañana nadie sabe por qué el bot volvió a hablarle a 290
     // personas de golpe.
     const notas = db.getNotas(RESUELTO);

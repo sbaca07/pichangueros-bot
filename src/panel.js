@@ -299,8 +299,17 @@ function registrarPanel(app, db, conexion = null) {
   app.post('/admin/leads/reactivar-lote', (req, res) => {
     if (!autorizado(req, res)) return;
     const { reactivables, vivos } = db.handoffPorReactivar();
-    const n = db.reactivarEnLote(reactivables.map((l) => l.numero));
-    const detalle = vivos.length ? ` Quedan ${vivos.length} esperándote a ti (reclamos, devoluciones, efectivo).` : '';
+    // `todos=1` incluye también las conversaciones vivas. Es para empezar de
+    // cero, y no es tan temerario como suena: el guion del bot deriva las
+    // quejas, las devoluciones y los pagos en efectivo de forma OBLIGATORIA,
+    // así que al primer mensaje sobre el reclamo vuelven a Clarck solos. Va en
+    // un botón aparte para que no se apriete sin querer.
+    const conVivos = String(req.body.todos || '') === '1';
+    const aReactivar = conVivos ? [...reactivables, ...vivos] : reactivables;
+    const n = db.reactivarEnLote(aReactivar.map((l) => l.numero));
+    const detalle = conVivos
+      ? ' Se incluyeron los casos abiertos: si vuelven a escribir sobre su reclamo, el bot los deriva a ti otra vez.'
+      : (vivos.length ? ` Quedan ${vivos.length} esperándote a ti (reclamos, devoluciones, efectivo).` : '');
     volver(res, {
       key: req.query.key || req.body.key || '',
       vista: 'crm',
@@ -2925,6 +2934,12 @@ function paginaCRM(db, key, query) {
             <input type="hidden" name="key" value="${key}">
             <button type="submit">Reactivar los ${reactivables.length} →</button>
           </form>` : '<p style="margin:.4rem 0"><i>No hay nadie para reactivar en lote.</i></p>'}
+          ${vivos.length ? `<form method="post" action="/admin/leads/reactivar-lote" style="margin-top:.5rem"
+              onsubmit="return confirm('Incluye los ${vivos.length} casos abiertos (reclamos, devoluciones, efectivo). El bot les vuelve a hablar. ¿Seguro?')">
+            <input type="hidden" name="key" value="${key}"><input type="hidden" name="todos" value="1">
+            <button type="submit" style="background:none;border:1px solid #c77;color:inherit">Empezar de cero: reactivar los ${reactivables.length + vivos.length}, casos abiertos incluidos</button>
+            <div style="font-size:.85em;opacity:.75;margin-top:.3rem">Si alguno vuelve a escribir sobre su reclamo, el bot lo deriva a ti otra vez — eso ya está en su guion.</div>
+          </form>` : ''}
         </div>`;
       })() : ''}
 
