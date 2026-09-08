@@ -9,16 +9,15 @@
  * Si no hay OPENAI_API_KEY el cerebro queda apagado y el bot se comporta
  * como en la Semana 1 (solo registra, no responde).
  */
-const OpenAI = require('openai');
 const db = require('./db');
 const backup = require('./backup');
+const ia = require('./ia');
 
-const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-// En Gemini cada modelo tiene su PROPIA cuota: cuando el principal da 429
-// (límite por minuto del tier gratis), el respaldo es un segundo tanque lleno.
+// Qué modelo se usa y qué pasa cuando falla ya no se decide acá: la cadena
+// entera (principal, respaldos, timeout, penitencia) vive en src/ia.js. Estaba
+// copiada en este archivo y dos veces en pagos.js, y arreglarla en uno solo
+// dejaba los otros dos rotos — el 2026-09-08 se pagó ese copiar y pegar.
 const ES_GOOGLE = (process.env.OPENAI_BASE_URL || '').includes('googleapis');
-const MODEL_RESPALDO = process.env.OPENAI_MODEL_FALLBACK || (ES_GOOGLE ? 'gemini-3.1-flash-lite' : null);
-const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // El cerebro puede caerse (créditos de OpenAI agotados, cuota, caída) y el bot
 // sigue "vivo" pidiendo disculpas — nadie se entera, como el 2026-08-11 que
@@ -37,16 +36,11 @@ function registrarFalloCerebro(e) {
   }
 }
 
-let client = null;
-function getClient() {
-  if (!process.env.OPENAI_API_KEY) return null;
-  // OPENAI_BASE_URL permite apuntar a cualquier API compatible con el SDK de
-  // OpenAI — p. ej. el tier GRATIS de Gemini:
-  //   OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
-  //   OPENAI_MODEL=gemini-2.5-flash  ·  OPENAI_API_KEY=<key de aistudio.google.com>
-  if (!client) client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
-  return client;
-}
+// OPENAI_BASE_URL permite apuntar a cualquier API compatible con el SDK de
+// OpenAI — p. ej. el tier GRATIS de Gemini:
+//   OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+//   OPENAI_MODEL=gemini-3.1-flash-lite  ·  OPENAI_API_KEY=<key de aistudio.google.com>
+//   OPENAI_MODEL_FALLBACK=modelo-b,modelo-c   ← varios, separados por coma
 
 // El schema se arma por llamada: el enum de zonas sigue a las sedes de la BD
 // (crear una sede en Rímac habilita zona 'rimac' acá también, sin tocar código).
@@ -254,8 +248,7 @@ Datos ya registrados de este contacto: nombre=${lead.nombre || '—'}, edad=${le
  *          null si el cerebro está apagado (sin API key) o la llamada falló.
  */
 async function pensar(lead, historial, textoUsuario) {
-  const openai = getClient();
-  if (!openai) return null;
+  if (!process.env.OPENAI_API_KEY) return null;
 
   const messages = [
     { role: 'system', content: buildSystemPrompt(lead) },
@@ -286,29 +279,14 @@ async function pensar(lead, historial, textoUsuario) {
   // Cuánto tarda el cerebro es LA pregunta recurrente de Clarck ("se demora"),
   // y hasta el 15/08 la respondíamos a ojo porque no se medía en ninguna parte.
   const t0 = Date.now();
-  let modeloUsado = MODEL;
   try {
-    let completion;
-    try {
-      completion = await openai.chat.completions.create({ model: MODEL, ...params });
-    } catch (e) {
-      // 429 (cuota del minuto) o 503 (sobrecarga puntual): un respiro y el
-      // modelo de respaldo — el jugador ni se entera.
-      if (![429, 503].includes(e.status) || !MODEL_RESPALDO) throw e;
-      console.warn(`[brain] ${e.status} con ${MODEL} — reintento con ${MODEL_RESPALDO}.`);
-      await espera(1500);
-      modeloUsado = MODEL_RESPALDO;
-      completion = await openai.chat.completions.create({ model: MODEL_RESPALDO, ...params });
-    }
-    const ms = Date.now() - t0;
-    const tokens = completion.usage?.total_tokens;
-    const linea = `[brain] ${ms} ms · ${modeloUsado}${tokens ? ` · ${tokens} tokens` : ''} · ${messages.length} mensajes de contexto`;
-    if (ms > 15000) console.warn(`${linea} ← LENTO`);
-    else console.log(linea);
+    // La cadena de modelos vive en src/ia.js: recorre todos los respaldos, con
+    // timeout, hasta que uno conteste. Acá solo importa si hubo respuesta.
+    const { json } = await ia.llamar(params, { etiqueta: 'brain', extra: `${messages.length} mensajes de contexto` });
     fallosSeguidos = 0;
-    return JSON.parse(completion.choices[0].message.content);
+    return json;
   } catch (e) {
-    console.error(`[brain] Error llamando a OpenAI tras ${Date.now() - t0} ms:`, e.message);
+    console.error(`[brain] Ningún modelo contestó tras ${Date.now() - t0} ms:`, e.message);
     registrarFalloCerebro(e);
     return null;
   }

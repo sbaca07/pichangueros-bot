@@ -48,6 +48,7 @@ const {
 
 const db = require('./src/db');
 const brain = require('./src/brain');
+const ia = require('./src/ia');
 const atajos = require('./src/atajos');
 const pagos = require('./src/pagos');
 const sheet = require('./src/sheetsync');
@@ -995,6 +996,11 @@ app.get('/', (_req, res) => {
     // 0 = sano. >0 = la IA está fallando (créditos/cuota/caída) y el bot solo
     // pide disculpas — visible acá para no repetir la ceguera del mes mudo.
     brainFallosSeguidos: typeof brain.estadoCerebro === 'function' ? brain.estadoCerebro().fallosSeguidos : undefined,
+    // La cadena de modelos y cuáles están en penitencia ahora mismo. El 8-sep
+    // el respaldo configurado se colgaba y desde afuera se veía igual que una
+    // caída total: sin esto no hay forma de distinguir "la IA está caída" de
+    // "el respaldo que elegimos no existe".
+    ia: ia.estado(),
     leads: db.stats(),
   });
 });

@@ -14,22 +14,13 @@
  * automáticas) — el pago se registra contra el CONTACTO, no contra una
  * convocatoria puntual.
  */
-const OpenAI = require('openai');
 const db = require('./db');
+const ia = require('./ia');
 
-const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-// Mismo respaldo anti-429 que brain.js: en Gemini cada modelo tiene su cuota.
+// La cadena de modelos (principal, respaldos, timeout, penitencia) vive en
+// src/ia.js — la misma que usa el cerebro. Leer un voucher es lo que MÁS duele
+// que se caiga: es plata que no entra a la tabla.
 const ES_GOOGLE = (process.env.OPENAI_BASE_URL || '').includes('googleapis');
-const MODEL_RESPALDO = process.env.OPENAI_MODEL_FALLBACK || (ES_GOOGLE ? 'gemini-3.1-flash-lite' : null);
-const espera = (ms) => new Promise((r) => setTimeout(r, ms));
-
-let client = null;
-function getClient() {
-  if (!process.env.OPENAI_API_KEY) return null;
-  // Mismo soporte multi-proveedor que brain.js (OPENAI_BASE_URL → Gemini, etc.).
-  if (!client) client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
-  return client;
-}
 
 const RESPONSE_SCHEMA = {
   name: 'lectura_comprobante_pago',
@@ -79,8 +70,7 @@ function mimeDeImagen(buf) {
 
 /** @returns {Promise<null|object>} null si el cerebro está apagado o la llamada falló. */
 async function leerVoucher(imageBuffer) {
-  const openai = getClient();
-  if (!openai) return null;
+  if (!process.env.OPENAI_API_KEY) return null;
   const params = {
     messages: [
       { role: 'system', content: 'Lees comprobantes de pago móvil peruanos. Cuenta como comprobante el de CUALQUIER app o banco — Yape, Plin, BCP, Interbank, BBVA, Scotiabank, Banco de la Nación — no solo Yape: para el negocio valen todos igual. Extrae los datos exactos, sin inventar nada. Sé GENEROSO al reconocer: una captura de pantalla de la app con un monto y un destinatario ES un comprobante, aunque esté recortada, con brillo raro o le falte algún dato. Solo marca es_comprobante_pago=false si claramente NO es un pago (una foto de una cancha, un meme, una persona).' },
@@ -99,18 +89,10 @@ async function leerVoucher(imageBuffer) {
     ...(ES_GOOGLE ? { reasoning_effort: 'low' } : {}),
   };
   try {
-    let completion;
-    try {
-      completion = await openai.chat.completions.create({ model: MODEL, ...params });
-    } catch (e) {
-      if (![429, 503].includes(e.status) || !MODEL_RESPALDO) throw e;
-      console.warn(`[pagos] ${e.status} con ${MODEL} — reintento con ${MODEL_RESPALDO}.`);
-      await espera(1500);
-      completion = await openai.chat.completions.create({ model: MODEL_RESPALDO, ...params });
-    }
-    return JSON.parse(completion.choices[0].message.content);
+    const { json } = await ia.llamar(params, { etiqueta: 'pagos', extra: 'voucher' });
+    return json;
   } catch (e) {
-    console.error('[pagos] Error leyendo voucher:', e.message);
+    console.error('[pagos] Ningún modelo pudo leer el voucher:', e.message);
     return null;
   }
 }
@@ -159,8 +141,7 @@ const SCHEMA_INTENCION = {
  * @returns {Promise<null | {partido_id, cupos, confianza, motivo, partido_no_cargado}>}
  */
 async function interpretarPago(historial, partidos, monto) {
-  const openai = getClient();
-  if (!openai || !Array.isArray(partidos) || !historial?.length) return null;
+  if (!process.env.OPENAI_API_KEY || !Array.isArray(partidos) || !historial?.length) return null;
   const lista = partidos.length
     // El precio se muestra con la MISMA regla que usa el emparejador
     // (db.precioDePartido: el suyo o el de su zona). Antes acá salía "S/ ?"
@@ -201,15 +182,7 @@ Reglas:
   };
   const t0 = Date.now();
   try {
-    let completion;
-    try {
-      completion = await openai.chat.completions.create({ model: MODEL, ...params });
-    } catch (e) {
-      if (![429, 503].includes(e.status) || !MODEL_RESPALDO) throw e;
-      await espera(1500);
-      completion = await openai.chat.completions.create({ model: MODEL_RESPALDO, ...params });
-    }
-    const r = JSON.parse(completion.choices[0].message.content);
+    const { json: r } = await ia.llamar(params, { etiqueta: 'pagos', extra: 'intención' });
     console.log(`[pagos] intención en ${Date.now() - t0} ms: partido=${r.partido_id ?? '-'} cupos=${r.cupos ?? '-'} confianza=${r.confianza}${r.partido_no_cargado ? ' · PARTIDO NO CARGADO' : ''} — ${r.motivo}`);
     return r;
   } catch (e) {
