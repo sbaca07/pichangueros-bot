@@ -288,6 +288,26 @@ function registrarPanel(app, db, conexion = null) {
     volverAFicha(req, res, `El bot vuelve a atender a ${quien}.`);
   });
 
+  /**
+   * Reactivar en lote a los que ya no necesitan a Clarck.
+   *
+   * No recibe la lista desde el navegador a propósito: si el formulario
+   * mandara los números, un formulario viejo (una pestaña abierta desde ayer)
+   * podría reactivar a alguien que entretanto SÍ abrió un reclamo. Se vuelve a
+   * calcular acá, contra la base de este momento.
+   */
+  app.post('/admin/leads/reactivar-lote', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const { reactivables, vivos } = db.handoffPorReactivar();
+    const n = db.reactivarEnLote(reactivables.map((l) => l.numero));
+    const detalle = vivos.length ? ` Quedan ${vivos.length} esperándote a ti (reclamos, devoluciones, efectivo).` : '';
+    volver(res, {
+      key: req.query.key || req.body.key || '',
+      vista: 'crm',
+      aviso: `El bot vuelve a atender a ${n} contactos.${detalle}`,
+    });
+  });
+
   app.post('/admin/lead/etiquetas', (req, res) => {
     if (!autorizado(req, res)) return;
     const limpio = (req.body.etiquetas || '').split(',').map((t) => t.trim()).filter(Boolean).slice(0, 10).join(',');
@@ -2880,6 +2900,33 @@ function paginaCRM(db, key, query) {
            entrar. El orden es el de urgencia, no el alfabético — lo primero es
            gente esperando respuesta, lo último la foto de la base. */ ''}
       <div class="vistas">${vistasRapidas}</div>
+
+      ${/* SACAR A LA GENTE DEL HANDOFF, DE A MUCHOS.
+           Del handoff solo se salía de a uno, y con 297 adentro eso quiere
+           decir que no sale nadie: la cola solo crece. 141 de esas personas
+           están ahí porque faltaba cargar el precio de su zona o porque un
+           monto no calzaba — motivos que ya no existen — y mientras tanto le
+           escriben al bot y no les contesta nadie.
+           Lo que NO entra en el lote es la conversación viva con plata o enojo
+           adentro (reclamo, devolución, lesión, efectivo): ahí el bot con
+           emojis es justo lo que no puede pasar. El botón lo aprieta Clarck:
+           reactivar es afirmar "el bot vuelve a hablarle a esta gente". */ ''}
+      ${filtro === 'handoff' ? (() => {
+        const { reactivables, vivos } = db.handoffPorReactivar();
+        if (!reactivables.length && !vivos.length) return '';
+        const ejemplos = vivos.slice(0, 4).map((l) => `<li>${esc(l.nombre || `+${l.numero}`)} — ${esc((l.handoff_motivo || 'sin motivo').slice(0, 70))}</li>`).join('');
+        return `<div class="aviso" style="border-left:4px solid #c77;padding:.7rem .9rem;margin:.6rem 0">
+          <b>🔁 Sacar del "esperando a Clarck" a los que ya no lo necesitan</b>
+          <p style="margin:.4rem 0">Hay <b>${reactivables.length}</b> contactos derivados por un motivo que ya se resolvió
+          (les faltaba la zona, o un monto no calzaba). Al bot no le habla ninguno, y siguen escribiendo.</p>
+          ${vivos.length ? `<p style="margin:.4rem 0">Se quedan afuera <b>${vivos.length}</b> con una conversación abierta de verdad — esos los sigues tú:</p>
+          <ul style="margin:.2rem 0 .6rem 1.1rem;font-size:.9em">${ejemplos}${vivos.length > 4 ? `<li>…y ${vivos.length - 4} más</li>` : ''}</ul>` : ''}
+          ${reactivables.length ? `<form method="post" action="/admin/leads/reactivar-lote" onsubmit="return confirm('El bot vuelve a atender a ${reactivables.length} contactos. ¿Seguro?')">
+            <input type="hidden" name="key" value="${key}">
+            <button type="submit">Reactivar los ${reactivables.length} →</button>
+          </form>` : '<p style="margin:.4rem 0"><i>No hay nadie para reactivar en lote.</i></p>'}
+        </div>`;
+      })() : ''}
 
       ${/* UNA barra con todo. El botón Filtrar va SIEMPRE visible: el
            onchange de cada select es mejora progresiva, y sin JS este botón

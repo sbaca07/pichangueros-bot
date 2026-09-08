@@ -116,6 +116,34 @@ const srv = app.listen(0, async () => {
   check('…y NO a los silenciados por diseño', !crmResp.includes(L.nuevo));
   const crmHandoff = (await GET('/admin/leads?key=ux&vista=crm&filtro=handoff')).html;
   check('chip "Clarck" → muestra al derivado', crmHandoff.includes('Queja de prueba'));
+
+  {
+    // SACAR DEL HANDOFF DE A MUCHOS. Del handoff solo se salía de a uno, y con
+    // 297 personas adentro eso significa que no sale nadie: la cola solo crece.
+    // 141 estaban ahí por un motivo ya resuelto (les faltaba la zona, o un
+    // monto no calzaba) y mientras tanto le escribían al bot sin que nadie
+    // contestara. Lo que NO entra en el lote es la conversación viva con plata
+    // o enojo adentro: ahí el bot con emojis es lo que no puede pasar.
+    const RESUELTO = '51955550001';
+    const RECLAMO = '51955550002';
+    db.getOrCreateLead(RESUELTO); db.updateLead(RESUELTO, { nombre: 'Zona Resuelta' });
+    db.setHandoff(RESUELTO, 'Falta cargar el precio de la zona del contacto — el pago de S/15 no se pudo validar');
+    db.getOrCreateLead(RECLAMO); db.updateLead(RECLAMO, { nombre: 'Con Reclamo' });
+    db.setHandoff(RECLAMO, 'Reclamo por reserva no confirmada y posible devolución');
+
+    const vista = (await GET('/admin/leads?key=ux&vista=crm&filtro=handoff')).html;
+    check('la vista de derivados ofrece reactivar en lote', /Reactivar los \d+/.test(vista), vista.slice(0, 0));
+    check('…y avisa cuáles se quedan afuera', vista.includes('Con Reclamo'));
+
+    await POST('/admin/leads/reactivar-lote', { key: 'ux' });
+    check('el que estaba por falta de zona vuelve al bot', db.getLead(RESUELTO)?.handoff === 0);
+    check('el del reclamo NO se toca: eso lo sigue Clarck', db.getLead(RECLAMO)?.handoff === 1);
+    // Sin la nota, mañana nadie sabe por qué el bot volvió a hablarle a 290
+    // personas de golpe.
+    const notas = db.getNotas(RESUELTO);
+    check('queda anotado por qué se lo reactivó',
+      Array.isArray(notas) && notas.some((n) => /Reactivado en lote/.test(n.texto || '')));
+  }
   const crmZona = (await GET('/admin/leads?key=ux&vista=crm&zona=brena')).html;
   check('fila de zona → CRM filtrado por Breña', crmZona.includes('María Prueba') && !crmZona.includes('Pablo Pagador'));
   const crmCombo = (await GET('/admin/leads?key=ux&vista=crm&zona=brena&filtro=responder')).html;

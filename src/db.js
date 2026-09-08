@@ -1993,6 +1993,64 @@ function inscripcionActiva(partidoId, numero) {
   ).get(partidoId, numero) || null;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * SALIR DEL HANDOFF EN LOTE.
+ *
+ * Del handoff solo se salía a mano y de a uno (`kipi reactivar`, o el botón de
+ * la ficha). Con 297 personas adentro, eso significa que nadie sale nunca: la
+ * cola solo crece. Y de esas 297, **141 están ahí porque faltaba cargar el
+ * precio de su zona o porque un monto no calzaba** — motivos que hoy ya no
+ * existen. Esas personas le escriben al bot y no les contesta nadie.
+ *
+ * Son, además, los mejores clientes: los derivados tienen 48,9 mensajes de
+ * promedio contra 7,6 de los demás. Mientras más juega alguien, peor
+ * registrado está y más callado lo dejamos.
+ *
+ * Lo que NO se reactiva en lote es la conversación que sigue viva y tiene
+ * plata o enojo adentro: un reclamo, una devolución, una lesión, alguien que
+ * quiere pagar en efectivo. Ahí el bot entrando con emojis es exactamente lo
+ * que no puede pasar. Medido el 2026-09-08: de las 297, solo 7 caían ahí.
+ * ───────────────────────────────────────────────────────────────────────── */
+const MOTIVO_CASO_VIVO = /reclamo|queja|lesion|lesión|devol|reembols|disputa|robo|estafa|efectivo|mal trato|maltrato/i;
+const DIAS_CASO_VIVO = 7;
+
+/**
+ * Los derivados, partidos en dos: a quiénes se puede reactivar de una y a
+ * quiénes hay que mirarles la cara primero.
+ */
+function handoffPorReactivar() {
+  const filas = db.prepare("SELECT * FROM leads WHERE handoff = 1 ORDER BY actualizado_en DESC").all();
+  const corte = fechaLimaDb(-DIAS_CASO_VIVO);
+  const vivos = [];
+  const reactivables = [];
+  for (const l of filas) {
+    const reciente = (l.actualizado_en || '').slice(0, 10) >= corte;
+    if (reciente && MOTIVO_CASO_VIVO.test(l.handoff_motivo || '')) vivos.push(l);
+    else reactivables.push(l);
+  }
+  return { reactivables, vivos };
+}
+
+/**
+ * Los saca del handoff y deja anotado POR QUÉ. Sin la nota, mañana nadie sabe
+ * por qué el bot volvió a hablarle a 290 personas de golpe.
+ * @returns {number} cuántos se reactivaron
+ */
+function reactivarEnLote(numeros) {
+  const lista = (numeros || []).filter(Boolean);
+  if (!lista.length) return 0;
+  const hoy = hoyLimaDb();
+  let n = 0;
+  for (const numero of lista) {
+    const antes = getLead(numero);
+    if (!antes || !antes.handoff) continue;
+    clearHandoff(numero);
+    addNota(numero, `Reactivado en lote el ${hoy} — estaba derivado por: ${antes.handoff_motivo || 'sin motivo'}`);
+    n++;
+  }
+  return n;
+}
+
 /**
  * En qué pichangas está anotado este jugador, de hoy en adelante.
  *
@@ -2998,5 +3056,5 @@ module.exports = {
   pagoSueltoDe, pagarInscripcion, confirmarPagoManual, getCorte, setCorte, despuesDelCorte,
   nombrarInvitados, invitadosSinNombre, nombreInvitado,
   hoyLima: hoyLimaDb, fechaLima: fechaLimaDb, ahoraLima, ordenHora, horaInput, normalizarHora, parseHora, textoHora,
-  getMarca, setMarca, handoffsDesde, handoffsActivos,
+  getMarca, setMarca, handoffsDesde, handoffsActivos, handoffPorReactivar, reactivarEnLote,
 };
