@@ -129,6 +129,38 @@ const N = '51900777888';
   await pagos.procesarVoucher(generoso, 'brena', Buffer.from('x'));
   check('S/30 con "es solo por mí" anota a uno solo', db.inscripcionesDe(pMenos).filter((i) => i.estado !== 'baja').length === 1);
 
+  console.log('== 8 · El monto veta al partido que eligió la IA ==');
+  // CASO REAL del 2026-09-09, 10:46. Alguien mandó su Yape de S/10 escribiendo
+  // "Juebes8a9". La IA respondió "Breña MIÉRCOLES" con confianza ALTA: día
+  // equivocado, zona equivocada, y un partido de S/15 cobrado con S/10. Entró a
+  // la lista de esa noche y ocupó el lugar de alguien que sí estaba en la lista
+  // de Clarck.
+  //
+  // La aritmética lo vetaba sola y nadie se lo preguntó: S/10 no son cupos
+  // exactos de un partido de S/15. Se le exigía a la IA no inventar cupos, pero
+  // se le creía el partido a ojos cerrados — y el partido trae el precio
+  // adentro. Dejar un pago suelto es barato; meter a alguien en el partido
+  // equivocado, no.
+  const pCaro = db.crearPartido({ zona: 'brena', fecha: manana, hora: '7-8pm', cupo: 16, precio: 15 });
+  db.crearPartido({ zona: 'brena', fecha: pasado, hora: '7-8pm', cupo: 16, precio: 15 }); // 2º candidato: obliga a preguntar
+  const confundido = '51900778444';
+  db.getOrCreateLead(confundido); db.updateLead(confundido, { nombre: 'Cristhofer Prueba', zona: 'brena' });
+  pagos.leerVoucher = async () => ({ es_comprobante_pago: true, monto: 10, nombre_remitente: 'Cristhofer Prueba', numero_operacion: 'OP-DIEZ-1', medio: 'yape', confianza: 'alta' });
+  intencionDevuelta = { partido_id: pCaro, cupos: 1, confianza: 'alta', motivo: 'dijo jueves 8 a 9', partido_no_cargado: false };
+  res = await pagos.procesarVoucher(confundido, 'brena', Buffer.from('x'));
+  check('S/10 NO entra a un partido de S/15, aunque la IA diga que sí',
+    db.inscripcionesDe(pCaro).filter((i) => i.estado !== 'baja').length === 0);
+  check('y a Clarck se le dice por qué no se asignó', /ahí el cupo sale S\/ 15/.test(res.alerta || ''), res.alerta);
+  // Lo que sí calza sigue entrando: el veto es por el monto, no por desconfiar.
+  const pJusto = db.crearPartido({ zona: 'comas', fecha: manana, hora: '7-8pm', cupo: 12, precio: 10 });
+  db.crearPartido({ zona: 'comas', fecha: pasado, hora: '7-8pm', cupo: 12, precio: 10 });
+  const ok10 = '51900778555';
+  db.getOrCreateLead(ok10); db.updateLead(ok10, { nombre: 'Diez Justo', zona: 'comas' });
+  pagos.leerVoucher = async () => ({ es_comprobante_pago: true, monto: 10, nombre_remitente: 'Diez Justo', numero_operacion: 'OP-DIEZ-2', medio: 'yape', confianza: 'alta' });
+  intencionDevuelta = { partido_id: pJusto, cupos: 1, confianza: 'alta', motivo: 'dijo mañana', partido_no_cargado: false };
+  await pagos.procesarVoucher(ok10, 'comas', Buffer.from('x'));
+  check('S/10 sí entra al partido de S/10', db.inscripcionesDe(pJusto).filter((i) => i.estado !== 'baja').length === 1);
+
   console.log(`\n${fallos ? '❌' : '✅'} ${ok} checks OK, ${fallos} fallos`);
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {}
   process.exit(fallos ? 1 : 0);

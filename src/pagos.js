@@ -409,7 +409,30 @@ async function procesarVoucher(numero, zona, imageBuffer) {
         if (intencion) {
           // Solo se asigna solo con confianza alta: es plata, y meter a alguien
           // en el partido de otro día es peor que dejar el pago suelto.
-          if (intencion.partido_id && intencion.confianza === 'alta') {
+          // EL MONTO TIENE LA ÚLTIMA PALABRA SOBRE EL PARTIDO, NO SOLO SOBRE
+          // LOS CUPOS.
+          //
+          // El 2026-09-09 a las 10:46 alguien mandó su Yape de S/10 escribiendo
+          // "Juebes8a9". La IA respondió "Breña miércoles" con confianza ALTA:
+          // día equivocado, zona equivocada, y un partido de S/15 cobrado con
+          // S/10. Entró a la lista de esta noche y desplazó a alguien de la
+          // lista de verdad.
+          //
+          // La aritmética lo hubiera vetado sola: S/10 no son cupos exactos de
+          // un partido de S/15. Se le pedía a la IA que no inventara cupos pero
+          // se le creía el partido a ojos cerrados, y el partido trae el precio
+          // adentro. Si no calza, el pago se queda suelto y lo mira Clarck:
+          // dejar plata sin asignar es barato, meter a alguien en el partido
+          // equivocado no.
+          const elegido = intencion.partido_id ? db.getPartido(intencion.partido_id) : null;
+          const calzaElMonto = elegido && db.cuposPorMonto(r.monto, db.precioDePartido(elegido));
+          if (intencion.partido_id && intencion.confianza === 'alta' && !calzaElMonto) {
+            console.warn(`[pagos] ${numero}: la IA eligió el partido ${intencion.partido_id} `
+              + `(S/ ${db.precioDePartido(elegido) ?? '?'}) para un pago de S/ ${r.monto} — no calza, no se asigna.`);
+            alerta = `⚠️ No asigné el pago de S/ ${r.monto} de ${nombreCorto(numero)}: la conversación apunta a `
+              + `${elegido ? `${db.fechaBonita(elegido.fecha)}${elegido.hora ? ` ${elegido.hora}` : ''} en ${db.nombreDeZona(elegido.zona)}` : 'un partido'}`
+              + `, pero ahí el cupo sale S/ ${db.precioDePartido(elegido) ?? '?'}.\nMíralo en el panel → Pagos.`;
+          } else if (intencion.partido_id && intencion.confianza === 'alta') {
             partidoId = intencion.partido_id;
             // La IA elige el partido; los cupos los sigue diciendo el monto.
             //
