@@ -73,7 +73,16 @@ function situacion(numero) {
 
 const ACUSE = /^(gracias|muchas gracias|ok|oka|okey|okay|listo|dale|ya|si|sip|claro|perfecto|esta bien|de acuerdo|bacan|excelente|ahi esta|ya esta|entendido|correcto|vale|va|chevere|genial|buenisimo)( (gracias|amigo|profe|bro|hermano|causa|manito|mano|crack|master|maestro|pues|papa|jefe))*$/;
 
-const SALUDO = /^(hola+|holaa+|buenas+|buenos dias|buenas tardes|buenas noches|buen dia|hey+|alo+h?|ola+|que tal|hi|hello|saludos)( (amigo|amigos|bro|causa|profe|maestro|crack|mano|manito|hermano|pichangueros?|que tal|buenas|clarck))*$/;
+// Con las abreviaturas que usa la gente de verdad. "bnas" llegó el 2026-09-09
+// y se fue entera a la IA: las reglas solo cubrían el saludo bien escrito, que
+// es justo el que casi nadie escribe. Sale del corpus de 30 días.
+const SALUDO = /^(hola+|holaa+|hla|ola+|buenas+|bnas|bns|wenas|buenos dias|bnos dias|buenas tardes|buenas noches|buenas noxes|buen dia|hey+|alo+h?|que tal|q tal|k tal|ke tal|qtal|oe|hi|hello|saludos)( (amigo|amigos|amigazo|bro|causa|pata|profe|doc|jefe|maestro|crack|papi|compadre|mano|manito|hermano|pichangueros?|que tal|buenas|clarck))*$/;
+
+// "¿hay para hoy?" es LA pregunta del negocio y hasta el 2026-09-09 se iba
+// entera a la IA: el embudo viejo pedía frases exactas ("¿qué pichangas hay?")
+// y agarraba 25 mensajes de 12.719. Esto agarra cómo se pregunta de verdad.
+// Anclado de punta a punta: "hay algún problema con mi pago" no puede caer acá.
+const PREGUNTA_CUPOS = /^((q|que|k|ke) )?(hay|habra|queda|quedan|tienes|tiene|tienen)( (algo|cupo|cupos|sitio|sitios|vacante|vacantes|espacio|pichanga|pichangas|partido|partidos|lugar|lugares))?( (pa|para|el|este|esta))?( (hoy|hoy dia|manana|noche|esta noche|semana|esta semana|lunes|martes|miercoles|jueves|viernes|sabado|domingo))?( (profe|amigo|causa|bro|jefe|maestro|crack|manito|hermano|pata|doc|compadre|amigazo))?$|^(pa|para) (hoy|hoy dia|manana|esta noche)$|^(q|que|k|ke) (hay|pichangas hay|partidos hay)( (pa|para))?( (hoy|manana))?$/;
 
 const AVISA_QUE_PAGO = /^(ya |ahi |ahora |en un toque |ya te |ahi te |ahora te )?(te )?(yapeo|yapee|yapie|yapeare|mando el yape|paso el yape|transfiero|deposito)( (amigo|profe|bro|hermano|en un momento|en unos minutos|ahorita|ya|pues|manito))*$/;
 
@@ -86,9 +95,31 @@ const AVISA_QUE_PAGO = /^(ya |ahi |ahora |en un toque |ya te |ahi te |ahora te )
 function intentDe(t) {
   if (!t || t.length > 45) return null;
   if (AVISA_QUE_PAGO.test(t)) return 'yapeo';
+  if (PREGUNTA_CUPOS.test(t)) return 'parrilla';
   if (SALUDO.test(t)) return 'saludo';
   if (ACUSE.test(t)) return 'acuse';
   return null;
+}
+
+/**
+ * La parrilla, sin IA: qué hay y con cuántos cupos.
+ *
+ * Se arma de la BD, así que los cupos son los de VERDAD en este segundo —
+ * ventaja sobre el modelo, que ve la foto del prompt. Si el jugador tiene zona
+ * se le muestra la suya: mandarle las cuatro sedes a alguien de Comas es el
+ * menú de restaurante que ya se había decidido no mandar.
+ */
+function textoParrilla(zona, cuando) {
+  let abiertos = db.partidosAbiertos(zona || null, { vigentes: true }).filter((p) => p.restante > 0);
+  if (cuando) abiertos = abiertos.filter((p) => p.fecha === cuando);
+  if (!abiertos.length) return null;   // sin nada que ofrecer, que hable la IA
+  const neg = db.getNegocio();
+  const lineas = abiertos.slice(0, 6).map((p) => {
+    const precio = db.precioDePartido(p);
+    return `· ${db.fechaBonita(p.fecha)}${p.hora ? ` ${p.hora}` : ''} — ${nombreZona(p.zona)}`
+      + `${precio != null ? ` (S/ ${precio})` : ''} · ${p.restante} ${p.restante === 1 ? 'cupo libre' : 'cupos libres'}`;
+  });
+  return `Estas son las que hay ⚽\n\n${lineas.join('\n')}\n\n¿A cuál te anoto? Dime el día y la hora 🙌`;
 }
 
 /**
@@ -128,13 +159,26 @@ function responder(lead, texto, adjunto) {
   const intents = lineas.map(intentDe);
   if (intents.some((i) => i === null)) return null;
 
-  // Manda el más "fuerte": una promesa de pago pesa más que un saludo, y un
-  // saludo más que un "ok".
+  // Manda el más "fuerte": preguntar por cupos pesa más que saludar, una
+  // promesa de pago más que un "ok".
   const intent = intents.includes('yapeo') ? 'yapeo'
+    : intents.includes('parrilla') ? 'parrilla'
     : intents.includes('saludo') ? 'saludo'
     : 'acuse';
 
   const yo = situacion(lead?.numero);
+
+  // "¿hay para hoy?" — la pregunta más común del negocio, contestada con los
+  // cupos de la BD en vez de con una llamada a la IA.
+  if (intent === 'parrilla') {
+    const hoy = db.hoyLima();
+    const pideHoy = lineas.some((l) => /\b(hoy|esta noche)\b/.test(l));
+    const parrilla = textoParrilla(lead?.zona && lead.zona !== 'otra' ? lead.zona : null, pideHoy ? hoy : null);
+    // Sin partidos que ofrecer no se inventa nada: que conteste la IA, que
+    // sabe decir "no hay, pero te aviso" con la conversación en la mano.
+    if (!parrilla) return null;
+    return { respuesta: parrilla, regla: 'parrilla' };
+  }
 
   // "gracias" / "ok" / "listo". El texto no dice nada; el estado sí.
   if (intent === 'acuse') {

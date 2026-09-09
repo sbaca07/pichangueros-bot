@@ -35,7 +35,10 @@ const check = (nombre, cond, extra) => {
 };
 
 const hoy = db.hoyLima();
+// El de cupo 2 se llena en el test (por eso hay alguien en espera). El otro
+// queda con lugar: sin partidos disponibles no hay parrilla que mostrar.
 const partido = db.crearPartido({ zona: 'comas', fecha: hoy, hora: '9-10pm', sede: 'Politécnico', cupo: 2, precio: 10 });
+db.crearPartido({ zona: 'comas', fecha: hoy, hora: '8-9pm', sede: 'Politécnico', cupo: 12, precio: 10 });
 
 function jugador(numero, estado, datos = {}) {
   db.getOrCreateLead(numero);
@@ -89,6 +92,13 @@ check('al conocido sin cupo le ofrece anotarlo', /te anoto/i.test(r(SIN_NADA, 'h
 // también contestara, se pisarían y el nuevo nunca daría sus datos.
 check('al que NO conocemos no le contesta (es de atajos.js)',
   r({ numero: '51911100009' }, 'hola') === null);
+// La gente NO escribe "buenas noches": escribe "bnas". El 2026-09-09 ese
+// saludo se fue entero a la IA porque las reglas solo cubrían el castellano
+// bien escrito, que es el que casi nadie usa por WhatsApp.
+const comoEscriben = ['bnas', 'bns', 'wenas', 'q tal', 'buenas noxes', 'oe profe', 'holaa amigazo', 'buen dia compadre'];
+const seEscapan = comoEscriben.filter((t) => !r(RESERVADO, t));
+check('los saludos como se escriben de verdad NO gastan una llamada a la IA',
+  seEscapan.length === 0, seEscapan.join(' | '));
 
 console.log('\n== 5 · Los adjuntos que no se pueden leer ==');
 check('el audio se contesta sin gastar una llamada', /audios/i.test(r(SIN_NADA, '', 'audio')?.respuesta || ''));
@@ -97,7 +107,26 @@ check('el sticker se entiende y no se contesta', r(SIN_NADA, '', 'sticker')?.res
 // La FOTO no: puede ser un Yape, y eso necesita ojos.
 check('la foto NO la agarra esta capa', r(SIN_NADA, '', 'imagen') === null);
 
-console.log('\n== 6 · Las ráfagas ==');
+console.log('\n== 6 · "¿hay para hoy?" no necesita un modelo ==');
+// Es LA pregunta del negocio. El 2026-09-09, con el bot recién encendido,
+// "para hoy" + "hay" se fue entera a la IA — y justo ese día la cuota estaba
+// agotada, así que el jugador recibió la disculpa. Los cupos salen de la BD,
+// que además está más al día que el prompt del modelo.
+const comoPreguntan = ['hay', 'para hoy', 'hay pa hoy', 'q hay hoy', 'hay cupo profe', 'hay sitio pa hoy', 'tienes para hoy', 'para hoy\nhay'];
+const aIA = comoPreguntan.filter((t) => r(RESERVADO, t)?.regla !== 'parrilla');
+check('se contesta con los cupos de verdad, sin IA', aIA.length === 0, aIA.join(' | '));
+const parr = r(RESERVADO, 'hay pa hoy').respuesta;
+check('dice el día, la hora, el precio y los cupos', /HOY/.test(parr) && /8-9pm/.test(parr) && /S\/ 10/.test(parr) && /cupo/.test(parr), parr);
+// El que está LLENO no se ofrece: prometer un cupo que no existe es la forma
+// más rápida de quedar mal en la cancha.
+check('el partido lleno no aparece en la parrilla', !/9-10pm/.test(parr), parr);
+// Ancladas de punta a punta: si no, "hay algún problema con mi pago" recibiría
+// la parrilla y la IA nunca vería el reclamo.
+const noSonParrilla = ['hay algun problema con mi pago', 'hay cupo pero puedo llevar a mi primo', 'que hay de nuevo viejo'];
+check('una pregunta con contexto sigue yendo a la IA',
+  noSonParrilla.every((t) => r(RESERVADO, t) === null));
+
+console.log('\n== 7 · Las ráfagas ==');
 // La gente escribe de a pedacitos y index.js los junta con \n. Medido con 100
 // pichangueros reales: las 100 llegaron agrupadas y esta capa, que cortaba por
 // largo TOTAL, no disparó ni una vez — todo se fue a la IA.
