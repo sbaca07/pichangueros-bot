@@ -575,6 +575,25 @@ const srv = app.listen(0, async () => {
     check('inscribir en un partido cerrado dice qué hacer', /Reabrir/.test(avisoDe(rCerrado.location)) && /err=1/.test(rCerrado.location), avisoDe(rCerrado.location));
     check('…y de verdad no lo inscribió', db.inscripcionesDe(cerrado).length === 0);
 
+    {
+      // "Vino / Faltó" se habilita cuando la gente EMPIEZA A LLEGAR, no a la
+      // medianoche del día. El 2026-09-09 a las 11 de la mañana ya estaban los
+      // botones de un partido de las 8 de la noche: nueve horas de invitación a
+      // marcar a alguien por error, y una asistencia mal marcada no la ve nadie
+      // hasta el día de la liquidación.
+      const hoy = db.hoyLima();
+      const enHoras = (h) => { const m = db.ahoraLima().min + h * 60; const hh = Math.floor(m / 60) % 24; return `${hh % 12 || 12}-${(hh + 1) % 12 || 12}${hh >= 12 ? 'pm' : 'am'}`; };
+      const lejos = db.crearPartido({ zona: 'brena', fecha: hoy, hora: enHoras(6), cupo: 10 });
+      db.inscribir(lejos, null, { nombre: 'Falta Mucho' });
+      const htmlLejos = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${lejos}`)).html;
+      check('faltando horas para el partido NO se puede pasar lista', !/✔ Vino/.test(htmlLejos));
+
+      const yaCasi = db.crearPartido({ zona: 'comas', fecha: hoy, hora: enHoras(0), cupo: 10 });
+      db.inscribir(yaCasi, null, { nombre: 'Ya Llega' });
+      const htmlCasi = (await GET(`/admin/leads?key=ux&vista=partidos&partido=${yaCasi}`)).html;
+      check('a la hora del partido sí se puede', /✔ Vino/.test(htmlCasi));
+    }
+
     // Pasar lista: 14 toques seguidos, parado en la cancha. Cada uno recargaba
     // y devolvía arriba de todo, había que volver a bajar hasta donde ibas.
     const jugado = partidoJugado(enDias(-15), ['51960000001'], { cupo: 10 });

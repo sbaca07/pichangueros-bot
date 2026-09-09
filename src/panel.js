@@ -4564,7 +4564,16 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
     // Pasar lista se habilita cuando el partido ya arrancó, no cuando alguien
     // lo declaró jugado: nadie iba a apretar un botón antes de entrar a la
     // cancha, y sin eso los botones "Vino/Faltó" no aparecían nunca.
-    const puedeMarcar = fase !== 'proximo' || p.fecha <= hoyLima();
+    // Pasar lista se habilita cuando la gente EMPIEZA A LLEGAR, no a la
+    // medianoche del día. Decía `p.fecha <= hoyLima()`, así que a las 8 de la
+    // mañana ya estaban los botones "Vino / Faltó" de un partido de las 9 de la
+    // noche: doce horas de invitación a marcar a alguien por error, y una
+    // asistencia mal marcada no la ve nadie hasta el día de la liquidación.
+    // Media hora antes del silbato es cuando Clarck está parado en la cancha.
+    const ahora = ahoraLima();
+    const puedeMarcar = fase !== 'proximo'
+      || p.fecha < ahora.fecha
+      || (p.fecha === ahora.fecha && (p.inicio_min == null || ahora.min >= p.inicio_min - 30));
     return `<div class="finsc ancla" id="insc-${i.id}">
       <div style="flex:1;min-width:140px">
         <div style="font-weight:700;font-size:var(--t-m)">${i.numero ? `<a href="/admin/leads?key=${key}&numero=${i.numero}">${esc(nombre)}</a>` : esc(nombre)}</div>
