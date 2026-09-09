@@ -120,6 +120,19 @@ check('dice el día, la hora, el precio y los cupos', /HOY/.test(parr) && /8-9pm
 // El que está LLENO no se ofrece: prometer un cupo que no existe es la forma
 // más rápida de quedar mal en la cancha.
 check('el partido lleno no aparece en la parrilla', !/9-10pm/.test(parr), parr);
+// Seis líneas de golpe son un menú de restaurante, no un chat. Pasó el
+// 2026-09-09: a un "hay" le contestó con seis partidos hasta el lunes.
+{
+  const enDias = (n) => { const x = new Date(`${hoy}T12:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  for (const [n, h] of [[1, '8-9pm'], [2, '8-9pm'], [2, '9-10pm'], [4, '8-9pm']]) {
+    db.crearPartido({ zona: 'comas', fecha: enDias(n), hora: h, sede: 'Politécnico', cupo: 12, precio: 10 });
+  }
+  const larga = r(RESERVADO, 'hay').respuesta;
+  // Los días distintos que menciona, por el número de la fecha ("9 de septiembre").
+  const dias = new Set((larga.match(/(\d{1,2}) de [a-zé]+/gi) || []));
+  check('muestra como mucho dos días', dias.size <= 2, `${[...dias].join(' | ')} → ${larga}`);
+  check('y avisa que hay más en la semana', /más en la semana/.test(larga), larga);
+}
 // Ancladas de punta a punta: si no, "hay algún problema con mi pago" recibiría
 // la parrilla y la IA nunca vería el reclamo.
 const noSonParrilla = ['hay algun problema con mi pago', 'hay cupo pero puedo llevar a mi primo', 'que hay de nuevo viejo'];

@@ -113,13 +113,23 @@ function textoParrilla(zona, cuando) {
   let abiertos = db.partidosAbiertos(zona || null, { vigentes: true }).filter((p) => p.restante > 0);
   if (cuando) abiertos = abiertos.filter((p) => p.fecha === cuando);
   if (!abiertos.length) return null;   // sin nada que ofrecer, que hable la IA
-  const neg = db.getNegocio();
-  const lineas = abiertos.slice(0, 6).map((p) => {
+
+  // SOLO LOS DOS DÍAS MÁS PRÓXIMOS. Seis líneas de golpe son un menú de
+  // restaurante, no un chat — la misma lección que ya estaba en atajos.js y
+  // que esta función se saltó: el 2026-09-09, a un "hay" le contestó con seis
+  // partidos hasta el lunes siguiente. Quien quiera ver todo pregunta.
+  const dias = [...new Set(abiertos.map((p) => p.fecha))].slice(0, 2);
+  const muestro = abiertos.filter((p) => dias.includes(p.fecha));
+  const resto = abiertos.length - muestro.length;
+
+  const lineas = muestro.map((p) => {
     const precio = db.precioDePartido(p);
     return `· ${db.fechaBonita(p.fecha)}${p.hora ? ` ${p.hora}` : ''} — ${nombreZona(p.zona)}`
       + `${precio != null ? ` (S/ ${precio})` : ''} · ${p.restante} ${p.restante === 1 ? 'cupo libre' : 'cupos libres'}`;
   });
-  return `Estas son las que hay ⚽\n\n${lineas.join('\n')}\n\n¿A cuál te anoto? Dime el día y la hora 🙌`;
+  return `Estas son las que hay ⚽\n\n${lineas.join('\n')}`
+    + (resto > 0 ? `\n\n📅 Y hay ${resto} más en la semana — dime qué día te sirve.` : '')
+    + '\n\n¿A cuál te anoto? Dime el día y la hora 🙌';
 }
 
 /**
