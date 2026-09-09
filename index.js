@@ -574,7 +574,7 @@ async function manejarMensaje(sock, msg) {
           try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
           if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
           await enviarTexto(sock, destino, aviso);
-          db.saveMessage(numero, 'assistant', aviso);
+          db.saveMessage(numero, 'assistant', aviso, 'bot', 'lector-caido');
         }
         return;
       }
@@ -596,7 +596,7 @@ async function manejarMensaje(sock, msg) {
           try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
           if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
           await enviarTexto(sock, destino, resultado.respuesta);
-          db.saveMessage(numero, 'assistant', resultado.respuesta);
+          db.saveMessage(numero, 'assistant', resultado.respuesta, 'bot', 'voucher');
         } else {
           console.log(`[SAFE_MODE] ${numero}: voucher procesado sin responder.`);
         }
@@ -619,7 +619,7 @@ async function manejarMensaje(sock, msg) {
         try { await sock.sendPresenceUpdate('composing', destino); } catch (_) {}
         if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
         await enviarTexto(sock, destino, aviso);
-        db.saveMessage(numero, 'assistant', aviso);
+        db.saveMessage(numero, 'assistant', aviso, 'bot', 'imagen-ilegible');
       }
       return;
     } catch (e) { console.error('[pagos] Error procesando imagen:', e.message); }
@@ -636,7 +636,7 @@ async function manejarMensaje(sock, msg) {
       if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
       try {
         await enviarTexto(sock, destino, rapida.respuesta);
-        db.saveMessage(numero, 'assistant', rapida.respuesta);
+        db.saveMessage(numero, 'assistant', rapida.respuesta, 'bot', 'atajo');
       } catch (e) { console.error(`[send] ERROR atajo → ${destino}:`, e?.message); }
     }
     // El atajo contesta sin IA, pero el mensaje igual puede traer el dato: al
@@ -670,7 +670,7 @@ async function manejarMensaje(sock, msg) {
       if (RESPUESTA_DELAY_MS) await sleep(RESPUESTA_DELAY_MS);
       try {
         await enviarTexto(sock, destino, porEstado.respuesta);
-        db.saveMessage(numero, 'assistant', porEstado.respuesta);
+        db.saveMessage(numero, 'assistant', porEstado.respuesta, 'bot', `regla:${porEstado.regla}`);
       } catch (e) { console.error(`[send] ERROR regla → ${destino}:`, e?.message); }
     }
     // Un "gracias" no trae datos, pero la ficha puede estar incompleta y el
@@ -704,6 +704,7 @@ async function manejarMensaje(sock, msg) {
     if (cupo) {
       console.log(`[atajo] ${numero} → cupo en partido ${cupo.partidoId} SIN IA (el cerebro no contestó).`);
       decision = {
+        _sinIA: true,
         reply: cupo.respuesta,
         nombre: null, edad: null, distrito: null, zona: null,
         handoff: false, handoff_motivo: null,
@@ -723,7 +724,7 @@ async function manejarMensaje(sock, msg) {
       const disculpa = 'Uy, se me cruzaron los cables un segundo 🙈 ¿Me lo repites porfa? Si es algo urgente, Clarck te escribe en un momento.';
       try {
         await enviarTexto(sock, destino, disculpa);
-        db.saveMessage(numero, 'assistant', disculpa);
+        db.saveMessage(numero, 'assistant', disculpa, 'bot', 'disculpa');
       } catch (e) { console.error(`[send] ERROR fallback → ${destino}:`, e?.message); }
     }
     return;
@@ -890,7 +891,10 @@ async function manejarMensaje(sock, msg) {
       const sent = await enviarTexto(sock, destino, decision.reply);
       console.log(`[send] OK → ${destino} id=${sent?.key?.id} (${decision.reply.length} chars)`);
     } catch (e) { console.error(`[send] ERROR → ${destino}:`, e?.message); }
-    db.saveMessage(numero, 'assistant', decision.reply);
+    // 'cerebro' salvo cuando la respuesta la armó la red sin IA (pedidoDeCupo):
+    // esa pasa por acá para reusar el camino de la reserva, pero no gastó una
+    // llamada y contarla como IA inflaría el número que se quiere bajar.
+    db.saveMessage(numero, 'assistant', decision.reply, 'bot', decision._sinIA ? 'regla:cupo' : 'cerebro');
 
     // Si la respuesta incluyó el link del grupo de su zona, se anota la FECHA
     // en que se le mandó.

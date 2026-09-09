@@ -114,6 +114,29 @@ const srv = app.listen(0, async () => {
   const crmResp = (await GET('/admin/leads?key=ux&vista=crm&filtro=responder')).html;
   check('stat "Sin responder" → CRM muestra al tester (único real en modo seguro)', crmResp.includes(L.tester));
   check('…y NO a los silenciados por diseño', !crmResp.includes(L.nuevo));
+  {
+    // EL TABLERO EN VIVO. Hasta el 2026-09-09 la marcha blanca se evaluaba por
+    // sensación: Clarck veía tres disculpas seguidas, se asustaba y apagaba el
+    // bot. La pregunta que importa no es cuántos mensajes mandó sino CUÁNTOS
+    // necesitaron la IA, y no había dónde verlo.
+    db.saveMessage(L.completo, 'user', 'hay pa hoy');
+    db.saveMessage(L.completo, 'assistant', 'Estas son las que hay', 'bot', 'regla:parrilla');
+    db.saveMessage(L.completo, 'assistant', 'lo pienso yo', 'bot', 'cerebro');
+    db.saveMessage(L.completo, 'assistant', 'Uy, se me cruzaron los cables', 'bot', 'disculpa');
+    const vivo = (await GET('/admin/vivo?key=ux')).html;
+    check('el tablero en vivo abre', vivo.length > 1000);
+    check('dice si el bot está encendido o apagado', /El bot está (ENCENDIDO|APAGADO)/.test(vivo));
+    check('muestra el cupo del día', vivo.includes('Cupo del día'));
+    check('muestra qué porcentaje se contestó SIN IA', vivo.includes('SIN gastar IA'));
+    check('cuenta las disculpas aparte', vivo.includes('Disculpas'));
+    check('desglosa por capa quién contestó', vivo.includes('⚡ parrilla') && vivo.includes('🧠 IA'));
+    check('muestra la cadena de modelos', vivo.includes('La cadena de modelos'));
+    check('y las últimas respuestas del bot', vivo.includes('Lo último que dijo el bot'));
+    check('se refresca solo', /http-equiv="refresh"/.test(vivo));
+    // Es un tablero con la conversación de la gente adentro: sin key no entra nadie.
+    check('sin la key no se abre', (await GET('/admin/vivo')).status !== 200);
+  }
+
   const crmHandoff = (await GET('/admin/leads?key=ux&vista=crm&filtro=handoff')).html;
   check('chip "Clarck" → muestra al derivado', crmHandoff.includes('Queja de prueba'));
 

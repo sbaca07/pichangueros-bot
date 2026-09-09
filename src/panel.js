@@ -317,6 +317,102 @@ function registrarPanel(app, db, conexion = null) {
     });
   });
 
+  /**
+   * EL TABLERO EN VIVO — /admin/vivo?key=…
+   *
+   * Hasta el 2026-09-09 la marcha blanca se evaluaba por sensación: Clarck veía
+   * tres disculpas seguidas, se asustaba y apagaba el bot. Nadie podía
+   * responder "¿cómo va hoy?" con un número. Y la pregunta que de verdad
+   * importa no es cuántos mensajes mandó, sino CUÁNTOS necesitaron la IA.
+   *
+   * Se refresca solo cada 15 s. No pide JS: es HTML plano con un meta refresh,
+   * porque tiene que abrirse en el celular de Clarck en la cancha.
+   */
+  app.get('/admin/vivo', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const key = encodeURIComponent(req.query.key || '');
+    const k = db.kpisDelDia();
+    const estadoBot = db.estadoBot();
+    const tope = db.topeNuevosDia();
+    const ia = require('./ia').estado();
+    const ultimas = db.ultimasDelBot(15);
+
+    const capaBonita = (c) => String(c || '(sin marcar)')
+      .replace(/^regla:/, '⚡ ').replace(/^cerebro$/, '🧠 IA').replace(/^voucher$/, '🧠 Yape')
+      .replace(/^atajo$/, '⚡ atajo').replace(/^disculpa$/, '⚠ disculpa')
+      .replace(/^lector-caido$/, '⚠ lector caído').replace(/^imagen-ilegible$/, '🖼 ilegible');
+    const barra = (n, total) => {
+      const p = total ? Math.round((100 * n) / total) : 0;
+      return `<div style="background:#0002;border-radius:4px;height:8px;overflow:hidden"><div style="width:${p}%;height:8px;background:currentColor"></div></div>`;
+    };
+    const tarjeta = (titulo, valor, pie = '', color = '') =>
+      `<div style="border:1px solid #0002;border-radius:10px;padding:.7rem .9rem;${color}">
+         <div style="font-size:.78em;opacity:.7;text-transform:uppercase;letter-spacing:.04em">${titulo}</div>
+         <div style="font-size:1.9em;font-weight:700;line-height:1.15">${valor}</div>
+         ${pie ? `<div style="font-size:.82em;opacity:.75">${pie}</div>` : ''}
+       </div>`;
+
+    const usados = k.atendidosPorBot;
+    res.send(`<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="15">
+<title>Pichangueros — en vivo</title>
+<style>
+ body{font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:1rem;background:#fafaf9;color:#1c1917}
+ h1{font-size:1.15rem;margin:.2rem 0 .1rem} .sub{opacity:.65;font-size:.85em;margin-bottom:1rem}
+ .grid{display:grid;gap:.6rem;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:1rem}
+ h2{font-size:.95rem;margin:1.3rem 0 .5rem;opacity:.8}
+ table{border-collapse:collapse;width:100%;font-size:.88em} td,th{padding:.32rem .5rem;border-bottom:1px solid #0001;text-align:left;vertical-align:top}
+ .msg{max-width:52ch;overflow-wrap:anywhere}
+ a{color:#0369a1}
+ @media (prefers-color-scheme:dark){body{background:#0c0a09;color:#e7e5e4}a{color:#7dd3fc}}
+</style></head><body>
+<h1>${estadoBot.encendido ? '🟢 El bot está ENCENDIDO' : '🔴 El bot está APAGADO'}</h1>
+<div class="sub">${k.fecha} · se refresca solo cada 15 s · <a href="/admin/leads?key=${key}">volver al panel</a></div>
+
+<div class="grid">
+  ${tarjeta('Cupo del día', tope > 0 ? `${usados}/${tope}` : `${usados}`, tope > 0 ? (usados >= tope ? 'lleno — el resto lo atiende Clarck' : `quedan ${tope - usados}`) : 'sin tope')}
+  ${tarjeta('Escribieron hoy', k.personas, `${k.entrantes} mensajes`)}
+  ${tarjeta('Contestó el bot', k.respondidosPorBot, `${k.aMano} a mano Clarck`)}
+  ${tarjeta('SIN gastar IA', `${k.pctSinIA}%`, `${k.sinIA} de ${k.respondidosPorBot}`, 'color:#15803d')}
+  ${tarjeta('Con IA', k.conIA, 'cerebro + lectura de Yapes', 'color:#a16207')}
+  ${tarjeta('Disculpas', k.disculpas, k.disculpas ? '⚠ la IA no contestó' : 'ninguna 👌', k.disculpas ? 'color:#b91c1c' : 'color:#15803d')}
+</div>
+
+<div class="grid">
+  ${tarjeta('Cupos anotados hoy', k.inscripcionesHoy)}
+  ${tarjeta('Yapes de hoy', k.pagosHoy.n, `S/ ${k.pagosHoy.soles}`)}
+  ${tarjeta('Derivados a Clarck hoy', k.derivadosHoy)}
+  ${tarjeta('Llamadas a la IA', ia.uso.llamadas, `${ia.uso.fallos} fallaron · ${ia.uso.tokens.toLocaleString('es')} tokens · ${ia.uso.msPromedio} ms prom.`)}
+</div>
+
+<h2>Quién contestó qué</h2>
+<table><tbody>
+${k.porCapa.map((c) => `<tr><td style="width:14rem">${capaBonita(c.capa)}</td><td style="width:3rem;text-align:right">${c.n}</td><td>${barra(c.n, k.respondidosPorBot)}</td></tr>`).join('') || '<tr><td colspan="3"><i>El bot todavía no contestó nada hoy.</i></td></tr>'}
+</tbody></table>
+
+<h2>La cadena de modelos</h2>
+<table><tbody>
+${ia.cadena.map((m, i) => {
+      const u = ia.uso.porModelo[m];
+      const pen = ia.penados.find((p) => p.modelo === m);
+      return `<tr><td>${i === 0 ? '1º' : `${i + 1}º`} ${m}</td><td>${u ? `${u.ok} ok · ${u.fallos} fallos` : '<i>sin usar</i>'}</td><td>${pen ? `⏳ en penitencia ${pen.segundos}s` : '✅'}</td></tr>`;
+    }).join('')}
+</tbody></table>
+<div class="sub">En vuelo: ${ia.enVuelo} · esperando turno: ${ia.enCola} · de a ${ia.concurrencia} a la vez${Object.keys(ia.uso.errores).length ? ` · errores: ${Object.entries(ia.uso.errores).map(([e, n]) => `${e}×${n}`).join(', ')}` : ''}</div>
+
+<h2>Lo último que dijo el bot</h2>
+<table><thead><tr><th>hora</th><th>quién</th><th>capa</th><th>mensaje</th></tr></thead><tbody>
+${ultimas.map((m) => `<tr>
+  <td>${esc(String(m.creado_en).slice(11, 16))}</td>
+  <td><a href="/admin/leads?key=${key}&numero=${encodeURIComponent(m.numero)}">${esc((m.nombre || `+${m.numero}`).slice(0, 18))}</a></td>
+  <td>${capaBonita(m.capa)}</td>
+  <td class="msg">${esc(String(m.texto).replace(/\n/g, ' ').slice(0, 150))}</td>
+</tr>`).join('') || '<tr><td colspan="4"><i>Todavía nada.</i></td></tr>'}
+</tbody></table>
+</body></html>`);
+  });
+
   app.post('/admin/lead/etiquetas', (req, res) => {
     if (!autorizado(req, res)) return;
     const limpio = (req.body.etiquetas || '').split(',').map((t) => t.trim()).filter(Boolean).slice(0, 10).join(',');
@@ -1878,6 +1974,7 @@ const sidebar = (key, activo) => `<aside class="sidebar">
     <a class="${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm} Jugadores</a>
     <a class="${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos} Pagos</a>
     <a class="${activo === 'config' || activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig} Ajustes</a>
+    <a href="/admin/vivo?key=${key}" title="Cómo va el bot ahora mismo: cuánto contestó, cuánto gastó de IA y qué dijo.">📡 En vivo</a>
   </nav>
   <div class="sbottom">
     ${sheetsync.activo() ? `<a class="scsv" href="/admin/sync-sheet?key=${key}" title="Copia la lista de contactos a tu Google Sheet. Solo los contactos: no incluye pagos ni conversaciones.">

@@ -70,6 +70,23 @@ const ESPERA_MAX_MS = () => Number(process.env.OPENAI_ESPERA_MAX_MS || 90000);
 let enVuelo = 0;
 const cola = [];
 
+/**
+ * Cuánto se usa la IA, contado por el que la usa.
+ *
+ * Sin esto, "cuánto gasta el bot" se respondía a ojo. Vive en memoria y se
+ * reinicia con el deploy: es una foto del turno, no la contabilidad —para eso
+ * está la BD. Lo que importa acá es ver, mientras el bot corre, si la cadena
+ * está trabajando de más.
+ */
+const metricas = { desde: Date.now(), llamadas: 0, ok: 0, fallos: 0, tokens: 0, ms: 0, porModelo: {}, errores: {} };
+function anotarUso(modelo, ok, ms, tokens) {
+  const m = (metricas.porModelo[modelo] ||= { ok: 0, fallos: 0, tokens: 0, ms: 0 });
+  if (ok) { m.ok++; metricas.ok++; m.tokens += tokens || 0; metricas.tokens += tokens || 0; }
+  else m.fallos++;
+  m.ms += ms || 0;
+  metricas.ms += ms || 0;
+}
+
 function tomarTurno() {
   if (enVuelo < MAX_EN_VUELO()) { enVuelo++; return Promise.resolve(0); }
   return new Promise((resolve, reject) => {
@@ -212,8 +229,11 @@ async function recorrerCadena(params, etiqueta, extra) {
       break;
     }
     intentos++;
+    metricas.llamadas++;
+    // t1 se declara ANTES del try: el catch también lo necesita para medir
+    // cuánto tardó en fallar (un modelo colgado tarda su timeout entero).
+    const t1 = Date.now();
     try {
-      const t1 = Date.now();
       // Vía module.exports (no la referencia interna) para que los tests puedan
       // guionar qué contesta cada modelo, igual que con pagos.leerVoucher.
       const completion = await module.exports.pedirA(modelo, params, Math.min(timeout, Math.max(presupuesto - gastado, 1000)));
@@ -224,6 +244,7 @@ async function recorrerCadena(params, etiqueta, extra) {
       const ms = Date.now() - t1;
       penitencia.delete(modelo);
       const tokens = completion.usage?.total_tokens;
+      anotarUso(modelo, true, ms, tokens);
       // El formato lo cuida test-tiempo.js: cuánto tarda el cerebro es LA
       // pregunta recurrente de Clarck ("se demora") y hasta el 15/08 se
       // respondía a ojo porque no se medía en ninguna parte.
@@ -233,6 +254,9 @@ async function recorrerCadena(params, etiqueta, extra) {
       return { json, modelo, ms, tokens, intentos };
     } catch (e) {
       ultimoError = e;
+      anotarUso(modelo, false, Date.now() - t1, 0);
+      const clave = String(e.status || e.name || 'error');
+      metricas.errores[clave] = (metricas.errores[clave] || 0) + 1;
       if (esDefinitivo(e)) {
         // No es el modelo: es la key o el prompt. Probar otro es gastar dos
         // llamadas más para leer el mismo error.
@@ -266,6 +290,18 @@ module.exports = {
     enVuelo,
     enCola: cola.length,
     concurrencia: MAX_EN_VUELO(),
+    // El uso desde que arrancó el proceso: para responder "¿cuánto está
+    // gastando el bot?" con un número en vez de con una impresión.
+    uso: {
+      desdeMin: Math.round((Date.now() - metricas.desde) / 60000),
+      llamadas: metricas.llamadas,
+      ok: metricas.ok,
+      fallos: metricas.llamadas - metricas.ok,
+      tokens: metricas.tokens,
+      msPromedio: metricas.ok ? Math.round(metricas.ms / metricas.llamadas) : 0,
+      porModelo: metricas.porModelo,
+      errores: metricas.errores,
+    },
     penados: [...penitencia.entries()]
       .filter(([, hasta]) => hasta > Date.now())
       .map(([modelo, hasta]) => ({ modelo, segundos: Math.round((hasta - Date.now()) / 1000) })),

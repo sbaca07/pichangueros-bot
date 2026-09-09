@@ -167,6 +167,11 @@ if (!db.prepare("SELECT valor FROM config WHERE clave = 'tz_migrado_v2_2026_07'"
 // en NULL y no cuentan, que es lo correcto: son de antes del tope.
 const colsMensajes = db.prepare('PRAGMA table_info(mensajes)').all().map((c) => c.name);
 if (!colsMensajes.includes('via')) db.exec('ALTER TABLE mensajes ADD COLUMN via TEXT');
+// QUÉ CAPA contestó (2026-09-09): 'regla' · 'atajo' · 'cerebro' · 'disculpa' ·
+// 'voucher' · 'lector-caido'. Sin esto, "¿cuánto usa la IA?" solo se podía
+// responder mirando los logs de Render, que se pierden. Es la columna que hace
+// posible el tablero: la marcha blanca se estaba evaluando por sensación.
+if (!colsMensajes.includes('capa')) db.exec('ALTER TABLE mensajes ADD COLUMN capa TEXT');
 
 // Migración suave del CRM (2026-06-10): agrega columnas si la BD es anterior.
 const colsLeads = db.prepare('PRAGMA table_info(leads)').all().map((c) => c.name);
@@ -269,7 +274,7 @@ const stmtNewLead = db.prepare(
   "INSERT INTO leads (numero, creado_en, actualizado_en) VALUES (?, datetime('now', '-5 hours'), datetime('now', '-5 hours'))"
 );
 const stmtSaveMsg = db.prepare(
-  "INSERT INTO mensajes (numero, rol, texto, via, creado_en) VALUES (?, ?, ?, ?, datetime('now', '-5 hours'))"
+  "INSERT INTO mensajes (numero, rol, texto, via, capa, creado_en) VALUES (?, ?, ?, ?, ?, datetime('now', '-5 hours'))"
 );
 const stmtHistory = db.prepare(
   'SELECT rol, texto, creado_en FROM mensajes WHERE numero = ? ORDER BY id DESC LIMIT ?'
@@ -317,8 +322,8 @@ function updateLead(numero, campos) {
  * su celular o desde el panel). El default es 'bot' porque contestar a mano es
  * la excepción y se declara donde pasa.
  */
-function saveMessage(numero, rol, texto, via = 'bot') {
-  stmtSaveMsg.run(numero, rol, texto, via);
+function saveMessage(numero, rol, texto, via = 'bot', capa = null) {
+  stmtSaveMsg.run(numero, rol, texto, via, capa);
 }
 
 /** Últimos N mensajes en orden cronológico (para el contexto del cerebro). */
@@ -766,6 +771,55 @@ function atendidosHoy() {
     SELECT COUNT(DISTINCT numero) AS n FROM mensajes
     WHERE rol = 'assistant' AND via = 'bot' AND substr(creado_en, 1, 10) = ?
   `).get(hoyLimaDb()).n;
+}
+
+/**
+ * Los KPIs del bot para un día: quién habló, quién contestó y con qué.
+ *
+ * Existe porque hasta el 2026-09-09 la marcha blanca se evaluaba por sensación:
+ * Clarck veía tres disculpas seguidas, se asustaba y apagaba el bot. Sin
+ * números, "¿anduvo bien hoy?" no tenía respuesta — y la que importa no es
+ * cuántos mensajes mandó sino CUÁNTOS necesitaron la IA.
+ *
+ * La columna `capa` la escribe index.js en cada envío.
+ */
+function kpisDelDia(fecha = null) {
+  const dia = fecha || hoyLimaDb();
+  const uno = (sql, ...a) => db.prepare(sql).get(dia, ...a);
+  const entrantes = uno("SELECT COUNT(*) n, COUNT(DISTINCT numero) personas FROM mensajes WHERE rol='user' AND substr(creado_en,1,10)=?");
+  const porCapa = db.prepare(`
+    SELECT COALESCE(capa,'(sin marcar)') capa, COUNT(*) n
+    FROM mensajes WHERE rol='assistant' AND via='bot' AND substr(creado_en,1,10)=?
+    GROUP BY 1 ORDER BY n DESC`).all(dia);
+  const aMano = uno("SELECT COUNT(*) n, COUNT(DISTINCT numero) personas FROM mensajes WHERE rol='assistant' AND via='manual' AND substr(creado_en,1,10)=?");
+
+  const conIA = porCapa.filter((c) => c.capa === 'cerebro' || c.capa === 'voucher').reduce((s, c) => s + c.n, 0);
+  const sinIA = porCapa.filter((c) => String(c.capa).startsWith('regla') || c.capa === 'atajo').reduce((s, c) => s + c.n, 0);
+  const disculpas = porCapa.filter((c) => c.capa === 'disculpa').reduce((s, c) => s + c.n, 0);
+  const respondidos = porCapa.reduce((s, c) => s + c.n, 0);
+
+  return {
+    fecha: dia,
+    entrantes: entrantes.n, personas: entrantes.personas,
+    respondidosPorBot: respondidos,
+    atendidosPorBot: atendidosHoy(),
+    aMano: aMano.n, personasAMano: aMano.personas,
+    conIA, sinIA, disculpas,
+    // El número que resume todo: de lo que contestó el bot, cuánto NO necesitó IA.
+    pctSinIA: respondidos ? Math.round((100 * sinIA) / respondidos) : 0,
+    porCapa,
+    derivadosHoy: uno("SELECT COUNT(*) n FROM leads WHERE handoff=1 AND substr(actualizado_en,1,10)=?").n,
+    inscripcionesHoy: uno("SELECT COUNT(*) n FROM inscripciones WHERE substr(creado_en,1,10)=?").n,
+    pagosHoy: uno("SELECT COUNT(*) n, COALESCE(SUM(monto),0) soles FROM pagos WHERE substr(creado_en,1,10)=?"),
+  };
+}
+
+/** Las últimas respuestas del bot, con la capa que las armó. Para mirar en vivo. */
+function ultimasDelBot(limite = 20) {
+  return db.prepare(`
+    SELECT m.creado_en, m.numero, m.capa, m.texto, l.nombre
+    FROM mensajes m LEFT JOIN leads l ON l.numero = m.numero
+    WHERE m.rol='assistant' AND m.via='bot' ORDER BY m.id DESC LIMIT ?`).all(limite);
 }
 
 /**
@@ -3056,5 +3110,5 @@ module.exports = {
   pagoSueltoDe, pagarInscripcion, confirmarPagoManual, getCorte, setCorte, despuesDelCorte,
   nombrarInvitados, invitadosSinNombre, nombreInvitado,
   hoyLima: hoyLimaDb, fechaLima: fechaLimaDb, ahoraLima, ordenHora, horaInput, normalizarHora, parseHora, textoHora,
-  getMarca, setMarca, handoffsDesde, handoffsActivos, handoffPorReactivar, reactivarEnLote,
+  getMarca, setMarca, handoffsDesde, handoffsActivos, handoffPorReactivar, reactivarEnLote, kpisDelDia, ultimasDelBot,
 };
