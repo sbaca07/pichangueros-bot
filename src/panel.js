@@ -1058,6 +1058,33 @@ ${ultimas.map((m) => `<tr>
    * maquinaria de siempre: si calza uno solo, entra; si no, queda suelto y
    * aparece en "pagos sin partido", que es donde se asigna a dedo.
    */
+  /**
+   * "Ya lo miré" — saca uno o todos los pagos de la cola de pendientes.
+   *
+   * NO borra nada: el Yape sigue en la tabla, en la caja y en la ficha del
+   * jugador. Lo único que cambia es que deja de reclamar atención. Es la misma
+   * idea del corte operativo: lo viejo no se borra, se calla.
+   *
+   * La lista NO viaja en el formulario: se recalcula acá. Con `todos=1` desde
+   * una pestaña vieja, si entretanto llegó un Yape nuevo, se resolvería sin que
+   * nadie lo haya visto.
+   */
+  app.post('/admin/pago/resolver', (req, res) => {
+    if (!autorizado(req, res)) return;
+    const partidoId = Number(req.body.partido_id) || null;
+    const fin = (aviso) => (partidoId
+      ? volverAPartidos(req, res, partidoId, aviso, 'pagos-sueltos')
+      : volver(res, { key: req.body.key, vista: 'pagos', aviso }));
+    if (String(req.body.todos || '') === '1') {
+      const n = db.resolverPagos(db.pagosSinPartido(200).map((p) => p.id), quienEs(req));
+      return fin(n
+        ? `Cola en cero: ${n} pago${n === 1 ? '' : 's'} salieron de pendientes. Siguen en la caja y en la ficha de cada jugador.`
+        : 'No había pagos pendientes.');
+    }
+    const n = db.resolverPagos([Number(req.body.pago_id)], quienEs(req));
+    return fin(n ? 'Pago marcado como resuelto: sale de la cola pero no se borra.' : 'Ese pago ya estaba resuelto.');
+  });
+
   app.post('/admin/pago/confirmar', (req, res) => {
     if (!autorizado(req, res)) return;
     const id = Number(req.body.pago_id);
@@ -4848,7 +4875,21 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
             <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="pago_id" value="${pg.id}"><input type="hidden" name="partido_id" value="${partidoId}">
             <div style="flex:1;min-width:0;font-size:var(--t-m)"><b>${esc(pg.nombre || `+${pg.numero}`)}</b> · S/ ${esc(pg.monto)} ${pg.cupos > 1 ? `(${pg.cupos} cupos)` : ''} · ${horaCorta(pg.creado_en)}</div>
             <button class="btn-fila" style="background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink)">Asignar acá</button>
+          </form>
+          ${/* "Ya lo miré": el Yape se devolvió, se pasó a otra fecha o no va a
+                ningún lado. Sale de la cola sin borrarse — sigue en la caja y en
+                el historial del jugador. Una cola que nunca baja se deja de
+                mirar entera. */ ''}
+          <form method="post" action="/admin/pago/resolver" style="display:flex;justify-content:flex-end;padding:0 14px 10px">
+            <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="pago_id" value="${pg.id}"><input type="hidden" name="partido_id" value="${partidoId}">
+            <button class="btn-fila" style="background:var(--surface-2);color:var(--ink-2);border:1.5px solid var(--line-strong)">✔ Ya lo resolví</button>
           </form>`).join('')}
+        ${pagosSueltos.length > 1 ? `
+        <form method="post" action="/admin/pago/resolver" style="padding:10px 14px;border-top:1px solid var(--line)"
+              onsubmit="return confirm('Saca de la cola los ${pagosSueltos.length} pagos. No se borra nada: siguen en la caja y en la ficha de cada jugador. ¿Seguro?')">
+          <input type="hidden" name="key" value="${esc(keyRaw)}"><input type="hidden" name="todos" value="1"><input type="hidden" name="partido_id" value="${partidoId}">
+          <button class="btn-fila" style="width:100%;background:var(--surface-2);color:var(--ink-2);border:1.5px solid var(--line-strong)">✔ Poner la cola en cero (${pagosSueltos.length})</button>
+        </form>` : ''}
       </div>` : ''}
 
       <div class="shdr">Lista para el grupo <small>(el bot la arma, tú la pegas)</small></div>

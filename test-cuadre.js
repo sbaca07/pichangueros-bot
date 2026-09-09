@@ -389,6 +389,32 @@ const srv = app.listen(0, async () => {
       !db.pagosSinPartido().some((p) => p.id === pagoViejo) && db.pagoSueltoDe(n) === null);
     db.setCorte('2000-01-01');
 
+    console.log('   — un cupo pagado que se da de baja NO esconde la plata');
+    // Al cuadrar las listas contra el Sheet el 2026-09-09 se dieron de baja 17
+    // cupos que tenían Yape. Esa plata desapareció de las DOS pantallas: ya no
+    // estaba en ninguna lista, y la cola de sueltos miraba cualquier fila con
+    // pago_id — incluidas las dadas de baja. Entró y se hizo invisible.
+    const pBaja = db.crearPartido({ zona: 'brena', fecha: enDias(4), hora: '8-9pm', cupo: 10, precio: 15 });
+    const nBaja = '51900060002';
+    db.getOrCreateLead(nBaja); db.updateLead(nBaja, { zona: 'brena', nombre: 'Pagó y lo sacaron' });
+    const pagoBaja = db.registrarPago({ numero: nBaja, monto: 15, numero_operacion: 'CU-BAJA', estado: 'confirmado' });
+    const { inscripcion: iBaja } = db.inscribir(pBaja, nBaja);
+    db.pagarInscripcion(iBaja.id, pagoBaja);
+    check('con el cupo vivo, el pago no está suelto', !db.pagosSinPartido().some((p) => p.id === pagoBaja));
+    db.darDeBaja(iBaja.id);
+    check('al dar de baja el cupo, su Yape VUELVE a la cola (antes se escondía)',
+      db.pagosSinPartido().some((p) => p.id === pagoBaja));
+
+    console.log('   — "ya lo miré": la cola se puede vaciar sin borrar plata');
+    // Una cola que nunca baja se deja de mirar entera. Resolver saca de
+    // pendientes; no borra: el pago sigue en la tabla y en la caja.
+    check('marcarlo resuelto lo saca de la cola', db.resolverPagos([pagoBaja]) === 1
+      && !db.pagosSinPartido().some((p) => p.id === pagoBaja));
+    check('pero el pago sigue existiendo', db.listPagosTodos().some((p) => p.id === pagoBaja));
+    check('y se puede reabrir si fue sin querer',
+      db.reabrirPago(pagoBaja) === 1 && db.pagosSinPartido().some((p) => p.id === pagoBaja));
+    db.resolverPagos([pagoBaja]);
+
     console.log('   — hora vacía: un partido sin hora se ofrece todo el día');
     const conHora = db.crearPartido({ zona: 'brena', fecha: enDias(4), hora: '8-9pm', sede: 'Melgar Cuadre', cupo: 14 });
     const r = db.actualizarPartido(conHora, { hora: '', cupo: '16' });

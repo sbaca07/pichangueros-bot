@@ -201,6 +201,11 @@ const colsPagos = db.prepare('PRAGMA table_info(pagos)').all().map((c) => c.name
 if (!colsPagos.includes('medio')) db.exec("ALTER TABLE pagos ADD COLUMN medio TEXT DEFAULT 'yape'");
 // Cupos (2026-07-15): un solo Yape puede pagar varios cupos (amigos / ambos turnos).
 if (!colsPagos.includes('cupos')) db.exec('ALTER TABLE pagos ADD COLUMN cupos INTEGER DEFAULT 1');
+// "Ya lo miré" (2026-09-09): un pago suelto que se devolvió o se pasó a otra
+// fecha deja de reclamar atención. La cola de pendientes solo sirve si se
+// puede vaciar; una que nunca baja se deja de mirar entera. No borra nada.
+if (!colsPagos.includes('resuelto_en')) db.exec('ALTER TABLE pagos ADD COLUMN resuelto_en TEXT');
+if (!colsPagos.includes('resuelto_por')) db.exec('ALTER TABLE pagos ADD COLUMN resuelto_por TEXT');
 
 // Limpieza (2026-07-15): la IA a veces devolvía el TEXTO "null" y quedaba
 // guardado como nombre/distrito real. Se limpia lo existente; updateLead ya
@@ -2598,10 +2603,43 @@ function pagosSinPartido(limite = 30) {
   return db.prepare(`
     SELECT p.*, l.nombre, l.zona FROM pagos p LEFT JOIN leads l ON l.numero = p.numero
     WHERE p.estado = 'confirmado'
-      AND p.id NOT IN (SELECT pago_id FROM inscripciones WHERE pago_id IS NOT NULL)
+      -- Una inscripción DADA DE BAJA no cuenta como destino del pago. Miraba
+      -- cualquier fila con pago_id, así que al dar de baja un cupo pagado la
+      -- plata desaparecía de las dos pantallas: ya no estaba en ninguna lista
+      -- y tampoco volvía a la cola. El 2026-09-09, cuadrando las listas contra
+      -- el Sheet, se escondieron 17 pagos así.
+      AND p.id NOT IN (SELECT pago_id FROM inscripciones WHERE pago_id IS NOT NULL AND estado != 'baja')
+      -- Los que alguien ya miró y decidió qué hacer dejan de reclamar atención.
+      AND p.resuelto_en IS NULL
       AND substr(p.creado_en, 1, 10) >= ?
     ORDER BY p.id DESC LIMIT ?
   `).all(corte, limite);
+}
+
+/**
+ * "Ya lo miré y no hay nada que hacer con este Yape."
+ *
+ * La cola de pagos sueltos solo sirve si se puede vaciar. Sin esto, un pago que
+ * ya se devolvió o se pasó a otra fecha seguía pidiendo atención para siempre,
+ * y una cola que nunca baja se deja de mirar entera.
+ *
+ * NO borra nada: el pago sigue en la tabla, en la caja y en el historial del
+ * jugador. Solo deja de estar en la lista de pendientes.
+ */
+function resolverPagos(ids, quien = 'panel') {
+  const lista = (Array.isArray(ids) ? ids : [ids]).map(Number).filter(Boolean);
+  if (!lista.length) return 0;
+  const stmt = db.prepare(
+    "UPDATE pagos SET resuelto_en = datetime('now','-5 hours'), resuelto_por = ? WHERE id = ? AND resuelto_en IS NULL"
+  );
+  let n = 0;
+  for (const id of lista) n += stmt.run(quien, id).changes;
+  return n;
+}
+
+/** Devolver un pago a la cola (por si se resolvió sin querer). */
+function reabrirPago(id) {
+  return db.prepare('UPDATE pagos SET resuelto_en = NULL, resuelto_por = NULL WHERE id = ?').run(Number(id)).changes;
 }
 
 /**
@@ -3127,7 +3165,7 @@ module.exports = {
   // constante nuestra.
   get RECURRENTE_DESDE() { return recurrenteDesde(); },
   inscripcionActiva, inscripcionesVigentesDe, inscribir, setEstadoInscripcion, darDeBaja, promoverSiguiente, vencerReservas, reservaMinutos, setAsistencia, vincularPago, candidatosDePago,
-  pagosSinPartido, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita, candidatosConvocatoria,
+  pagosSinPartido, resolverPagos, reabrirPago, textoLista, asistenciasDe, partidoReservadoDe, fechaBonita, candidatosConvocatoria,
   pagoSueltoDe, pagarInscripcion, confirmarPagoManual, getCorte, setCorte, despuesDelCorte,
   nombrarInvitados, invitadosSinNombre, nombreInvitado,
   hoyLima: hoyLimaDb, fechaLima: fechaLimaDb, ahoraLima, ordenHora, horaInput, normalizarHora, parseHora, textoHora,
