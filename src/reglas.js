@@ -242,4 +242,25 @@ function responder(lead, texto, adjunto) {
   return null;   // que decida la IA
 }
 
-module.exports = { responder, situacion };
+/**
+ * QUÉ DECIR CUANDO LA IA NO CONTESTÓ.
+ *
+ * La disculpa —"se me cruzaron los cables, ¿me lo repites?"— es un callejón
+ * sin salida: el jugador repite lo mismo, la IA vuelve a fallar, y otra
+ * disculpa. El 2026-09-09 alguien recibió esa respuesta a un "para hoy / hay"
+ * que el propio bot sabía contestar de memoria.
+ *
+ * Así que en vez de disculparse y frenar, se manda lo que se puede armar sin
+ * IA: la parrilla con los cupos de la BD. Le sirve al jugador ahora Y encarrila
+ * lo que va a escribir después ("el jueves 9pm") hacia lo que las reglas sí
+ * resuelven solas.
+ *
+ * @returns {string|null} null = no hay nada que ofrecer; ahí sí va la disculpa.
+ */
+function siLaIaFalla(lead) {
+  const parrilla = textoParrilla(lead?.zona && lead.zona !== 'otra' ? lead.zona : null, null);
+  if (!parrilla) return null;
+  return `Uy, me colgué un segundo 🙈 Pero te paso lo que hay ahora mismo:\n\n${parrilla.replace(/^Estas son las que hay ⚽\n\n/, '')}`;
+}
+
+module.exports = { responder, situacion, siLaIaFalla };

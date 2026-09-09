@@ -715,17 +715,32 @@ async function manejarMensaje(sock, msg) {
   }
 
   if (!decision) {
-    // La IA falló (caída/cuota/timeout). Antes: silencio total. Ahora: una
-    // disculpa corta para no dejar la conversación en el vacío (máx. 1 cada
-    // 10 min por contacto, para no repetirla si la falla dura).
+    // LA IA NO CONTESTÓ. Antes: silencio total. Después: una disculpa, que es
+    // un callejón sin salida — el jugador repite lo mismo, la IA vuelve a
+    // fallar, y otra disculpa. El 2026-09-09 alguien recibió eso a un "para
+    // hoy / hay" que el propio bot sabía contestar de memoria.
+    //
+    // Ahora se manda la parrilla, armada de la BD sin una sola llamada: le
+    // sirve al jugador ahora Y encarrila lo que escriba después ("el jueves
+    // 9pm") hacia lo que las reglas resuelven solas. La disculpa queda para
+    // cuando no hay ningún partido que ofrecer.
+    //
+    // El tope de 1 cada 10 min es de la disculpa, no de la parrilla: repetir
+    // "no te entendí" cansa, pero decirle los cupos que hay nunca molesta.
     const ultima = disculpasBrain.get(numero) || 0;
-    if (!modoSilencio && Date.now() - ultima > 10 * 60 * 1000) {
-      disculpasBrain.set(numero, Date.now());
-      const disculpa = 'Uy, se me cruzaron los cables un segundo 🙈 ¿Me lo repites porfa? Si es algo urgente, Clarck te escribe en un momento.';
-      try {
-        await enviarTexto(sock, destino, disculpa);
-        db.saveMessage(numero, 'assistant', disculpa, 'bot', 'disculpa');
-      } catch (e) { console.error(`[send] ERROR fallback → ${destino}:`, e?.message); }
+    if (!modoSilencio) {
+      const salida = reglas.siLaIaFalla(lead);
+      const texto = salida || (Date.now() - ultima > 10 * 60 * 1000
+        ? 'Uy, se me cruzaron los cables un segundo 🙈 ¿Me lo repites porfa? Si es algo urgente, Clarck te escribe en un momento.'
+        : null);
+      if (texto) {
+        if (!salida) disculpasBrain.set(numero, Date.now());
+        console.log(`[brain] ${numero}: la IA no contestó → ${salida ? 'se le manda la parrilla (sin IA)' : 'disculpa'}.`);
+        try {
+          await enviarTexto(sock, destino, texto);
+          db.saveMessage(numero, 'assistant', texto, 'bot', salida ? 'regla:parrilla-sin-ia' : 'disculpa');
+        } catch (e) { console.error(`[send] ERROR fallback → ${destino}:`, e?.message); }
+      }
     }
     return;
   }

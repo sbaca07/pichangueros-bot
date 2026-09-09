@@ -41,7 +41,8 @@ const PIDE = '51900333001';   // tiene zona: se le puede resolver el cupo
 const SINZONA = '51900333002';
 const CONFUSO = '51900333003';
 const FOTO = '51900333004';
-process.env.ALLOWED_TESTERS = [PIDE, SINZONA, CONFUSO, FOTO, process.env.NOTIFY_NUMBER].join(',');
+const CURIOSO2 = '51900333005';
+process.env.ALLOWED_TESTERS = [PIDE, SINZONA, CONFUSO, FOTO, CURIOSO2, process.env.NOTIFY_NUMBER].join(',');
 delete process.env.OPENAI_API_KEY;
 
 const enviados = [];
@@ -118,6 +119,22 @@ const seDisculpo = (n) => dichoA(n).some((t) => /cruzaron los cables/.test(t));
   check('y NO le dice que está confirmado', !/(ya estas confirmado|quedaste confirmado)/i.test(respuesta.toLowerCase()));
   check('la inscripción NO nace pagada', db.inscripcionActiva(unico, PIDE)?.estado !== 'pagado');
 
+  console.log('== 1b · Si la IA no contesta, se manda la parrilla, no una disculpa ==');
+  // La disculpa —"se me cruzaron los cables, ¿me lo repites?"— es un callejón
+  // sin salida: el jugador repite lo mismo, la IA vuelve a fallar, y otra
+  // disculpa. El 2026-09-09 alguien recibió eso a un "para hoy / hay" que el
+  // propio bot sabía contestar de memoria. Mandarle los cupos le sirve ahora Y
+  // encarrila lo que escriba después hacia lo que las reglas resuelven solas.
+  const CURIOSO = '51900333005';
+  db.getOrCreateLead(CURIOSO);
+  db.updateLead(CURIOSO, { nombre: 'Curioso Prueba', zona: 'comas' });
+  await escribe(CURIOSO, '¿qué onda con el partido del finde?');
+  await sleep(1600);
+  const leDijo = dichoA(CURIOSO).join('\n');
+  check('no le sale la disculpa', !/cruzaron los cables/.test(leDijo), leDijo.slice(0, 120));
+  check('le manda los cupos que hay de verdad', /cupo/.test(leDijo) && /Comas/i.test(leDijo), leDijo.slice(0, 160));
+  check('y le pregunta a cuál anotarlo (lo lleva al flujo normal)', /te anoto/i.test(leDijo));
+
   console.log('== 2 · Con dos pichangas posibles no se elige ninguna ==');
   // El error que costó plata el 15/08 fue justamente elegir el único candidato
   // "obvio". Con dos, la respuesta correcta es no adivinar.
@@ -127,7 +144,10 @@ const seDisculpo = (n) => dichoA(n).some((t) => /cruzaron los cables/.test(t));
   await escribe(CONFUSO, 'me apunto para hoy');
   await sleep(1600);
   check('no lo metió en ninguna', !db.inscripcionActiva(unico, CONFUSO) && !db.inscripcionActiva(segundo, CONFUSO));
-  check('sale la disculpa, que es lo que ya pasaba', seDisculpo(CONFUSO));
+  // Antes acá salía la disculpa. Ahora sale la parrilla: no adivinar cuál es
+  // lo correcto, pero dejarlo sin nada era el callejón sin salida.
+  check('le manda la parrilla para que él elija',
+    /te anoto/i.test(dichoA(CONFUSO).join(' ')) && !seDisculpo(CONFUSO), dichoA(CONFUSO).join(' | ').slice(0, 140));
 
   console.log('== 3 · Sin zona no se resuelve nada ==');
   // Sin zona no se sabe en qué cancha juega NI cuánto le sale (regla 9).
@@ -136,7 +156,10 @@ const seDisculpo = (n) => dichoA(n).some((t) => /cruzaron los cables/.test(t));
   await escribe(SINZONA, 'anotame para hoy a las 9');
   await sleep(1600);
   check('no se lo anota a ciegas', !db.inscripcionActiva(unico, SINZONA));
-  check('sale la disculpa', seDisculpo(SINZONA));
+  // Sin zona no se le puede resolver el cupo, pero sí decirle qué hay: la
+  // parrilla sale de todas las sedes y él dice cuál le queda cerca.
+  check('igual le dice qué pichangas hay',
+    /cupo/.test(dichoA(SINZONA).join(' ')), dichoA(SINZONA).join(' | ').slice(0, 140));
 
   console.log('== 4 · "anótame con un amigo" tampoco: cuántos cupos lo dice la plata ==');
   const libres = () => db.partidosAbiertos('comas', { vigentes: true }).find((p) => p.id === unico)?.restante;
