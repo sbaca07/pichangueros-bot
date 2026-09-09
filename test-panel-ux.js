@@ -135,6 +135,11 @@ const srv = app.listen(0, async () => {
     check('se refresca solo', /http-equiv="refresh"/.test(vivo));
     // Es un tablero con la conversación de la gente adentro: sin key no entra nadie.
     check('sin la key no se abre', (await GET('/admin/vivo')).status !== 200);
+    // El menú de abajo es el que se ve en el celular, que es donde Clarck mira
+    // el bot. Tenerlo solo en la barra lateral era tenerlo escondido.
+    const resumen = (await GET('/admin/leads?key=ux')).html;
+    check('se llega al tablero desde el menú del celular Y desde el de escritorio',
+      (resumen.match(/href="\/admin\/vivo\?key=ux"/g) || []).length >= 2);
   }
 
   const crmHandoff = (await GET('/admin/leads?key=ux&vista=crm&filtro=handoff')).html;

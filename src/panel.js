@@ -1964,6 +1964,7 @@ const tabbar = (key, activo) => `<nav class="tabbar">
   <a class="tab ${activo === 'crm' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=crm">${SVG.iCrm}Jugadores</a>
   <a class="tab ${activo === 'pagos' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=pagos">${SVG.iPagos}Pagos</a>
   <a class="tab ${activo === 'config' || activo === 'conexion' ? 'on' : ''}" href="/admin/leads?key=${key}&vista=config">${SVG.iConfig}Ajustes</a>
+  <a class="tab" href="/admin/vivo?key=${key}">📡En vivo</a>
 </nav>`;
 
 const sidebar = (key, activo) => `<aside class="sidebar">
