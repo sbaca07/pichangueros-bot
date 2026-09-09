@@ -972,7 +972,14 @@ ${ultimas.map((m) => `<tr>
     if (!cambio.inscripcion) {
       return volverAPartidos(req, res, partidoId, 'Ese cambio no existe.', 'inscritos', true);
     }
-    const avisos = { pagado: `${quien}: pago marcado ✔`, reservado: `${quien} subió de la espera a la cancha.`, espera: `${quien} pasó a la lista de espera.` };
+    const avisos = {
+      pagado: `${quien}: pago marcado ✔`,
+      reservado: `${quien} vuelve a ocupar un lugar de verdad.`,
+      espera: `${quien} pasó a la lista de espera.`,
+      // El relleno es una decisión de venta: sale en la lista del grupo para
+      // que el cupo se vea más lleno, pero el bot ya no lo cuenta.
+      relleno: `${quien} queda como RELLENO: sigue saliendo en la lista del grupo, pero el bot vuelve a ofrecer ese cupo.`,
+    };
     volverAPartidos(req, res, partidoId, avisos[req.body.estado] || 'Listo.', `insc-${id}`);
   });
 
@@ -3930,7 +3937,7 @@ function paginaConfig(db, key, conexion = null, query = {}) {
 // ==============================================================================
 //  Vista PARTIDOS — convocatorias, inscripciones, lista de espera, asistencia
 // ==============================================================================
-const ESTADOS_INSC = { pagado: 'Pagado ✅', reservado: 'Reservado', espera: 'En espera ⏳', baja: 'Baja' };
+const ESTADOS_INSC = { pagado: 'Pagado ✅', reservado: 'Reservado', espera: 'En espera ⏳', baja: 'Baja', relleno: 'Relleno 🎭' };
 // Cómo se pinta cada fase. La fase la calcula db.js (fasePartido) — acá solo
 // vive el color, para que el panel no pueda contar una historia distinta a la
 // que cuenta el bot.
@@ -4535,7 +4542,7 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
   // El estado de cada inscrito (Pagado / Reservado / En espera) estaba en 12px
   // gris tenue (2.94:1) — siendo el dato principal de esta pantalla. Ahora es un
   // badge con relleno, borde y tinta que pasan 4.5:1.
-  const chipInsc = { pagado: 'b-done', reservado: 'b-new', espera: 'b-wait', baja: 'b-new' };
+  const chipInsc = { pagado: 'b-done', reservado: 'b-new', espera: 'b-wait', baja: 'b-new', relleno: 'b-wait' };
   /**
    * Cuánto le queda al cupo guardado sin Yape. Se pinta al lado del estado
    * porque "Reservado" a secas no dice lo único que importa mirando la lista:
@@ -4571,6 +4578,10 @@ function paginaPartidoDetalle(db, key, keyRaw, partidoId, query = {}) {
       <div class="finsc-acc">
         ${i.estado !== 'pagado' ? accion(i, 'pagado', '💰 Pagó', 'background:var(--st-ok-bg);color:var(--st-ok-ink);border:1.5px solid var(--st-ok-ink)') : ''}
         ${i.estado === 'espera' ? accion(i, 'reservado', '⬆ Subir', 'background:var(--surface-2);color:var(--ink-2);border:1.5px solid var(--line-strong)') : ''}
+        ${i.estado === 'relleno'
+          ? accion(i, 'reservado', '👤 Es real', 'background:var(--surface-2);color:var(--ink-2);border:1.5px solid var(--line-strong)')
+          : (!i.numero && !i.pago_id ? accion(i, 'relleno', '🎭 Relleno', 'background:var(--surface-2);color:var(--ink-2);border:1.5px solid var(--line-strong)',
+              `${nombre} sale en la lista del grupo pero deja de ocupar cupo: el bot va a ofrecer ese lugar. ¿Seguro?`) : '')}
         ${puedeMarcar ? `${btnAsist(i, 'si', '✔ Vino', i.asistencia === 'si')}${btnAsist(i, 'no', '✘ Faltó', i.asistencia === 'no')}` : ''}
       </div>
       <div class="finsc-peligro">

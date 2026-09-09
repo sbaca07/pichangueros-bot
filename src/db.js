@@ -2191,8 +2191,25 @@ function ocupadosDe(partidoId) {
  * @returns {{inscripcion: object|null, motivo: string|null}} motivo='lleno' si
  *   no entraba: el panel necesita poder explicar por qué no pasó nada.
  */
+/**
+ * 'relleno' — LOS NOMBRES QUE LLENAN LA LISTA PERO NO JUEGAN (2026-09-09).
+ *
+ * Clarck pone gente de más en la lista del grupo a propósito: si quedan dos
+ * lugares nadie se apura, si queda uno todos yapean. Es una decisión de venta,
+ * no un error, y el sistema tiene que convivir con ella.
+ *
+ * El problema era que esos nombres ocupaban cupo de verdad: el bot veía la
+ * cancha llena y dejaba de ofrecer lugares que sí existían. Pasó hoy con "Luis
+ * Torres" en Breña — el bot ofrecía 1 cupo cuando había 2.
+ *
+ * Así que la lista del grupo y el cupo del bot dejan de ser lo mismo:
+ *   · en la lista del grupo SALE (para eso está)
+ *   · para el cupo NO cuenta: no está en OCUPAN
+ *   · nunca sube de la espera: `promoverSiguiente` solo mira 'espera'
+ *   · el importador lo ve como "ya está" y no lo duplica al re-cargar el Sheet
+ */
 function setEstadoInscripcion(id, estado) {
-  if (!['reservado', 'pagado', 'espera', 'baja'].includes(estado)) return { inscripcion: null, motivo: 'estado_invalido' };
+  if (!['reservado', 'pagado', 'espera', 'baja', 'relleno'].includes(estado)) return { inscripcion: null, motivo: 'estado_invalido' };
   const actual = db.prepare('SELECT * FROM inscripciones WHERE id = ?').get(id);
   if (!actual) return { inscripcion: null, motivo: 'no_existe' };
   const ocupaAhora = ['reservado', 'pagado'].includes(actual.estado);
@@ -2644,7 +2661,11 @@ function textoLista(partidoId) {
   const neg = getNegocio();
   const zonaNombre = nombreDeZona(p.zona);
   const precio = precioDePartido(p);
-  const inscritos = inscripcionesDe(partidoId).filter((i) => ['pagado', 'reservado'].includes(i.estado));
+  // El relleno SÍ sale en la lista del grupo — es exactamente para lo que está
+  // (ver el comentario de 'relleno' en setEstadoInscripcion). Va al final, así
+  // los que de verdad pagaron aparecen primero.
+  const reales = inscripcionesDe(partidoId).filter((i) => ['pagado', 'reservado'].includes(i.estado));
+  const inscritos = [...reales, ...inscripcionesDe(partidoId).filter((i) => i.estado === 'relleno')];
   const espera = inscripcionesDe(partidoId).filter((i) => i.estado === 'espera');
   const nombreDe = (i) => i.nombre || i.lead_nombre || (i.numero ? `+${i.numero}` : 'Por confirmar');
   const lineas = [];

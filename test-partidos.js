@@ -146,6 +146,38 @@ check('la lista marca a la espera pagada con ✅', /espera[\s\S]*✅/i.test(db.t
 const promovidoPag = db.darDeBaja(db.inscripcionActiva(p7, '51900000040').id);
 check('al liberarse cupo, la espera PAGADA sube directo a pagado', promovidoPag?.numero === '51900000041' && promovidoPag?.estado === 'pagado');
 
+console.log('== Relleno: llena la lista del grupo pero no el cupo ==');
+/*
+ * Clarck pone gente de más en la lista a propósito: si quedan dos lugares nadie
+ * se apura, si queda uno todos yapean. Es una decisión de venta, no un error.
+ *
+ * Pero esos nombres ocupaban cupo de verdad y el bot dejaba de ofrecer lugares
+ * que sí existían. Pasó el 2026-09-09 con "Luis Torres" en Breña: la cancha
+ * tenía 14 reales y 2 libres, y el bot ofrecía 1.
+ */
+const pRell = db.crearPartido({ zona: 'brena', fecha: enUnosDias(8), hora: '8-9pm', cupo: 16, precio: 15 });
+db.getOrCreateLead('51900000050');
+db.inscribir(pRell, '51900000050', { nombre: 'Jugador Real' });
+const { inscripcion: iRell } = db.inscribir(pRell, null, { nombre: 'Luis Torres', vence: false });
+check('antes de marcarlo, ocupa cupo como cualquiera',
+  db.partidosAbiertos('brena', { vigentes: true }).find((x) => x.id === pRell).restante === 14);
+db.setEstadoInscripcion(iRell.id, 'relleno');
+check('marcado como relleno, el bot vuelve a ofrecer ese cupo',
+  db.partidosAbiertos('brena', { vigentes: true }).find((x) => x.id === pRell).restante === 15);
+check('pero SIGUE saliendo en la lista del grupo (para eso está)',
+  db.textoLista(pRell).includes('Luis Torres'));
+check('y no lleva ✅: no pagó nada', !/Luis Torres ✅/.test(db.textoLista(pRell)));
+// Si se libera un lugar, el que sube es alguien de la espera — nunca el relleno.
+db.getOrCreateLead('51900000051');
+db.inscribir(pRell, '51900000051', { nombre: 'Espera Real' });
+db.setEstadoInscripcion(db.inscripcionActiva(pRell, '51900000051').id, 'espera');
+const subio = db.darDeBaja(db.inscripcionActiva(pRell, '51900000050').id);
+check('al liberarse un lugar sube el de la espera, no el relleno', subio?.numero === '51900000051');
+check('el relleno sigue siendo relleno', db.inscripcionesDe(pRell).find((i) => i.id === iRell.id).estado === 'relleno');
+// El importador lo ve como "ya está" y no lo vuelve a anotar al re-cargar el Sheet.
+check('el relleno cuenta como presente para el importador',
+  db.inscripcionesDe(pRell).filter((i) => i.estado !== 'baja').some((i) => i.nombre === 'Luis Torres'));
+
 console.log('== Fixes del code review: inscribir en partido no abierto ==');
 const p8 = db.crearPartido({ zona: 'comas', fecha: enUnosDias(9), cupo: 10 });
 db.setEstadoPartido(p8, 'cerrado');
